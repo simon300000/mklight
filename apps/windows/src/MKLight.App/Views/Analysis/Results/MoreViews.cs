@@ -37,16 +37,16 @@ public sealed partial class GridDistortionView : UserControl
     {
         IsTabStop = false;
         var legend = new FlowPanel { Spacing = 14, LineSpacing = 3 };
-        legend.Children.Add(new Legend([new LegendEntry("Paraxial grid", SeriesColor.Neutral, LegendMark.Dashed), new LegendEntry("Real chief rays", SeriesColor.Field(0))]));
-        legend.Children.Add(Kit.Caption("Max " + Fmt.Fixed(d.MaxDistortion, 3) + " %"));
+        legend.Children.Add(new Legend([new LegendEntry(Loc.S("Results_GridDistortion_ParaxialGrid"), SeriesColor.Neutral, LegendMark.Dashed), new LegendEntry(Loc.S("Results_GridDistortion_RealChiefRays"), SeriesColor.Field(0))]));
+        legend.Children.Add(Kit.Caption(Loc.F("Results_GridDistortion_Max", Fmt.Fixed(d.MaxDistortion, 3))));
         var canvas = new PlotCanvas((ds, size, style) =>
         {
             var half = SquarePlot.Half(d.Paraxial.Concat(d.Real).SelectMany(p => new[] { p.X, p.Y }));
-            if (SquarePlot.Frame(ds, size, half, "Image x (mm)", "Image y (mm)", style) is not { } f) return;
+            if (SquarePlot.Frame(ds, size, half, Loc.S("Results_GridDistortion_ImageXMm"), Loc.S("Results_GridDistortion_ImageYMm"), style) is not { } f) return;
             foreach (var line in d.Lines(d.Paraxial)) Curves.Line(ds, f, line, style.Label.WithAlpha(0.55), 1, Curves.Dashed);
             foreach (var line in d.Lines(d.Real)) Curves.Line(ds, f, line, Palette.Field(0, style.Dark), 1.3f);
         });
-        AutomationProperties.SetName(canvas, $"Grid distortion, maximum {Fmt.Fixed(d.MaxDistortion, 3)} percent");
+        AutomationProperties.SetName(canvas, Loc.F("Results_GridDistortion_Name", Fmt.Fixed(d.MaxDistortion, 3)));
         Content = FieldMapViews.Shell(legend, canvas);
     }
 }
@@ -59,11 +59,11 @@ public sealed partial class FootprintView : UserControl
         IsTabStop = false;
         double Um(int w) => w >= 0 && w < um.Count ? um[w] : 0.55;
         var entries = d.Wavelengths.Select(w => new LegendEntry(Fmt.Wavelength(Um(w)), SeriesColor.Wavelength(Um(w)), LegendMark.Dot)).ToList();
-        if (double.IsFinite(d.SemiDiameter)) entries.Add(new LegendEntry("Clear aperture " + Fmt.Value(d.SemiDiameter, "mm"), SeriesColor.Neutral, LegendMark.DashedCircle));
+        if (double.IsFinite(d.SemiDiameter)) entries.Add(new LegendEntry(Loc.F("Results_Footprint_ClearAperture", Fmt.Value(d.SemiDiameter, "mm")), SeriesColor.Neutral, LegendMark.DashedCircle));
         var legend = new FlowPanel { Spacing = 14, LineSpacing = 3 };
-        legend.Children.Add(Kit.Text(Kit.Inv($"Surface {d.Surface}"), "PanelTitleText", 12));
+        legend.Children.Add(Kit.Text(Loc.F("Results_Seidel_SurfaceNumber", d.Surface), "PanelTitleText", 12));
         legend.Children.Add(new Legend(entries));
-        if (d.Clipped.Length > 0) legend.Children.Add(Kit.LegendItem(Kit.Dot(Palette.Slot(7, false)), Kit.Inv($"{d.Clipped.Length} clipped")));
+        if (d.Clipped.Length > 0) legend.Children.Add(Kit.LegendItem(Kit.Dot(Palette.Slot(7, false)), Loc.F("Results_Footprint_Clipped", d.Clipped.Length)));
         var canvas = new PlotCanvas((ds, size, style) =>
         {
             var half = SquarePlot.Half(d.Points.SelectMany(p => new[] { p.X, p.Y }).Concat(d.Clipped.SelectMany(p => new[] { p.X, p.Y })), double.IsFinite(d.SemiDiameter) ? d.SemiDiameter : 0);
@@ -78,7 +78,7 @@ public sealed partial class FootprintView : UserControl
             var red = Palette.Slot(7, style.Dark);
             foreach (var p in d.Clipped) if (double.IsFinite(p.X)) ds.FillCircle(f.X(p.X), f.Y(p.Y), dot, red);
         });
-        AutomationProperties.SetName(canvas, $"Footprint on surface {d.Surface}, {d.Points.Length} rays pass, {d.Clipped.Length} clipped");
+        AutomationProperties.SetName(canvas, Loc.F("Results_Footprint_Name", d.Surface, d.Points.Length, d.Clipped.Length));
         Content = FieldMapViews.Shell(legend, canvas);
     }
 }
@@ -91,12 +91,12 @@ public sealed partial class GhostPathsView : UserControl
         IsTabStop = false;
         if (d.Ghosts.Count == 0)
         {
-            Content = SeidelView.Message("No ghost paths", "The enumeration found no ghost reaching the sensor.");
+            Content = SeidelView.Message(Loc.S("Results_Ghost_NoPaths"), Loc.S("Results_Ghost_NoPathsNote"));
             return;
         }
         var g = new Grid { ColumnSpacing = 16, RowSpacing = 3 };
-        string[] heads = ["Ghost", "Rel. irradiance", "Focus (mm)", "Blur ⌀ (mm)", "ΠR"];
-        string[] tips = ["Surfaces reflecting, in order", "Estimated ghost irradiance relative to the signal", "Signed distance of the ghost focus from the sensor", "Ghost blur diameter on the sensor", "Product of the reflectances"];
+        string[] heads = [Loc.S("Results_Ghost_HeadGhost"), Loc.S("Results_Ghost_HeadIrradiance"), Loc.S("Results_Ghost_HeadFocus"), Loc.S("Results_Ghost_HeadBlur"), "ΠR"];
+        string[] tips = [Loc.S("Results_Ghost_TipGhost"), Loc.S("Results_Ghost_TipIrradiance"), Loc.S("Results_Ghost_TipFocus"), Loc.S("Results_Ghost_TipBlur"), Loc.S("Results_Ghost_TipReflectance")];
         for (var c = 0; c < heads.Length; c++)
         {
             g.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
@@ -117,8 +117,8 @@ public sealed partial class GhostPathsView : UserControl
             {
                 var w = Kit.Text("⚠", "BodyText", 11);
                 w.Foreground = ThemeLookup.Brush(this, "WarningBrush");
-                ToolTipService.SetToolTip(w, "Focused near the sensor");
-                AutomationProperties.SetName(w, "near focus");
+                ToolTipService.SetToolTip(w, Loc.S("Results_Ghost_NearFocusTip"));
+                AutomationProperties.SetName(w, Loc.S("Results_Ghost_NearFocus"));
                 name.Children.Add(w);
             }
             Grid.SetRow(name, r + 1);
@@ -135,7 +135,7 @@ public sealed partial class GhostPathsView : UserControl
         }
         var stack = new StackPanel { Spacing = 10, Padding = new Thickness(12, 8, 12, 12) };
         stack.Children.Add(new ScrollViewer { Content = g, HorizontalScrollBarVisibility = ScrollBarVisibility.Auto, VerticalScrollBarVisibility = ScrollBarVisibility.Disabled, HorizontalScrollMode = ScrollMode.Auto, VerticalScrollMode = ScrollMode.Disabled });
-        if (d.Truncated) stack.Children.Add(Kit.Caption("Higher-order paths were dropped by the path budget.", wrap: true));
+        if (d.Truncated) stack.Children.Add(Kit.Caption(Loc.S("Results_Ghost_Truncated"), wrap: true));
         Content = Kit.Page(stack);
     }
 }
@@ -159,10 +159,10 @@ public sealed partial class SensorMapView : UserControl, IViewOptions
     {
         _d = d;
         IsTabStop = false;
-        _canvas = new MapCanvas(() => _plot, "Sensor map");
+        _canvas = new MapCanvas(() => _plot, Loc.S("Results_Sensor_MapName"));
         _caption = Kit.Caption("");
-        var picker = new ItemPicker("Map", d.Maps.Select(m => m.Title).ToList(), k => { _item = k; Rebuild(); });
-        var scale = new Choice("Color scale", ["Linear", "Log"], 1, menuBelow: 0);
+        var picker = new ItemPicker(Loc.S("Results_Sensor_Map"), d.Maps.Select(m => m.Title).ToList(), k => { _item = k; Rebuild(); });
+        var scale = new Choice(Loc.S("Results_Map_ColorScale"), [Loc.S("Results_Map_Linear"), Loc.S("Results_Map_Log")], 1, menuBelow: 0);
         scale.Changed += k => { _log = k == 1; Rebuild(); };
         _opts["linear"] = () => scale.Select(0);
         var top = new FlowPanel { Spacing = 12, LineSpacing = 4 };
@@ -196,8 +196,8 @@ public sealed partial class SensorMapView : UserControl, IViewOptions
             },
         };
         var (x0, x1, y0, y1) = _plot.Image.Extent;
-        _caption.Text = $"Sensor {Fmt.Fixed(x1 - x0, 2)} × {Fmt.Fixed(y1 - y0, 2)} mm · peak {Fmt.Short(hi)} {_d.Unit}";
-        _canvas.SetName($"{title} map over the sensor" + (_log ? ", logarithmic scale" : ""));
+        _caption.Text = Loc.F("Results_Sensor_Caption", Fmt.Fixed(x1 - x0, 2), Fmt.Fixed(y1 - y0, 2), Fmt.Short(hi), _d.Unit);
+        _canvas.SetName(Loc.F(_log ? "Results_Sensor_NameLog" : "Results_Sensor_Name", title));
         _canvas.Invalidate();
     }
 }
@@ -215,8 +215,8 @@ public sealed partial class PolarizationView : UserControl, IViewOptions
     {
         _d = d;
         IsTabStop = false;
-        _canvas = new MapCanvas(() => _plot, "Polarization pupil map");
-        var choice = new Choice("Quantity", PolarizationData.Quantities);
+        _canvas = new MapCanvas(() => _plot, Loc.S("Results_Polarization_MapName"));
+        var choice = new Choice(Loc.S("Results_FieldMap_Quantity"), PolarizationData.Quantities.Select(PolarizationData.QuantityTitle).ToList());
         choice.Changed += k => Rebuild(PolarizationData.Quantities[k]);
         _opts["diattenuation"] = () => choice.Select(1);
         var body = new SideBySide { Breakpoint = 560, SideWidth = 200, StackedShare = 0.7, FirstHeight = w => w - 30 };
@@ -248,7 +248,7 @@ public sealed partial class PolarizationView : UserControl, IViewOptions
                 return [(Fmt.Value(grid.Values[j * grid.Nx + i], unit), true), ($"Px {Fmt.Fixed(f.DataX(p.X), 2)}  Py {Fmt.Fixed(f.DataY(p.Y), 2)}".Replace('-', '−'), false)];
             },
         };
-        _canvas.SetName($"{q} over the pupil, from {Fmt.Short(lo)} to {Fmt.Short(hi)}");
+        _canvas.SetName(Loc.F("Results_Polarization_Name", PolarizationData.QuantityTitle(q), Fmt.Short(lo), Fmt.Short(hi)));
         _canvas.Invalidate();
     }
 }
@@ -260,13 +260,13 @@ public sealed partial class TransmissionView : UserControl
     {
         IsTabStop = false;
         var fields = d.Fields;
-        string Label(int f) => (f < d.FieldLabels.Count ? d.FieldLabels[f] : Kit.Inv($"Field {f + 1}")) + (f < d.Polychromatic.Count ? " · " + Fmt.Percent(d.Polychromatic[f]) : "");
+        string Label(int f) => (f < d.FieldLabels.Count ? d.FieldLabels[f] : Loc.F("Results_Chart_FieldNumber", f + 1)) + (f < d.Polychromatic.Count ? " · " + Fmt.Percent(d.Polychromatic[f]) : "");
         var legend = new Legend(fields.Select(f => new LegendEntry(Label(f), SeriesColor.Field(f), d.Spectral ? LegendMark.Line : LegendMark.Dot)).ToList());
         var canvas = new PlotCanvas((ds, size, style) =>
         {
             if (d.Spectral)
             {
-                var f = new Frame { XTitle = "Wavelength (µm)", YTitle = "Transmission", YMin = 0, YMax = 1.02, YTickSpacing = 50 };
+                var f = new Frame { XTitle = Loc.S("Results_Axis_WavelengthUm"), YTitle = Loc.S("Results_Transmission_Axis"), YMin = 0, YMax = 1.02, YTickSpacing = 50 };
                 (f.XMin, f.XMax) = Ticks.Range(d.Points.Select(p => p.Um), 0.04);
                 if (f.Draw(ds, f.Inside(ds, new Rect(0, 0, size.Width, size.Height)), style).IsEmpty) return;
                 foreach (var fi in fields)
@@ -277,7 +277,7 @@ public sealed partial class TransmissionView : UserControl
                 }
                 return;
             }
-            var b = new Frame { XTitle = "Field", YTitle = "Transmission", YMin = 0, YMax = 1, XTicks = [], XMin = -0.5, XMax = fields.Count - 0.5 };
+            var b = new Frame { XTitle = Loc.S("Results_Axis_Field"), YTitle = Loc.S("Results_Transmission_Axis"), YMin = 0, YMax = 1, XTicks = [], XMin = -0.5, XMax = fields.Count - 0.5 };
             var r = b.Draw(ds, b.Inside(ds, new Rect(0, 0, size.Width, size.Height)), style);
             if (r.IsEmpty) return;
             var w = r.Width / Math.Max(fields.Count, 1) * 0.6;
@@ -289,7 +289,7 @@ public sealed partial class TransmissionView : UserControl
                 if (double.IsFinite(t)) ds.FillRoundedRectangle(new Rect(x - w / 2, b.Y(t), w, Math.Max(r.Bottom - b.Y(t), 0.8)), 3, 3, Palette.Field(fields[k], style.Dark));
             }
         });
-        AutomationProperties.SetName(canvas, "System transmission per field" + (d.Spectral ? " against wavelength" : ""));
+        AutomationProperties.SetName(canvas, Loc.S(d.Spectral ? "Results_Transmission_NameSpectral" : "Results_Transmission_Name"));
         Content = FieldMapViews.Shell(legend, canvas);
     }
 }

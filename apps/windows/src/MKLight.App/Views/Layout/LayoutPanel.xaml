@@ -50,7 +50,7 @@
                 <TextBlock x:Name="PlaceholderText" FontSize="13" TextWrapping="Wrap" TextAlignment="Center" HorizontalAlignment="Center"
                            Foreground="{ThemeResource TextFillColorSecondaryBrush}" IsTextSelectionEnabled="True"
                            AutomationProperties.AutomationId="Layout.Placeholder.Text" />
-                <Button x:Name="RetryButton" Content="Try Again" Visibility="Collapsed" HorizontalAlignment="Center" Margin="0,6,0,0"
+                <Button x:Name="RetryButton" x:Uid="Shell_Layout_Retry" Visibility="Collapsed" HorizontalAlignment="Center" Margin="0,6,0,0"
                         CornerRadius="14" MinHeight="28" Padding="12,3,12,4" Click="OnRetry" AutomationProperties.AutomationId="Layout.Retry" />
             </StackPanel>
             <ProgressRing x:Name="PlaceholderRing" IsActive="False" Width="20" Height="20" MinWidth="20" MinHeight="20"
@@ -61,7 +61,7 @@
         <Border x:Name="TitleChip" Style="{StaticResource GlassChip}" HorizontalAlignment="Left" VerticalAlignment="Top" Margin="10" Padding="12,4,12,5">
             <StackPanel Orientation="Horizontal" Spacing="7">
                 <FontIcon Glyph="&#xE81E;" FontSize="13" Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
-                <TextBlock x:Name="TitleText" Text="Layout" Style="{StaticResource PanelTitleText}" AutomationProperties.HeadingLevel="Level2" />
+                <TextBlock x:Name="TitleText" x:Uid="Shell_Layout_Title" Style="{StaticResource PanelTitleText}" AutomationProperties.HeadingLevel="Level2" />
                 <ProgressRing x:Name="TitleRing" IsActive="False" Width="12" Height="12" MinWidth="12" MinHeight="12" Visibility="Collapsed" />
             </StackPanel>
         </Border>
@@ -86,7 +86,7 @@
             </Border>
             <Border Style="{StaticResource GlassChip}">
                 <StackPanel Orientation="Horizontal">
-                    <Button Style="{StaticResource CircleButton}" Content="&#xE890;" ToolTipService.ToolTip="Display options: ray colours, sampling, stretch, mesh, footprints"
+                    <Button x:Name="DisplayButton" Style="{StaticResource CircleButton}" Content="&#xE890;"
                             AutomationProperties.Name="Display" AutomationProperties.AutomationId="Layout.Display">
                         <Button.Flyout>
                             <MenuFlyout x:Name="DisplayMenu" Opening="OnDisplayMenuOpening" Placement="BottomEdgeAlignedRight" />
@@ -94,9 +94,9 @@
                     </Button>
                     <ToggleButton x:Name="FootprintsButton" Style="{StaticResource CircleToggleButton}" Content="&#xE81D;" Visibility="Collapsed"
                                   Click="OnFootprintsClick" AutomationProperties.Name="Beam footprints" />
-                    <Button Style="{StaticResource CircleButton}" Content="&#xE9A6;" Click="OnFit" ToolTipService.ToolTip="Fit the layout (Ctrl+0, or double-click)"
+                    <Button x:Name="FitButton" Style="{StaticResource CircleButton}" Content="&#xE9A6;" Click="OnFit"
                             AutomationProperties.Name="Fit" AutomationProperties.AutomationId="Layout.Fit" />
-                    <Button x:Name="MoreButton" Style="{StaticResource CircleButton}" Content="&#xE712;" ToolTipService.ToolTip="More"
+                    <Button x:Name="MoreButton" Style="{StaticResource CircleButton}" Content="&#xE712;"
                             AutomationProperties.Name="More" AutomationProperties.AutomationId="Layout.More">
                         <Button.Flyout>
                             <MenuFlyout x:Name="MoreMenu" Opening="OnMoreMenuOpening" Placement="BottomEdgeAlignedRight" />
@@ -135,7 +135,7 @@
         <Border x:Name="StaleCard" Visibility="Collapsed" AutomationProperties.AutomationId="Layout.Stale" Background="{ThemeResource StaleCardBrush}" BorderBrush="{ThemeResource CapsuleStrokeBrush}"
                 BorderThickness="1" CornerRadius="16" Padding="14,6,6,6" HorizontalAlignment="Center" VerticalAlignment="Bottom" Margin="0,0,0,14">
             <StackPanel Orientation="Horizontal" Spacing="10">
-                <TextBlock x:Name="StaleText" Text="Design changed" Style="{StaticResource SecondaryText}" />
+                <TextBlock x:Name="StaleText" Style="{StaticResource SecondaryText}" />
                 <ProgressRing x:Name="StaleRing" IsActive="False" Width="14" Height="14" MinWidth="14" MinHeight="14" />
             </StackPanel>
         </Border>

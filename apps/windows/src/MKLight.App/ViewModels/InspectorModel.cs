@@ -1,6 +1,7 @@
 using System.Globalization;
 using System.Text.Json;
 using System.Text.Json.Nodes;
+using MKLight.App.Support;
 using MKLight.Model;
 
 namespace MKLight.App.ViewModels;
@@ -35,7 +36,7 @@ public static class InspectorVariables
 
     /// <summary>Why a parameter cannot become a variable: a solve sets it (the optimizer applies solves first).</summary>
     public static string? Refusal(OpticalSystem system, ParamPath path) =>
-        system.SolveFor(path) is { } s ? $"Set by a solve ({s.Kind.Type.Title()}), so the optimizer cannot vary it. Remove the solve to make it a variable." : null;
+        system.SolveFor(path) is { } s ? Loc.F("Lens_Variable_Refusal", LensText.Solve(s.Kind.Type)) : null;
 
     /// <summary>The section with <paramref name="path"/> made a variable (with default bounds) or fixed; null when nothing changes.</summary>
     public static JsonTree? Set(JsonTree section, OpticalSystem system, ParamPath path, bool on)
@@ -95,7 +96,7 @@ public static class InspectorEdits
 {
     /// <summary>The page title: Object, Image or Surface n.</summary>
     public static string SurfaceTitle(OpticalSystem s, int index) =>
-        index == 0 ? "Object" : index == s.ImageIndex ? "Image" : "Surface " + index.ToString(CultureInfo.InvariantCulture);
+        index == 0 ? Loc.S("Lens_Row_Object") : index == s.ImageIndex ? Loc.S("Lens_Row_Image") : Loc.F("Lens_Row_Surface", index);
 
     /// <summary>Edits the surface with <paramref name="id"/>; null when it is gone or the edit refuses.</summary>
     public static OpticalSystem? Surface(OpticalSystem s, SurfaceID id, Func<Surface, Surface?> edit)
@@ -157,7 +158,7 @@ public static class InspectorEdits
     {
         var p = LensValueParser.Finite(text);
         if (!p.Ok) return p;
-        return Math.Abs(p.Value) <= max ? p : Parsed<double>.Fail("Value must be within ±" + NumberDisplay.Significant(max));
+        return Math.Abs(p.Value) <= max ? p : Parsed<double>.Fail(Loc.F("Lens_Error_WithinBound", NumberDisplay.Significant(max)));
     }
 
     /// <summary>A positive, finite number (an F/#, a pressure, a wavelength).</summary>
@@ -198,13 +199,13 @@ public static class InspectorEdits
     {
         var list = new List<(string, ParamPath, SolveKind)>
         {
-            ("Marginal ray height on thickness", new ParamPath.Thickness(s.Id), new SolveKind.MarginalRayHeight(0)),
-            ("Chief ray height on thickness", new ParamPath.Thickness(s.Id), new SolveKind.ChiefRayHeight(0)),
+            (Loc.S("Lens_SolvePreset_MarginalRayHeight"), new ParamPath.Thickness(s.Id), new SolveKind.MarginalRayHeight(0)),
+            (Loc.S("Lens_SolvePreset_ChiefRayHeight"), new ParamPath.Thickness(s.Id), new SolveKind.ChiefRayHeight(0)),
         };
         if (s.Shape.HasCurvature)
         {
-            list.Add(("Marginal ray angle on curvature", new ParamPath.Curvature(s.Id), new SolveKind.MarginalRayAngle(0)));
-            list.Add(("F-number on curvature", new ParamPath.Curvature(s.Id), new SolveKind.FNumber(4)));
+            list.Add((Loc.S("Lens_SolvePreset_MarginalRayAngle"), new ParamPath.Curvature(s.Id), new SolveKind.MarginalRayAngle(0)));
+            list.Add((Loc.S("Lens_SolvePreset_FNumber"), new ParamPath.Curvature(s.Id), new SolveKind.FNumber(4)));
         }
         return list;
     }
@@ -216,13 +217,13 @@ public static class InspectorEdits
     /// <summary>What a solve's target is, for its row.</summary>
     public static string TargetLabel(ParamPath p) => p switch
     {
-        ParamPath.Thickness => "Thickness",
-        ParamPath.Curvature => "Curvature",
-        ParamPath.Conic => "Conic",
-        ParamPath.ParaxialFocalLength => "Focal length",
-        ParamPath.SemiDiameter => "Semi-diameter",
-        ParamPath.ShapeParam sp => sp.Parameter.Title(),
-        _ => "Parameter",
+        ParamPath.Thickness => Loc.S("Lens_Target_Thickness"),
+        ParamPath.Curvature => Loc.S("Lens_Target_Curvature"),
+        ParamPath.Conic => Loc.S("Lens_Target_Conic"),
+        ParamPath.ParaxialFocalLength => Loc.S("Lens_Target_FocalLength"),
+        ParamPath.SemiDiameter => Loc.S("Lens_Target_SemiDiameter"),
+        ParamPath.ShapeParam sp => LensText.Parameter(sp.Parameter),
+        _ => Loc.S("Lens_Target_Parameter"),
     };
 
     // ---- System ----
@@ -230,13 +231,13 @@ public static class InspectorEdits
     /// <summary>Wavelength presets: name, (µm, weight) pairs, primary.</summary>
     public static readonly IReadOnlyList<(string Name, (double Um, double Weight)[] Lines, int Primary)> WavelengthPresets =
     [
-        ("F, d, C (visible)", [(0.4861327, 1), (0.5875618, 1), (0.6562725, 1)], 1),
-        ("F′, e, C′ (visible)", [(0.4799914, 1), (0.5460740, 1), (0.6438469, 1)], 1),
+        (Loc.S("Lens_Preset_FdC"), [(0.4861327, 1), (0.5875618, 1), (0.6562725, 1)], 1),
+        (Loc.S("Lens_Preset_FeC"), [(0.4799914, 1), (0.5460740, 1), (0.6438469, 1)], 1),
         ("g, F, e, d, C", [(0.4358343, 1), (0.4861327, 1), (0.5460740, 1), (0.5875618, 1), (0.6562725, 1)], 3),
-        ("d only", [(0.5875618, 1)], 0),
-        ("e only", [(0.5460740, 1)], 0),
-        ("Photopic (5)", [(0.47, 0.091), (0.51, 0.503), (0.555, 1), (0.61, 0.503), (0.65, 0.107)], 2),
-        ("Near infrared", [(0.75, 1), (0.85, 1), (0.95, 1)], 1),
+        (Loc.S("Lens_Preset_DOnly"), [(0.5875618, 1)], 0),
+        (Loc.S("Lens_Preset_EOnly"), [(0.5460740, 1)], 0),
+        (Loc.S("Lens_Preset_Photopic"), [(0.47, 0.091), (0.51, 0.503), (0.555, 1), (0.61, 0.503), (0.65, 0.107)], 2),
+        (Loc.S("Lens_Preset_NearInfrared"), [(0.75, 1), (0.85, 1), (0.95, 1)], 1),
     ];
 
     public static OpticalSystem ApplyPreset(OpticalSystem s, int preset)
@@ -276,10 +277,10 @@ public static class InspectorEdits
     /// <summary>Where a glass catalog comes from, for its row.</summary>
     public static string CatalogOrigin(bool builtin, bool library, bool inProject) => (builtin, library, inProject) switch
     {
-        (true, _, _) => "Built into MKLight",
-        (_, true, true) => "Library, recorded in the design",
-        (_, true, false) => "Library",
-        _ => "This design",
+        (true, _, _) => Loc.S("Lens_Catalog_Builtin"),
+        (_, true, true) => Loc.S("Lens_Catalog_LibraryRecorded"),
+        (_, true, false) => Loc.S("Lens_Catalog_Library"),
+        _ => Loc.S("Lens_Catalog_ThisDesign"),
     };
 
     /// <summary>Whether any surface lacks rotational symmetry (toroid, biconic, XY or Zernike freeform).</summary>
@@ -351,7 +352,7 @@ public sealed record FirstOrderXY(string? Symmetry, double EflX, double EflY, do
         return InspectorEdits.HasNonRotationalSurfaces(system);
     }
 
-    public static string SymmetryTitle(string s) => s switch { "rotational" => "Rotational", "meridional" => "Meridional plane", _ => "None" };
+    public static string SymmetryTitle(string s) => s switch { "rotational" => Loc.S("Lens_Symmetry_Rotational"), "meridional" => Loc.S("Lens_Symmetry_Meridional"), _ => Loc.S("Lens_Symmetry_None") };
 
     /// <summary><c>1.5000×</c>, signed.</summary>
     public static string SqueezeText(double v) => double.IsFinite(v) ? InspectorFormat.Fixed(v, 4) + "×" : InspectorFormat.Short(v);

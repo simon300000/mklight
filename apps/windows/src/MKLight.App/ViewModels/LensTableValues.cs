@@ -1,4 +1,5 @@
 using System.Globalization;
+using MKLight.App.Support;
 using MKLight.Model;
 
 namespace MKLight.App.ViewModels;
@@ -21,11 +22,11 @@ public sealed record MaterialEdit(MaterialRef? Material, Interaction Interaction
 /// </summary>
 public static class LensValueParser
 {
-    public static string NotANumber(string text) => $"“{text.Trim()}” is not a number";
-    public const string MustBePositive = "Value must be greater than zero";
-    public const string MustBeFinite = "Value must be finite";
+    public static string NotANumber(string text) => Loc.F("Lens_Error_NotANumber", text.Trim());
+    public static string MustBePositive => Loc.S("Lens_Error_MustBePositive");
+    public static string MustBeFinite => Loc.S("Lens_Error_MustBeFinite");
     public static string InvalidMaterial(string text) =>
-        $"“{text.Trim()}” is not a material (glass name, AIR, MIRROR, nd/vd, n=…, CATALOG:NAME)";
+        Loc.F("Lens_Error_NotAMaterial", text.Trim());
 
     /// <summary>A number (<see cref="NumberDisplay.Parse"/>): a decimal comma, <c>∞</c>, a Unicode minus; NaN refused.</summary>
     public static double? Number(string text) => NumberDisplay.Parse(text);

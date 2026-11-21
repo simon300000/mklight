@@ -61,15 +61,15 @@ static class ToleranceLaunchActions
                 switch (option)
                 {
                     case "last":
-                        s.Edit("Change Element Pivot", x => TolerancePivotChoice.Last.Apply(x, row.Id, system, f, l));
+                        s.Edit(Loc.S("Jobs_Tolerance_Panel_Undo_ChangeElementPivot"), x => TolerancePivotChoice.Last.Apply(x, row.Id, system, f, l));
                         break;
                     case ['s', .. var n] when int.TryParse(n, out var p):
-                        s.Edit("Change Element Pivot", x => new TolerancePivotChoice(TolerancePivotPlace.Surface, p).Apply(x, row.Id, system, f, l));
+                        s.Edit(Loc.S("Jobs_Tolerance_Panel_Undo_ChangeElementPivot"), x => new TolerancePivotChoice(TolerancePivotPlace.Surface, p).Apply(x, row.Id, system, f, l));
                         break;
                     case "clash":
                         // The last row starting on the same surface moved alone: the group no longer agrees, both rows are flagged.
                         if (s.Settings.Rows.LastOrDefault(r => r.Kind.IsElement() && r.Surface == row.Surface && r.Id != row.Id) is { } other)
-                            s.Edit("Change Element", x => { if (x.Rows.FirstOrDefault(r => r.Id == other.Id) is { } o) o.Last = system.Surfaces[f].Id; });
+                            s.Edit(Loc.S("Jobs_Tolerance_Panel_Undo_ChangeElement"), x => { if (x.Rows.FirstOrDefault(r => r.Id == other.Id) is { } o) o.Last = system.Surfaces[f].Id; });
                         break;
                 }
             }

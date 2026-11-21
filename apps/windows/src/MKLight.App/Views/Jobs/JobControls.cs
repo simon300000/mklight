@@ -189,7 +189,7 @@ public static class JobUI
         p.Children.Add(Text(label, "CaptionText"));
         p.Children.Add(new TextBlock { Text = value, Style = Style("NumberText"), FontSize = 20, FontWeight = Microsoft.UI.Text.FontWeights.Medium, FontFamily = (FontFamily)Application.Current.Resources["UIDisplayFont"] });
         if (help is not null) ToolTipService.SetToolTip(p, help);
-        AutomationProperties.SetName(p, $"{label} {value}");
+        AutomationProperties.SetName(p, Loc.F("Jobs_Controls_BigNumberName", label, value));
         return p;
     }
 
@@ -230,7 +230,7 @@ public static class JobUI
     {
         var b = new Button { Style = Style("CapsuleButton"), Content = Label(text, glyph), IsEnabled = enabled, MinHeight = 32, CornerRadius = new CornerRadius(16) };
         if (destructive) Bind(b, "ErrorBrush", x => b.Foreground = x);
-        if (text == "Cancel") b.Tag = CancelRole;
+        if (text == "Cancel" || text == Loc.S("Common_Cancel")) b.Tag = CancelRole;
         b.Click += (_, _) => click();
         if (help is not null) ToolTipService.SetToolTip(b, help);
         AutomationProperties.SetName(b, text);
@@ -261,7 +261,7 @@ public static class JobUI
     {
         var ring = new ProgressRing { Width = 16, Height = 16, IsIndeterminate = p.Fraction <= 0, Value = p.Fraction * 100, Minimum = 0, Maximum = 100 };
         var texts = new StackPanel { VerticalAlignment = VerticalAlignment.Center };
-        texts.Children.Add(Text(detail.Length > 0 ? detail : p.Stage.Length > 0 ? p.Stage : "Running", "NumberText"));
+        texts.Children.Add(Text(detail.Length > 0 ? detail : p.Stage.Length > 0 ? EngineText.T(p.Stage) : Loc.S("Jobs_Controls_Running"), "NumberText"));
         if (p.Fraction >= 0.01) texts.Children.Add(Text(MeritFormat.Percent(p.Fraction, 0), "CaptionText"));
         var row = Row(8, ring, texts);
         row.VerticalAlignment = VerticalAlignment.Center;
@@ -309,7 +309,7 @@ public static class JobUI
         var icon = new FontIcon { Glyph = "\uE930", FontSize = 14 };
         icon.Foreground = new SolidColorBrush(Palette.Slot(5, false));
         icon.Loaded += (_, _) => icon.Foreground = new SolidColorBrush(Palette.Slot(5, icon.ActualTheme == ElementTheme.Dark));
-        return Row(6, icon, Text("Applied to the design. Undo with Ctrl+Z.", "SecondaryText"));
+        return Row(6, icon, Text(Loc.S("Jobs_Controls_AppliedNotice"), "SecondaryText"));
     }
 
     /// <summary>A warning line (orange glyph and text).</summary>
@@ -347,9 +347,9 @@ public static class JobUI
     /// <summary>A − value + stepper for small integers.</summary>
     public static StackPanel Stepper(string label, int value, int min, int max, Action<int> changed)
     {
-        var minus = Icon("\uE738", $"Fewer {label.ToLowerInvariant()}", () => changed(Math.Max(min, value - 1)), value > min, 24);
-        var plus = Icon("\uE710", $"More {label.ToLowerInvariant()}", () => changed(Math.Min(max, value + 1)), value < max, 24);
-        var t = Text($"{label} {value.ToString(CultureInfo.InvariantCulture)}", "NumberText");
+        var minus = Icon("\uE738", Loc.F("Jobs_Controls_StepperFewer", label.ToLowerInvariant()), () => changed(Math.Max(min, value - 1)), value > min, 24);
+        var plus = Icon("\uE710", Loc.F("Jobs_Controls_StepperMore", label.ToLowerInvariant()), () => changed(Math.Min(max, value + 1)), value < max, 24);
+        var t = Text(Loc.F("Jobs_Controls_StepperValue", label, value.ToString(CultureInfo.InvariantCulture)), "NumberText");
         t.MinWidth = 62;
         return Row(2, t, minus, plus);
     }
@@ -478,7 +478,7 @@ public sealed partial class Sparkline : Grid
         Children.Add(labels);
         _canvas.SizeChanged += (_, _) => Draw();
         ActualThemeChanged += (_, _) => Draw();
-        AutomationProperties.SetName(this, "Merit by iteration");
+        AutomationProperties.SetName(this, Loc.S("Jobs_Controls_MeritByIteration"));
     }
 
     public IReadOnlyList<double> Values

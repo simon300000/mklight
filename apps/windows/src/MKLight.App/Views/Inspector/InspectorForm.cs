@@ -4,6 +4,7 @@ using Microsoft.UI.Xaml.Controls.Primitives;
 using Microsoft.UI.Xaml.Input;
 using Microsoft.UI.Xaml.Markup;
 using Microsoft.UI.Xaml.Media;
+using MKLight.App.Support;
 using MKLight.App.ViewModels;
 using Windows.UI;
 
@@ -281,7 +282,7 @@ sealed record NumberRow(string Key, string Title, double? Value, Action<double> 
         view.Box.Set(Value, Owner, Parse, Commit, ctx.Reject);
         AutomationName(view.Box.Box, Title);
         view.Solve.Visibility = Solve is null ? Visibility.Collapsed : Visibility.Visible;
-        SetHelp(view.Solve, Solve is null ? null : $"Controlled by a {Solve} solve");
+        SetHelp(view.Solve, Solve is null ? null : Loc.F("Lens_Form_SolveBadge", Solve));
         view.VariableSpec = Variable;
         view.Variable.Visibility = Variable is null ? Visibility.Collapsed : Visibility.Visible;
         if (Variable is { } v)
@@ -290,9 +291,8 @@ sealed record NumberRow(string Key, string Title, double? Value, Action<double> 
             var refused = v.Solve is not null && !v.IsOn;
             view.Variable.Opacity = refused ? 0.45 : 1;
             SetHelp(view.Variable, v.Solve is { } s
-                ? v.IsOn ? $"Set by a solve ({s}): the optimizer leaves this variable out. Click to remove it."
-                         : $"Set by a solve ({s}), so it cannot be a variable: the optimizer applies solves first. Remove the solve to vary it."
-                : v.IsOn ? "Variable: the optimizer may change it. Click to fix it." : "Fixed. Click to make it a variable.");
+                ? v.IsOn ? Loc.F("Lens_Form_VariableSolvedOn", s) : Loc.F("Lens_Form_VariableSolvedOff", s)
+                : v.IsOn ? Loc.S("Lens_Form_VariableOn") : Loc.S("Lens_Form_VariableOff"));
         }
         view.TrailingSpec = Trailing;
         view.Trailing.Visibility = Trailing is null ? Visibility.Collapsed : Visibility.Visible;

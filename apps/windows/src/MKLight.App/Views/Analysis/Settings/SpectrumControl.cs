@@ -92,11 +92,11 @@ public sealed partial class SpectrumControl : UserControl
         var setting = Setting;
         // The kind, then its sampling, in one grid so the labels line up.
         var grid = FormGrid();
-        AddRow(grid, "Spectrum", KindMenu(setting));
+        AddRow(grid, Loc.S("Analysis_Spectrum_Label"), KindMenu(setting));
         _root.Children.Add(grid);
         if (setting is null)
         {
-            var t = Label("A spectrum this control cannot edit: " + (_value?.ToJsonString() ?? "null"), style: "CaptionText");
+            var t = Label(Loc.F("Analysis_Spectrum_CannotEdit", _value?.ToJsonString() ?? "null"), style: "CaptionText");
             t.TextWrapping = TextWrapping.Wrap;
             t.MaxLines = 3;
             _root.Children.Add(t);
@@ -132,12 +132,12 @@ public sealed partial class SpectrumControl : UserControl
         menu.Items.Add(KindItem(SpectrumKind.Scotopic, "\uE708"));
         menu.Items.Add(KindItem(SpectrumKind.Blackbody, "\uEA80", "…"));
         menu.Items.Add(KindItem(SpectrumKind.Explicit, "\uE9E9"));
-        var csv = new MenuFlyoutItem { Text = "Sensor Response from CSV…", Icon = new FontIcon { Glyph = "\uE722" } };
+        var csv = new MenuFlyoutItem { Text = Loc.S("Analysis_Spectrum_FromCsv"), Icon = new FontIcon { Glyph = "\uE722" } };
         csv.Click += async (_, _) => await ImportAsync();
         menu.Items.Add(csv);
-        var title = setting is null ? "Custom" : SpectrumSetting.Title(setting.Kind);
-        var button = Menu(title, menu, "The wavelengths this analysis runs with: the design's, or a spectrum sampled for this run only.");
-        Microsoft.UI.Xaml.Automation.AutomationProperties.SetName(button, "Spectrum");
+        var title = setting is null ? Loc.S("Analysis_Spectrum_Custom") : SpectrumSetting.Title(setting.Kind);
+        var button = Menu(title, menu, Loc.S("Analysis_Spectrum_MenuHelp"));
+        Microsoft.UI.Xaml.Automation.AutomationProperties.SetName(button, Loc.S("Analysis_Spectrum_Label"));
         return button;
     }
 
@@ -179,10 +179,10 @@ public sealed partial class SpectrumControl : UserControl
             case SpectrumKind.Sensor:
                 var summary = Label(TableSummary(s.List), style: "SecondaryNumberText");
                 summary.FontSize = 12;
-                var import = new Button { Content = "Import CSV…", FontSize = 12, MinHeight = 26, Padding = new Thickness(10, 2, 10, 3), CornerRadius = new CornerRadius(13) };
-                ToolTipService.SetToolTip(import, "Two columns, wavelength (µm or nm) and response; a header line is optional.");
+                var import = new Button { Content = Loc.S("Analysis_Spectrum_ImportCsv"), FontSize = 12, MinHeight = 26, Padding = new Thickness(10, 2, 10, 3), CornerRadius = new CornerRadius(13) };
+                ToolTipService.SetToolTip(import, Loc.S("Analysis_Spectrum_ImportCsvHelp"));
                 import.Click += async (_, _) => await ImportAsync();
-                AddRow(g, "Response", Row(summary, import));
+                AddRow(g, Loc.S("Analysis_Spectrum_Response"), Row(summary, import));
                 SamplingRows(g, s);
                 return _report is { } r ? ImportReport(r) : null;
             default:
@@ -230,7 +230,7 @@ public sealed partial class SpectrumControl : UserControl
         var sampling = s.Sampling ?? SpectralSampling.Default;
         if (s.Kind == SpectrumKind.Blackbody)
         {
-            var row = Row(Number(s.TemperatureK, 64, "Temperature in kelvin", v => Write(s with { TemperatureK = v })), Label("K"));
+            var row = Row(Number(s.TemperatureK, 64, Loc.S("Analysis_Spectrum_TemperatureName"), v => Write(s with { TemperatureK = v })), Label("K"));
             foreach (var p in SpectrumSetting.BlackbodyPresets)
             {
                 var b = new Button
@@ -239,28 +239,28 @@ public sealed partial class SpectrumControl : UserControl
                     CornerRadius = new CornerRadius(12), IsEnabled = p != s.TemperatureK, Margin = new Thickness(p == SpectrumSetting.BlackbodyPresets[0] ? 6 : 0, 0, 0, 0),
                 };
                 Microsoft.UI.Xaml.Documents.Typography.SetNumeralAlignment(b, FontNumeralAlignment.Tabular);
-                ToolTipService.SetToolTip(b, p == 5500 ? "Daylight, 5500 K" : "Tungsten halogen, 3200 K");
+                ToolTipService.SetToolTip(b, Loc.S(p == 5500 ? "Analysis_Spectrum_Daylight" : "Analysis_Spectrum_Tungsten"));
                 var temperature = p;
                 b.Click += (_, _) => Write(s with { TemperatureK = temperature });
                 row.Children.Add(b);
             }
-            AddRow(g, "Temperature", row);
+            AddRow(g, Loc.S("Analysis_Spectrum_Temperature"), row);
         }
         var spacing = new ComboBox { FontSize = 12, MinHeight = 28, MinWidth = 0, Padding = new Thickness(8, 3, 6, 4) };
         foreach (var sp in new[] { SamplingSpacing.EqualWeight, SamplingSpacing.Uniform }) spacing.Items.Add(SpectralSampling.SpacingTitle(sp));
         spacing.SelectedIndex = sampling.Spacing == SamplingSpacing.EqualWeight ? 0 : 1;
         spacing.SelectionChanged += (_, _) => Write(s.WithSampling(sampling with { Spacing = spacing.SelectedIndex == 1 ? SamplingSpacing.Uniform : SamplingSpacing.EqualWeight }));
-        ToolTipService.SetToolTip(spacing, "Equal energy: bins of equal energy, each sample at its centroid. Uniform: evenly spaced samples weighted by their energy.");
-        AddRow(g, "Samples", Row(
-            Number(sampling.Samples, 52, "Number of samples", v => Write(s.WithSampling(sampling with
+        ToolTipService.SetToolTip(spacing, Loc.S("Analysis_Spectrum_SpacingHelp"));
+        AddRow(g, Loc.S("Analysis_Spectrum_Samples"), Row(
+            Number(sampling.Samples, 52, Loc.S("Analysis_Spectrum_SamplesName"), v => Write(s.WithSampling(sampling with
             {
                 Samples = (int)Math.Clamp(v, SpectralSampling.MinSamples, SpectralSampling.MaxSamples),
             })), integer: true),
             spacing));
-        AddRow(g, "Range", Row(
-            Number(sampling.LowerUm, 64, "Shortest wavelength in micrometres", v => Write(s.WithSampling(sampling with { LowerUm = v }))),
+        AddRow(g, Loc.S("Analysis_Spectrum_Range"), Row(
+            Number(sampling.LowerUm, 64, Loc.S("Analysis_Spectrum_LowerName"), v => Write(s.WithSampling(sampling with { LowerUm = v }))),
             Label("–"),
-            Number(sampling.UpperUm, 64, "Longest wavelength in micrometres", v => Write(s.WithSampling(sampling with { UpperUm = v }))),
+            Number(sampling.UpperUm, 64, Loc.S("Analysis_Spectrum_UpperName"), v => Write(s.WithSampling(sampling with { UpperUm = v }))),
             Label("µm")));
     }
 
@@ -277,7 +277,7 @@ public sealed partial class SpectrumControl : UserControl
         }
         g.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
         var h1 = Label("λ (µm)", style: "CaptionText");
-        var h2 = Label("Weight", style: "CaptionText");
+        var h2 = Label(Loc.S("Analysis_Spectrum_Weight"), style: "CaptionText");
         h1.HorizontalAlignment = h2.HorizontalAlignment = HorizontalAlignment.Right;
         Cell(h1, 0, 0);
         Cell(h2, 0, 1);
@@ -286,26 +286,26 @@ public sealed partial class SpectrumControl : UserControl
             var i = k;
             g.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
             var dot = new Microsoft.UI.Xaml.Shapes.Ellipse { Width = 7, Height = 7, Fill = new SolidColorBrush(Palette.Wavelength(list[k].Um, dark)), VerticalAlignment = VerticalAlignment.Center };
-            var um = Number(list[k].Um, 70, $"Wavelength {k + 1} in micrometres", v => Write(new(SpectrumKind.Explicit, Samples: Replace(list, i, list[i] with { Um = v }))));
-            var weight = Number(list[k].Weight, 64, $"Weight of wavelength {k + 1}", v => Write(new(SpectrumKind.Explicit, Samples: Replace(list, i, list[i] with { Weight = v }))));
+            var um = Number(list[k].Um, 70, Loc.F("Analysis_Spectrum_WavelengthName", k + 1), v => Write(new(SpectrumKind.Explicit, Samples: Replace(list, i, list[i] with { Um = v }))));
+            var weight = Number(list[k].Weight, 64, Loc.F("Analysis_Spectrum_WeightName", k + 1), v => Write(new(SpectrumKind.Explicit, Samples: Replace(list, i, list[i] with { Weight = v }))));
             var lambda = Row(dot, um);
             lambda.HorizontalAlignment = HorizontalAlignment.Right;
             Cell(lambda, k + 1, 0);
             Cell(weight, k + 1, 1);
             var remove = new Button { Content = new FontIcon { Glyph = "\uE738", FontSize = 11 }, Style = (Style)Application.Current.Resources["CircleButton"], Width = 24, Height = 24, IsEnabled = list.Count > 1 };
-            ToolTipService.SetToolTip(remove, "Remove this wavelength");
-            Microsoft.UI.Xaml.Automation.AutomationProperties.SetName(remove, $"Remove wavelength {k + 1}");
+            ToolTipService.SetToolTip(remove, Loc.S("Analysis_Spectrum_RemoveTip"));
+            Microsoft.UI.Xaml.Automation.AutomationProperties.SetName(remove, Loc.F("Analysis_Spectrum_RemoveName", k + 1));
             remove.Click += (_, _) => Write(new(SpectrumKind.Explicit, Samples: list.Where((_, j) => j != i).ToList()));
             Cell(remove, k + 1, 2);
         }
-        var add = LinkButton("\uE710", "Add", () =>
+        var add = LinkButton("\uE710", Loc.S("Analysis_Spectrum_Add"), () =>
         {
             var last = list.Count > 0 ? list[^1].Um : 0.55;
             Write(new(SpectrumKind.Explicit, Samples: [.. list, new SpectrumSample(Math.Round((last + 0.05) * 10_000) / 10_000, 1)]));
         });
-        var design = LinkButton(null, "Design Wavelengths", () => Write(new(SpectrumKind.Explicit, Samples: _system.ToList())));
+        var design = LinkButton(null, Loc.S("Analysis_Spectrum_DesignWavelengths"), () => Write(new(SpectrumKind.Explicit, Samples: _system.ToList())));
         design.IsEnabled = _system.Count > 0 && !_system.SequenceEqual(list);
-        ToolTipService.SetToolTip(design, "Start again from the design's wavelengths and weights");
+        ToolTipService.SetToolTip(design, Loc.S("Analysis_Spectrum_DesignWavelengthsTip"));
         var p = new StackPanel { Spacing = 4 };
         p.Children.Add(g);
         p.Children.Add(Row(add, design));
@@ -330,23 +330,24 @@ public sealed partial class SpectrumControl : UserControl
     }
 
     static string TableSummary(IReadOnlyList<SpectrumSample> t) =>
-        t.Count == 0 ? "No table" : string.Create(CultureInfo.InvariantCulture, $"{t.Count} rows · {t[0].Um:0.000}–{t[^1].Um:0.000} µm");
+        t.Count == 0 ? Loc.S("Analysis_Spectrum_NoTable")
+            : Loc.F("Analysis_Spectrum_TableSummary", t.Count, t[0].Um.ToString("0.000", CultureInfo.InvariantCulture), t[^1].Um.ToString("0.000", CultureInfo.InvariantCulture));
 
     UIElement ImportReport(SpectrumCsv r)
     {
         var p = new StackPanel { Spacing = 2 };
         if (r.Table.Count > 0)
-            p.Children.Add(Label($"Imported {r.Table.Count.ToString(CultureInfo.InvariantCulture)} rows in {r.Unit}" + (r.Header is null ? "" : ", header skipped"), style: "CaptionText"));
-        if (!r.IsUsable && r.BadRows.Count == 0) p.Children.Add(Warning("The file has no table of at least two rows."));
+            p.Children.Add(Label(Loc.F(r.Header is null ? "Analysis_Spectrum_Imported" : "Analysis_Spectrum_ImportedHeader", r.Table.Count, r.Unit), style: "CaptionText"));
+        if (!r.IsUsable && r.BadRows.Count == 0) p.Children.Add(Warning(Loc.S("Analysis_Spectrum_NoTableRows")));
         if (r.BadRows.Count == 0) return p;
         var lines = new StackPanel { Spacing = 1 };
         foreach (var b in r.BadRows.Take(20))
-            lines.Children.Add(Label(b.Line == 0 ? $"{b.Text}: {b.Reason}" : $"Line {b.Line.ToString(CultureInfo.InvariantCulture)}: {b.Reason} — {b.Text}", style: "CaptionText"));
-        if (r.BadRows.Count > 20) lines.Children.Add(Label($"… and {(r.BadRows.Count - 20).ToString(CultureInfo.InvariantCulture)} more", style: "CaptionText"));
+            lines.Children.Add(Label(b.Line == 0 ? Loc.F("Analysis_Spectrum_FileProblem", b.Text, b.Reason) : Loc.F("Analysis_Spectrum_LineProblem", b.Line, b.Reason, b.Text), style: "CaptionText"));
+        if (r.BadRows.Count > 20) lines.Children.Add(Label(Loc.F("Analysis_Spectrum_MoreProblems", r.BadRows.Count - 20), style: "CaptionText"));
         var n = r.BadRows.Count;
         var expander = new Expander
         {
-            Header = Warning(r.Table.Count == 0 && r.BadRows[0].Line == 0 ? "The file could not be read" : $"{n.ToString(CultureInfo.InvariantCulture)} row{(n == 1 ? "" : "s")} skipped"),
+            Header = Warning(r.Table.Count == 0 && r.BadRows[0].Line == 0 ? Loc.S("Analysis_Spectrum_Unreadable") : n == 1 ? Loc.S("Analysis_Spectrum_Skipped_One") : Loc.F("Analysis_Spectrum_Skipped_Many", n)),
             Content = lines, Padding = new Thickness(12, 4, 8, 4), MinHeight = 0, HorizontalAlignment = HorizontalAlignment.Stretch,
         };
         p.Children.Add(expander);

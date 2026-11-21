@@ -8,6 +8,7 @@ using Microsoft.UI.Xaml.Shapes;
 using MKLight.App.Plotting;
 using MKLight.App.Support;
 using MKLight.App.Views.Analysis.Results.Readers;
+using MKLight.Model;
 using Windows.Foundation;
 using Windows.UI;
 
@@ -39,8 +40,8 @@ public sealed partial class GlassMapView : UserControl, IViewOptions
         _d = d;
         IsTabStop = false;
         _canvas = new PlotCanvas(Draw);
-        var plane = new Choice("Plane", ["n_d", "P_g,F"], menuBelow: 0);
-        ToolTipService.SetToolTip(plane, "Refractive index nd or partial dispersion Pg,F against Abbe number Vd");
+        var plane = new Choice(Loc.S("Results_GlassMap_Plane"), ["n_d", "P_g,F"], menuBelow: 0);
+        ToolTipService.SetToolTip(plane, Loc.S("Results_GlassMap_PlaneToolTip"));
         plane.Changed += k => { _pgf = k == 1; _canvas.Invalidate(); };
         _opts["pgf"] = () => plane.Select(1);
         var top = new FlowPanel { Spacing = 12, LineSpacing = 4 };
@@ -48,8 +49,8 @@ public sealed partial class GlassMapView : UserControl, IViewOptions
         var catalogs = d.Catalogs.ToList();
         if (catalogs.Count > 1)
         {
-            var c = new ComboBox { ItemsSource = catalogs.Prepend("All catalogs").ToList(), SelectedIndex = 0, FontSize = 12, MinHeight = 26, MinWidth = 0, Padding = new Thickness(8, 2, 6, 3) };
-            AutomationProperties.SetName(c, "Catalog");
+            var c = new ComboBox { ItemsSource = catalogs.Prepend(Loc.S("Results_GlassMap_AllCatalogs")).ToList(), SelectedIndex = 0, FontSize = 12, MinHeight = 26, MinWidth = 0, Padding = new Thickness(8, 2, 6, 3) };
+            AutomationProperties.SetName(c, Loc.S("Results_GlassMap_Catalog"));
             c.SelectionChanged += (_, _) => { _catalog = c.SelectedIndex <= 0 ? null : catalogs[c.SelectedIndex - 1]; Side(); _canvas.Invalidate(); };
             top.Children.Add(c);
         }
@@ -58,9 +59,11 @@ public sealed partial class GlassMapView : UserControl, IViewOptions
         body.Children.Add(_canvas);
         body.Children.Add(Kit.Page(_side));
         Content = FieldMapViews.Shell(top, body);
-        AutomationProperties.SetName(_canvas, $"Glass map, {d.Glasses.Count(g => g.Kind == "catalog")} glasses; in the design: " +
-            string.Join("; ", d.Glasses.Where(g => g.InDesign).Select(g => $"{g.Name} {g.SurfaceLabel}"))
-            + (d.Omitted.Count > 0 ? $"; {d.Omitted.Count} glasses not on the map" : ""));
+        var inDesign = string.Join("; ", d.Glasses.Where(g => g.InDesign).Select(g => $"{g.Name} {g.SurfaceLabel}"));
+        var catalogCount = d.Glasses.Count(g => g.Kind == "catalog");
+        AutomationProperties.SetName(_canvas, d.Omitted.Count > 0
+            ? Loc.F("Results_GlassMap_NameOmitted", catalogCount, inDesign, d.Omitted.Count)
+            : Loc.F("Results_GlassMap_Name", catalogCount, inDesign));
         _canvas.PointerMoved += (_, e) => { _hover = e.GetCurrentPoint(_canvas).Position; _canvas.Invalidate(); };
         _canvas.PointerExited += (_, _) => { _hover = null; _canvas.Invalidate(); };
         _canvas.PointerPressed += (_, e) =>
@@ -86,13 +89,13 @@ public sealed partial class GlassMapView : UserControl, IViewOptions
         var statuses = _d.Statuses;
         if (statuses.Count == 0) statuses = [GlassStatus.Unknown];
         foreach (var s in statuses)
-            _legend.Children.Add(Kit.LegendItem(Kit.Dot(StatusColor(s, dark), 7, s.Hollow()), statuses.Count == 1 && s == GlassStatus.Unknown ? "Catalog glass" : s.Label()));
+            _legend.Children.Add(Kit.LegendItem(Kit.Dot(StatusColor(s, dark), 7, s.Hollow()), statuses.Count == 1 && s == GlassStatus.Unknown ? Loc.S("Results_GlassMap_CatalogGlass") : s.Label()));
         var ring = new Grid { Width = 13, Height = 13, VerticalAlignment = VerticalAlignment.Center };
         ring.Children.Add(new Ellipse { Width = 8, Height = 8, Fill = new SolidColorBrush(StatusColor(GlassStatus.Standard, dark)) });
         ring.Children.Add(new Ellipse { Width = 13, Height = 13, Stroke = new SolidColorBrush(Kit.Accent(this)), StrokeThickness = 2 });
-        _legend.Children.Add(Kit.LegendItem(ring, "In the design"));
+        _legend.Children.Add(Kit.LegendItem(ring, Loc.S("Results_GlassMap_InDesign")));
         if (_d.Glasses.Any(g => g.Kind == "offset"))
-            _legend.Children.Add(Kit.LegendItem(new Line { X1 = 0, X2 = 14, Y1 = 5, Y2 = 5, Width = 14, Height = 10, Stroke = new SolidColorBrush(Kit.Accent(this)), StrokeThickness = 1.2, StrokeDashArray = Dash(2, 2), VerticalAlignment = VerticalAlignment.Center }, "Melt offset"));
+            _legend.Children.Add(Kit.LegendItem(new Line { X1 = 0, X2 = 14, Y1 = 5, Y2 = 5, Width = 14, Height = 10, Stroke = new SolidColorBrush(Kit.Accent(this)), StrokeThickness = 1.2, StrokeDashArray = Dash(2, 2), VerticalAlignment = VerticalAlignment.Center }, Loc.S("Results_GlassMap_MeltOffset")));
     }
 
     void Side()
@@ -104,26 +107,26 @@ public sealed partial class GlassMapView : UserControl, IViewOptions
             Kit.ThemeCard(card, ActualTheme);
             p.Children.Add(card);
         }
-        else p.Children.Add(Kit.Caption("Click a glass to inspect it.", wrap: true));
+        else p.Children.Add(Kit.Caption(Loc.S("Results_GlassMap_ClickHint"), wrap: true));
         var design = _d.Glasses.Where(x => x.InDesign).ToList();
         var designOmitted = _d.Omitted.Where(o => o.InDesign).ToList();
         if (design.Count + designOmitted.Count > 0)
         {
             var list = new StackPanel { Spacing = 3 };
-            list.Children.Add(Kit.Text("In the design", "PanelTitleText", 11));
+            list.Children.Add(Kit.Text(Loc.S("Results_GlassMap_InDesign"), "PanelTitleText", 11));
             foreach (var x in design)
             {
                 var id = x.Id;
                 var b = ListRow(x.DisplayName, x.SurfaceLabel, () => { _selected = id; Side(); _canvas.Invalidate(); });
-                AutomationProperties.SetName(b, $"{x.Name}, surfaces {x.SurfaceLabel}");
+                AutomationProperties.SetName(b, Loc.F("Results_GlassMap_RowName", x.Name, x.SurfaceLabel));
                 list.Children.Add(b);
             }
             // A design glass without n_d (an infrared glass) has no point: its row says so, the reason in the tooltip.
             foreach (var o in designOmitted)
             {
-                var row = ListRow(o.Name, o.SurfaceLabel + "   not on the map", null);
-                ToolTipService.SetToolTip(row, o.Reason);
-                AutomationProperties.SetName(row, $"{o.Name}, surfaces {o.SurfaceLabel}, not on the map: {o.Reason}");
+                var row = ListRow(o.Name, Loc.F("Results_GlassMap_RowNotOnMap", o.SurfaceLabel), null);
+                ToolTipService.SetToolTip(row, EngineText.T(o.Reason));
+                AutomationProperties.SetName(row, Loc.F("Results_GlassMap_RowNameOmitted", o.Name, o.SurfaceLabel, EngineText.T(o.Reason)));
                 list.Children.Add(row);
             }
             p.Children.Add(list);
@@ -133,21 +136,21 @@ public sealed partial class GlassMapView : UserControl, IViewOptions
         if (others.Count > 0)
         {
             var list = new StackPanel { Spacing = 3 };
-            list.Children.Add(Kit.Text($"Not on the map ({others.Count})", "PanelTitleText", 11));
+            list.Children.Add(Kit.Text(Loc.F("Results_GlassMap_NotOnMap", others.Count), "PanelTitleText", 11));
             foreach (var group in others.GroupBy(o => o.Reason))
             {
-                list.Children.Add(Kit.Caption(group.Key, wrap: true));
+                list.Children.Add(Kit.Caption(EngineText.T(group.Key), wrap: true));
                 var rows = group.ToList();
                 var shown = _allOmitted || rows.Count <= OmittedRows ? rows : rows.Take(OmittedRows - 1).ToList();
                 foreach (var o in shown)
                 {
                     var row = ListRow(o.Name, o.Catalog ?? "", null);
-                    AutomationProperties.SetName(row, $"{o.Name}, {o.Catalog}, not on the map: {o.Reason}");
+                    AutomationProperties.SetName(row, Loc.F("Results_GlassMap_OtherRowName", o.Name, o.Catalog, EngineText.T(o.Reason)));
                     list.Children.Add(row);
                 }
                 if (shown.Count < rows.Count)
                 {
-                    var more = new HyperlinkButton { Content = $"Show all {rows.Count}", FontSize = 12, Padding = new Thickness(6, 1, 6, 2) };
+                    var more = new HyperlinkButton { Content = Loc.F("Results_GlassMap_ShowAll", rows.Count), FontSize = 12, Padding = new Thickness(6, 1, 6, 2) };
                     more.Click += (_, _) => { _allOmitted = true; Side(); };
                     list.Children.Add(more);
                 }
@@ -181,14 +184,14 @@ public sealed partial class GlassMapView : UserControl, IViewOptions
     {
         var p = new StackPanel { Spacing = compact ? 1 : 4 };
         p.Children.Add(Kit.Text(g.DisplayName, "PanelTitleText", compact ? 12 : 14));
-        var sub = string.Join(" · ", new[] { g.Catalog ?? (g.Kind == "model" ? "Model glass" : ""), g.Kind == "offset" ? "melt offset" : "", g.Status == GlassStatus.Unknown && g.OtherStatus is null ? "" : g.StatusLabel }.Where(s => s.Length > 0));
+        var sub = string.Join(" · ", new[] { g.Catalog ?? (g.Kind == "model" ? Loc.S("Results_GlassMap_ModelGlass") : ""), g.Kind == "offset" ? Loc.S("Results_GlassMap_MeltOffsetLower") : "", g.Status == GlassStatus.Unknown && g.OtherStatus is null ? "" : g.StatusLabel }.Where(s => s.Length > 0));
         if (sub.Length > 0) p.Children.Add(Kit.Caption(sub));
         var rows = new List<(string, string)> { ("n_d", g.HasNd ? Fmt.Fixed(g.Nd, 5) : "—"), ("V_d", g.HasNd ? Fmt.Fixed(g.Vd, 2) : "—"), ("P_g,F", double.IsFinite(g.Pgf) ? Fmt.Fixed(g.Pgf, 4) : "—") };
         if (!compact)
         {
             rows.Add(("ΔP_g,F", double.IsFinite(g.Pgf) ? Fmt.Signed(g.DeltaPgf, 4).Trim() : "—"));
-            if (g.Surfaces.Count > 0) rows.Add(("Surfaces", g.SurfaceLabel));
-            if (g.ExcludeSubstitution == true) rows.Add(("Substitution", "Excluded"));
+            if (g.Surfaces.Count > 0) rows.Add((Loc.S("Results_GlassMap_Surfaces"), g.SurfaceLabel));
+            if (g.ExcludeSubstitution == true) rows.Add((Loc.S("Results_GlassMap_Substitution"), Loc.S("Results_GlassMap_Excluded")));
         }
         p.Children.Add(Kit.KeyValues(rows, compact ? 11 : 12, subscripts: true));
         return p;
@@ -221,7 +224,7 @@ public sealed partial class GlassMapView : UserControl, IViewOptions
         var f = new Frame
         {
             XMin = vlo - vpad, XMax = vhi + vpad, YMin = ylo - ypad, YMax = yhi + ypad, ReverseX = true, XTickSpacing = 50, YTickSpacing = 45,
-            XTitle = "Abbe number V_d", YTitle = _pgf ? "Partial dispersion P_g,F" : "Refractive index n_d",
+            XTitle = Loc.S("Results_GlassMap_AxisAbbe"), YTitle = _pgf ? Loc.S("Results_GlassMap_AxisPgf") : Loc.S("Results_GlassMap_AxisNd"),
         };
         _frame = f;
         var r = f.Draw(ds, f.Inside(ds, new Rect(0, 0, size.Width, size.Height)), style);

@@ -35,4 +35,9 @@
   <ItemGroup><Compile Include="..\..\src\MKLight.App\Windows\ImportReport.cs;..\..\src\MKLight.App\Windows\DocumentFiles.cs;..\..\src\MKLight.App\Support\LaunchOptions.cs" Link="Documents\App\%(Filename)%(Extension)" /></ItemGroup>
   <ItemGroup><Compile Include="..\..\src\MKLight.App\Views\Analysis\AnalysisPaneChrome.cs" Link="Panels\App\%(Filename)%(Extension)" /></ItemGroup>
   <ItemGroup><Compile Include="..\..\src\MKLight.App\ViewModels\GpuPreparationMonitor.cs;..\..\src\MKLight.App\Views\StatusCapsuleModel.cs;..\..\src\MKLight.App\Views\Analysis\ResultData.cs;..\..\src\MKLight.App\Views\Analysis\Results\Readers\*.cs" Link="Status\App\%(Filename)%(Extension)" /></ItemGroup>
+  <ItemGroup>
+    <!-- UI text lookup and language choice (Support/Loc.cs reads the English resw beside the tests). -->
+    <Compile Include="..\..\src\MKLight.App\Support\Loc.cs;..\..\src\MKLight.App\Support\Languages.cs" Link="Localization\App\%(Filename)%(Extension)" />
+    <None Include="..\..\src\MKLight.App\Strings\**\*.resw" Link="Strings\%(RecursiveDir)%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
 </Project>

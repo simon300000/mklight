@@ -4,6 +4,7 @@ using Microsoft.Graphics.Canvas.Geometry;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
 using MKLight.App.Plotting;
+using MKLight.App.Support;
 using MKLight.App.Views.Analysis.Results.Readers;
 using Windows.Foundation;
 
@@ -69,8 +70,9 @@ public sealed partial class LineChartView : UserControl, IViewOptions
     void AutomationProperties()
     {
         var titles = _model.Panels.Select(p => p.Title ?? p.YTitle).Distinct();
-        var who = _design is null ? "" : ReferenceEquals(_model, _design) ? " (the design)" : " (the candidate)";
-        Microsoft.UI.Xaml.Automation.AutomationProperties.SetName(_canvas, "Plot" + who + ": " + string.Join(", ", titles));
+        var list = string.Join(", ", titles);
+        Microsoft.UI.Xaml.Automation.AutomationProperties.SetName(_canvas, _design is null ? Loc.F("Results_Plot_Name", list)
+            : Loc.F(ReferenceEquals(_model, _design) ? "Results_Plot_NameDesign" : "Results_Plot_NameCandidate", list));
         Microsoft.UI.Xaml.Automation.AutomationProperties.SetHelpText(_canvas, ChartSummary.Describe(_model));
     }
 

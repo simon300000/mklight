@@ -1,5 +1,6 @@
 using System.Globalization;
 using System.Text.Json.Nodes;
+using MKLight.App.Support;
 using MKLight.App.Views.Analysis.Results.Readers;
 
 namespace MKLight.App.Views.Analysis.Settings;
@@ -7,8 +8,12 @@ namespace MKLight.App.Views.Analysis.Settings;
 /// <summary>The image simulation's built-in source patterns (<c>{"kind": "pattern", "pattern": id}</c>).</summary>
 public static class ImageSourcePatterns
 {
-    public static readonly IReadOnlyList<(string Id, string Title)> All =
-        [("grid", "Grid"), ("siemens_star", "Siemens star"), ("slanted_edge", "Slanted edge"), ("text_chart", "Text chart")];
+    /// <summary>The patterns by id, with their titles in the UI language.</summary>
+    public static IReadOnlyList<(string Id, string Title)> All =>
+    [
+        ("grid", Loc.S("Analysis_ImageSim_PatternGrid")), ("siemens_star", Loc.S("Analysis_ImageSim_PatternSiemensStar")),
+        ("slanted_edge", Loc.S("Analysis_ImageSim_PatternSlantedEdge")), ("text_chart", Loc.S("Analysis_ImageSim_PatternTextChart")),
+    ];
 
     public static string Title(string id) => All.FirstOrDefault(p => p.Id == id).Title ?? id;
 
@@ -93,8 +98,8 @@ public static class ImageSimulationSettings
     /// <summary>"full field", "10 %", "2 %".</summary>
     public static string ExtentTitle(double e)
     {
-        if (e >= 1) return "full square";
-        if (Math.Abs(e - FullExtent) < 1e-6) return "full field";
+        if (e >= 1) return Loc.S("Analysis_ImageSim_FullSquare");
+        if (Math.Abs(e - FullExtent) < 1e-6) return Loc.S("Analysis_ImageSim_FullField");
         return Fmt.G4(e * 100) + " %";
     }
 
@@ -108,7 +113,7 @@ public static class ImageSimulationSettings
         if (mmPerExtent is double k && size > 0)
         {
             var width = 2 * k * e;
-            t += " · " + Fmt.Length(width) + " wide, pixel " + Fmt.Length(width / size);
+            t = Loc.F("Analysis_ImageSim_ExtentLabel", t, Fmt.Length(width), Fmt.Length(width / size));
         }
         return t;
     }
@@ -126,7 +131,7 @@ public static class ImageSimulationSettings
     /// <summary>The axis and the design's field points (normalised by the largest radial field), each listed once.</summary>
     public static IReadOnlyList<FieldPoint> FieldPoints(IEnumerable<(double X, double Y)>? fields)
     {
-        var out_ = new List<FieldPoint> { new("On axis", 0, 0) };
+        var out_ = new List<FieldPoint> { new(Loc.S("Analysis_ImageSim_OnAxisTitle"), 0, 0) };
         var f = fields?.ToList() ?? [];
         var r = f.Count == 0 ? 0 : f.Max(p => Math.Sqrt(p.X * p.X + p.Y * p.Y));
         if (!(r > 0)) return out_;
@@ -134,7 +139,7 @@ public static class ImageSimulationSettings
         {
             double hx = f[k].X / r, hy = f[k].Y / r;
             if (out_.Any(p => Math.Abs(p.X - hx) < 1e-9 && Math.Abs(p.Y - hy) < 1e-9)) continue;
-            out_.Add(new FieldPoint("Field " + (k + 1).ToString(CultureInfo.InvariantCulture) + " " + ImageSimulationData.Coordinates(hx, hy), hx, hy));
+            out_.Add(new FieldPoint(Loc.F("Analysis_ImageSim_FieldPoint", k + 1, ImageSimulationData.Coordinates(hx, hy)), hx, hy));
         }
         return out_;
     }
@@ -142,7 +147,7 @@ public static class ImageSimulationSettings
     /// <summary>"on axis", "Field 3 (0.00, +1.00)" or "(+0.30, −0.45)".</summary>
     public static string CenterTitle((double X, double Y) c, IReadOnlyList<FieldPoint> points)
     {
-        if (c.X == 0 && c.Y == 0) return "on axis";
+        if (c.X == 0 && c.Y == 0) return Loc.S("Analysis_ImageSim_OnAxis");
         var p = points.FirstOrDefault(p => Math.Abs(p.X - c.X) < 1e-4 && Math.Abs(p.Y - c.Y) < 1e-4);
         return p?.Title ?? ImageSimulationData.Coordinates(c.X, c.Y);
     }

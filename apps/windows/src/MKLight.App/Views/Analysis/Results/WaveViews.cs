@@ -5,6 +5,7 @@ using Microsoft.UI.Xaml.Controls;
 using MKLight.App.Plotting;
 using MKLight.App.Support;
 using MKLight.App.Views.Analysis.Results.Readers;
+using MKLight.Model;
 using Windows.Foundation;
 
 namespace MKLight.App.Views.Analysis.Results;
@@ -55,14 +56,13 @@ public sealed partial class PsfView : UserControl, IViewOptions
         _log = log;
         IsTabStop = false;
         _keys = Kit.Caption("", wrap: true);
-        _map = new MapCanvas(() => _plot, "Point spread function");
-        var picker = new ItemPicker("Field", d.Items.Select(i => i.Title).ToList(), k => { _item = k; Rebuild(); });
-        var scale = _scale = new Choice("Color scale", ["Linear", "Log"], 0, menuBelow: 0);
-        ToolTipService.SetToolTip(scale, "Linear intensity, or logarithmic over five decades below the peak (shows the halo and side lobes). "
-            + "A PSF with a Strehl ratio below " + Fmt.G3(PsfData.LogBelowStrehl) + " starts on the log scale.");
+        _map = new MapCanvas(() => _plot, Loc.S("Results_Psf_MapName"));
+        var picker = new ItemPicker(Loc.S("Results_Axis_Field"), d.Items.Select(i => i.Title).ToList(), k => { _item = k; Rebuild(); });
+        var scale = _scale = new Choice(Loc.S("Results_Map_ColorScale"), [Loc.S("Results_Map_Linear"), Loc.S("Results_Map_Log")], 0, menuBelow: 0);
+        ToolTipService.SetToolTip(scale, Loc.F("Results_Psf_ScaleToolTip", Fmt.G3(PsfData.LogBelowStrehl)));
         scale.Changed += k => { if (!_syncing) { _log = k == 1; Rebuild(); } };
-        var zoom = new Choice("Extent", ["Core", "Full"], 0, menuBelow: 0);
-        ToolTipService.SetToolTip(zoom, "The core (the square about the peak holding 95 % of the energy, or every sample above 0.1 % of the peak if that is smaller) or the whole sampling window");
+        var zoom = new Choice(Loc.S("Results_Psf_Extent"), [Loc.S("Results_Psf_ExtentCore"), Loc.S("Results_Psf_ExtentFull")], 0, menuBelow: 0);
+        ToolTipService.SetToolTip(zoom, Loc.S("Results_Psf_ExtentToolTip"));
         zoom.Changed += k => { _full = k == 1; Rebuild(); };
         _opts["log"] = () => scale.Select(1);
         _opts["full"] = () => zoom.Select(1);
@@ -114,21 +114,21 @@ public sealed partial class PsfView : UserControl, IViewOptions
                 var j = (int)Math.Round((f.DataY(p.Y) - g.Y0) / (g.Y1 - g.Y0) * (g.Ny - 1));
                 if (i < 0 || j < 0 || i >= g.Nx || j >= g.Ny) return null;
                 var v = g.Values[j * g.Nx + i];
-                var rel = it.Peak > 0 ? $"  ({Fmt.G3(v / it.Peak)} of peak)" : "";
-                return [(Fmt.Short(v) + rel, true), ($"x {Fmt.Fixed(f.DataX(p.X), 2)}  y {Fmt.Fixed(f.DataY(p.Y), 2)} {micro}".Replace('-', '−'), false)];
+                var value = it.Peak > 0 ? Loc.F("Results_Psf_OfPeak", Fmt.Short(v), Fmt.G3(v / it.Peak)) : Fmt.Short(v);
+                return [(value, true), ($"x {Fmt.Fixed(f.DataX(p.X), 2)}  y {Fmt.Fixed(f.DataY(p.Y), 2)} {micro}".Replace('-', '−'), false)];
             },
         };
         var width = it.Size * it.SpacingMm;
         _keys.Text = string.Join("   ", new[]
         {
-            (auto ? "Log scale: Strehl " : "Strehl ") + Fmt.Fixed(it.Strehl, 3),
-            unitEnergy ? "Peak " + Fmt.Short(it.Peak) : null,
-            Kit.Inv($"{it.Size} × {it.Size} samples {u.Length(it.SpacingMm)} apart"),
-            "window " + u.Length(width),
+            Loc.F(auto ? "Results_Psf_StrehlAuto" : "Results_Psf_Strehl", Fmt.Fixed(it.Strehl, 3)),
+            unitEnergy ? Loc.F("Results_Psf_Peak", Fmt.Short(it.Peak)) : null,
+            Loc.F("Results_Psf_Samples", it.Size, u.Length(it.SpacingMm)),
+            Loc.F("Results_Psf_Window", u.Length(width)),
         }.OfType<string>());
-        _map.SetName($"Point spread function, {it.Title}");
-        _map.SetHelp($"Strehl ratio {Fmt.Fixed(it.Strehl, 3)}, {(log ? "logarithmic" : "linear")} scale, "
-            + $"{(_full ? "whole window" : "core")} {u.Length((shown.X1 - shown.X0) / 1000)} wide, peak {Fmt.Short(it.Peak)}");
+        _map.SetName(Loc.F("Results_Psf_Name", it.Title));
+        _map.SetHelp(Loc.F("Results_Psf_Help", Fmt.Fixed(it.Strehl, 3), Loc.S(log ? "Results_Psf_HelpLogarithmic" : "Results_Psf_HelpLinear"),
+            Loc.S(_full ? "Results_Psf_HelpWholeWindow" : "Results_Psf_HelpCore"), u.Length((shown.X1 - shown.X0) / 1000), Fmt.Short(it.Peak)));
         _map.Invalidate();
     }
 }
@@ -152,8 +152,8 @@ public sealed partial class WavefrontView : UserControl
         _d = d;
         IsTabStop = false;
         _keys = Kit.Caption("");
-        _map = new MapCanvas(() => _plot, "Wavefront map");
-        var picker = new ItemPicker("Field", d.Maps.Select(m => m.Title).ToList(), k => { _item = k; Rebuild(); });
+        _map = new MapCanvas(() => _plot, Loc.S("Results_Wavefront_MapName"));
+        var picker = new ItemPicker(Loc.S("Results_Axis_Field"), d.Maps.Select(m => m.Title).ToList(), k => { _item = k; Rebuild(); });
         var body = new SideBySide { Breakpoint = 520, SideWidth = 190, StackedShare = 0.62, FirstHeight = w => w - 30 };
         body.Children.Add(_map);
         body.Children.Add(_zernike);
@@ -202,12 +202,12 @@ public sealed partial class WavefrontView : UserControl
                 var j = (int)Math.Round((f.DataY(p.Y) - g.Y0) / (g.Y1 - g.Y0) * (g.Ny - 1));
                 if (i < 0 || j < 0 || i >= g.Nx || j >= g.Ny) return null;
                 var v = g.Values[j * g.Nx + i];
-                return [(double.IsFinite(v) ? Fmt.Signed(v, 4).Trim() + " waves" : "Outside the pupil", true),
+                return [(double.IsFinite(v) ? Fmt.Signed(v, 4).Trim() + " waves" : Loc.S("Results_Wavefront_OutsidePupil"), true),
                     ($"Px {Fmt.Fixed(f.DataX(p.X), 2)}  Py {Fmt.Fixed(f.DataY(p.Y), 2)}".Replace('-', '−'), false)];
             },
         };
-        _keys.Text = $"RMS {Fmt.Fixed(m.Rms, 4)} λ   P-V {Fmt.Fixed(m.Pv, 4)} λ   Strehl {Fmt.Fixed(m.Strehl, 3)}";
-        _map.SetName($"Wavefront map, {m.Title}, RMS {Fmt.Fixed(m.Rms, 3)} waves, peak to valley {Fmt.Fixed(m.Pv, 3)} waves");
+        _keys.Text = Loc.F("Results_Wavefront_Keys", Fmt.Fixed(m.Rms, 4), Fmt.Fixed(m.Pv, 4), Fmt.Fixed(m.Strehl, 3));
+        _map.SetName(Loc.F("Results_Wavefront_Name", m.Title, Fmt.Fixed(m.Rms, 3), Fmt.Fixed(m.Pv, 3)));
         _zernike.Content = m.Zernike.Length > 0 ? Zernike(m.Zernike, m.Ordering) : null;
         _map.Invalidate();
     }
@@ -218,11 +218,12 @@ public sealed partial class WavefrontView : UserControl
         g.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
         g.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
         g.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        var names = WavefrontData.FringeNames;
         for (var k = 0; k < c.Length; k++)
         {
             g.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
             var z = Kit.Text(Kit.Inv($"Z{k + 1}"), "SecondaryNumberText", 11);
-            var name = Kit.Text(ordering == "fringe" && k < WavefrontData.FringeNames.Length ? WavefrontData.FringeNames[k] : "", "SecondaryText", 11);
+            var name = Kit.Text(ordering == "fringe" && k < names.Length ? names[k] : "", "SecondaryText", 11);
             var big = Math.Abs(c[k]) >= 0.05;
             var v = Kit.Text(Fmt.Signed(c[k], 4), big ? "NumberText" : "SecondaryNumberText", 11);
             v.HorizontalAlignment = HorizontalAlignment.Right;
@@ -234,7 +235,7 @@ public sealed partial class WavefrontView : UserControl
         var p = new Grid { RowSpacing = 4 };
         p.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
         p.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
-        p.Children.Add(Kit.Text($"Zernike ({GenericData.Title(ordering)}, waves)", "PanelTitleText", 11));
+        p.Children.Add(Kit.Text(Loc.F("Results_Zernike_Header", EngineText.T(GenericData.Title(ordering))), "PanelTitleText", 11));
         var s = Kit.Page(g);
         s.Padding = new Thickness(0, 0, 12, 0);
         Grid.SetRow(s, 1);

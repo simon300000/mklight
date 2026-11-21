@@ -1,4 +1,5 @@
 using System.Globalization;
+using MKLight.App.Support;
 using MKLight.Model;
 
 namespace MKLight.App.ViewModels.Jobs;
@@ -52,8 +53,13 @@ public static class ToleranceHistogram
         bin < 0 || bin >= bins.Count ? [] : [.. r.TrialsWorstFirst.Where(k => BinOfTrial(r, bins, k) == bin)];
 
     /// <summary><c>12 trials at 19.4–19.8 µm</c>.</summary>
-    public static string Title(CriterionDisplay d, Bin b, int count) =>
-        $"{count.ToString(CultureInfo.InvariantCulture)} trial{(count == 1 ? "" : "s")} at {d.Format(b.Low)}–{d.Format(b.High)}{(d.Unit().Length == 0 ? "" : " " + d.Unit())}";
+    public static string Title(CriterionDisplay d, Bin b, int count)
+    {
+        var n = count.ToString(CultureInfo.InvariantCulture);
+        var unit = d.Unit().Length == 0 ? "" : " " + d.Unit();
+        return count == 1 ? Loc.F("Jobs_Tolerance_Views_BinTitle_One", n, d.Format(b.Low), d.Format(b.High), unit)
+            : Loc.F("Jobs_Tolerance_Views_BinTitle_Many", n, d.Format(b.Low), d.Format(b.High), unit);
+    }
 }
 
 /// <summary>The range a compensator used in the sensitivity evaluations against the range allowed (the Mac app's <c>CompensatorStats</c>).</summary>
@@ -87,10 +93,13 @@ public readonly record struct ToleranceCompensatorUsage(double Low, double High,
 }
 
 /// <summary>The tolerances table's groups (the Mac app's <c>ToleranceTableSection.groups</c>).</summary>
-/// <param name="Key"><c>L1</c>, <c>Air after L1</c>, <c>Stop S6</c>: also what collapses.</param>
-/// <param name="Title">The key with the element's glasses, <c>L1 · N-SK16</c>.</param>
+/// <param name="Key"><c>L1</c>, <c>Air after L1</c>, <c>Stop S6</c>, in English: also what collapses.</param>
+/// <param name="Title">The name with the element's glasses, <c>L1 · N-SK16</c>, in the UI language.</param>
 public sealed record ToleranceTableGroup(string Key, string Title, IReadOnlyList<ToleranceRow> Rows)
 {
+    /// <summary>The key in the UI language (<c>Air after L1</c>).</summary>
+    public string Name { get; init; } = Key;
+
     /// <summary>Rows by element in surface order (an air space after its element), rows in their order within a group.</summary>
     public static List<ToleranceTableGroup> Of(IReadOnlyList<ToleranceRow> rows, OpticalSystem system)
     {
@@ -98,10 +107,11 @@ public sealed record ToleranceTableGroup(string Key, string Title, IReadOnlyList
         var order = new List<string>();
         var byKey = new Dictionary<string, List<ToleranceRow>>();
         var sortKey = new Dictionary<string, (int, int)>();
+        var names = new Dictionary<string, string>();
         foreach (var r in rows)
         {
             var t = LensElements.GroupTitle(r, system, lens);
-            if (!byKey.TryGetValue(t, out var list)) { order.Add(t); byKey[t] = list = []; }
+            if (!byKey.TryGetValue(t, out var list)) { order.Add(t); byKey[t] = list = []; names[t] = LensElements.GroupName(r, system, lens); }
             list.Add(r);
             var k = (system.SurfaceIndexOf(r.Surface) ?? int.MaxValue, t.StartsWith("Air", StringComparison.Ordinal) ? 1 : 0);
             sortKey[t] = sortKey.TryGetValue(t, out var old) && old.CompareTo(k) <= 0 ? old : k;
@@ -109,7 +119,7 @@ public sealed record ToleranceTableGroup(string Key, string Title, IReadOnlyList
         return [.. order.OrderBy(t => sortKey[t]).Select(t =>
         {
             var glasses = lens.FirstOrDefault(g => g.Title == t) is { Glasses.Count: > 0 } g ? " · " + string.Join(", ", g.Glasses) : "";
-            return new ToleranceTableGroup(t, t + glasses, byKey[t]);
+            return new ToleranceTableGroup(t, names[t] + glasses, byKey[t]) { Name = names[t] };
         })];
     }
 
@@ -164,14 +174,17 @@ public readonly record struct TolerancePivotChoice(TolerancePivotPlace Place, in
     {
         if (pivot is not { } p) return "?";
         var s = "S" + p.ToString(CultureInfo.InvariantCulture);
-        if (moving.Count > 0 && p == moving[0]) return s + ", first vertex";
-        if (moving.Count > 0 && p == moving[^1]) return s + ", last vertex";
+        if (moving.Count > 0 && p == moving[0]) return Loc.F("Jobs_Tolerance_Views_PivotFirstVertex", s);
+        if (moving.Count > 0 && p == moving[^1]) return Loc.F("Jobs_Tolerance_Views_PivotLastVertex", s);
         return s;
     }
 
     /// <summary><c>S3 S4 S5 move together</c>, <c>S3 moves</c>.</summary>
-    public static string MovingText(IReadOnlyList<int> moving) =>
-        string.Join(" ", moving.Select(i => "S" + i.ToString(CultureInfo.InvariantCulture))) + (moving.Count > 1 ? " move together" : " moves");
+    public static string MovingText(IReadOnlyList<int> moving)
+    {
+        var surfaces = string.Join(" ", moving.Select(i => "S" + i.ToString(CultureInfo.InvariantCulture)));
+        return moving.Count > 1 ? Loc.F("Jobs_Tolerance_Views_MoveTogether", surfaces) : Loc.F("Jobs_Tolerance_Views_Moves", surfaces);
+    }
 }
 
 /// <summary>Names of the exported files.</summary>

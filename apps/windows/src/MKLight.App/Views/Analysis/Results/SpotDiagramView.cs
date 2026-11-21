@@ -64,11 +64,11 @@ public sealed partial class SpotDiagramView : UserControl, IViewOptions
             if (w >= 0 && w < grid.WavelengthsUm.Count && double.IsFinite(grid.WavelengthsUm[w]))
                 legendEntries.Add(new LegendEntry(Fmt.Wavelength(grid.WavelengthsUm[w]), SeriesColor.Wavelength(grid.WavelengthsUm[w]), LegendMark.Dot));
         if (double.IsFinite(grid.Airy))
-            legendEntries.Add(new LegendEntry("Airy disk " + grid.Length(grid.Airy), SeriesColor.Neutral, LegendMark.DashedCircle));
+            legendEntries.Add(new LegendEntry(Loc.F("Results_Spot_AiryDisk", grid.Length(grid.Airy)), SeriesColor.Neutral, LegendMark.DashedCircle));
 
         // A small segmented control: the chosen scale on a quiet fill (the accent stays for selection elsewhere).
-        _common = ScaleButton("Common", SpotScale.Grid);
-        _perField = ScaleButton("Per field", SpotScale.Field);
+        _common = ScaleButton(Loc.S("Results_Spot_ScaleButtonCommon"), SpotScale.Grid);
+        _perField = ScaleButton(Loc.S("Results_Spot_ScaleButtonPerField"), SpotScale.Field);
         var segments = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 0 };
         segments.Children.Add(_common);
         segments.Children.Add(_perField);
@@ -78,7 +78,7 @@ public sealed partial class SpotDiagramView : UserControl, IViewOptions
             VerticalAlignment = VerticalAlignment.Top,
             Visibility = grid.Rows.Count > 1 ? Visibility.Visible : Visibility.Collapsed,
         };
-        ToolTipService.SetToolTip(_toggle, "Box scale: one for all cells, or one per field");
+        ToolTipService.SetToolTip(_toggle, Loc.S("Results_Spot_ScaleToolTip"));
         ActualThemeChanged += (_, _) => UpdateScale();
         var toggle = _toggle;
 
@@ -151,13 +151,12 @@ public sealed partial class SpotDiagramView : UserControl, IViewOptions
     /// <summary>The canvas's spoken summary: what it shows and each field's RMS radius at the base plane.</summary>
     void Describe()
     {
-        var who = _design is null ? "" : ReferenceEquals(_chosen, _design) ? ", the design" : ", the candidate";
-        Microsoft.UI.Xaml.Automation.AutomationProperties.SetName(_canvas,
-            $"Spot diagram{who}, {_grid.Rows.Count} fields by {_grid.Planes.Count} focus planes");
+        var key = _design is null ? "Results_Spot_Name" : ReferenceEquals(_chosen, _design) ? "Results_Spot_NameDesign" : "Results_Spot_NameCandidate";
+        Microsoft.UI.Xaml.Automation.AutomationProperties.SetName(_canvas, Loc.F(key, _grid.Rows.Count, _grid.Planes.Count));
         var rms = _grid.Rows.Select(r => (r.Cells.FirstOrDefault(c => c.Column == _grid.BaseColumn) ?? r.Cells.FirstOrDefault()) is { } c
             ? $"{r.Title} RMS {_grid.Length(c.Rms)}" : null).OfType<string>();
         Microsoft.UI.Xaml.Automation.AutomationProperties.SetHelpText(_canvas,
-            string.Join(", ", rms) + (double.IsFinite(_grid.Airy) ? ", Airy radius " + _grid.Length(_grid.Airy) : ""));
+            double.IsFinite(_grid.Airy) ? Loc.F("Results_Spot_HelpAiry", string.Join(", ", rms), _grid.Length(_grid.Airy)) : string.Join(", ", rms));
     }
 
     /// <summary>The box scale (the pane may keep it with its layout).</summary>
@@ -198,10 +197,10 @@ public sealed partial class SpotDiagramView : UserControl, IViewOptions
             var on = s == _scale;
             b.Background = new SolidColorBrush(on ? fill : Color.FromArgb(0, 0, 0, 0));
             b.Foreground = new SolidColorBrush(on ? ink : quiet);
-            Microsoft.UI.Xaml.Automation.AutomationProperties.SetItemStatus(b, on ? "Selected" : "");
+            Microsoft.UI.Xaml.Automation.AutomationProperties.SetItemStatus(b, on ? Loc.S("Results_A11y_Selected") : "");
         }
-        _note.Text = _grid.ScaleNote(_scale, Other)
-            + (_folded ? " · widen the pane for every focus plane" : "");
+        var note = _grid.ScaleNote(_scale, Other);
+        _note.Text = _folded ? Loc.F("Results_Spot_Folded", note) : note;
         Describe();
         _canvas.Invalidate();
     }
@@ -236,7 +235,7 @@ public sealed partial class SpotDiagramView : UserControl, IViewOptions
         const double sp = SpotGridLayout.Spacing;
 
         // Column headers: the plane's defocus; the base plane (the points' own) emphasised.
-        if (_grid.Planes.Count > 1) PlotText.Draw(ds, "Defocus", 0, SpotGridLayout.ColumnHeader / 2, tertiary, 10, TextAnchor.Start);
+        if (_grid.Planes.Count > 1) PlotText.Draw(ds, Loc.S("Results_Spot_Defocus"), 0, SpotGridLayout.ColumnHeader / 2, tertiary, 10, TextAnchor.Start);
         for (var c = 0; c < _grid.Planes.Count; c++)
         {
             var isBase = c == _grid.BaseColumn && _grid.Planes.Count > 1;

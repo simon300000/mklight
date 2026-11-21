@@ -134,30 +134,30 @@ public sealed partial class AnalysisPaneView
     {
         var items = new List<MenuFlyoutItemBase>();
         var a = _pane.Analysis;
-        var auto = new ToggleMenuFlyoutItem { Text = "Update Automatically", IsChecked = _pane.AutoUpdate, Icon = new FontIcon { Glyph = "\uE945" } };
+        var auto = new ToggleMenuFlyoutItem { Text = Loc.S("Analysis_More_AutoUpdate"), IsChecked = _pane.AutoUpdate, Icon = new FontIcon { Glyph = "\uE945" } };
         auto.Click += (_, _) => SetAutoUpdate(auto.IsChecked);
         Identify(auto, a, "More.AutoUpdate");
         items.Add(auto);
         if (HasSettings)
         {
-            var settings = new ToggleMenuFlyoutItem { Text = "Show Settings", IsChecked = _pane.ShowsSettings, Icon = new FontIcon { Glyph = "\uE9E9" } };
+            var settings = new ToggleMenuFlyoutItem { Text = Loc.S("Analysis_More_ShowSettings"), IsChecked = _pane.ShowsSettings, Icon = new FontIcon { Glyph = "\uE9E9" } };
             settings.Click += (_, _) => SetShowsSettings(settings.IsChecked);
             Identify(settings, a, "More.ShowSettings");
             items.Add(settings);
         }
         items.Add(new MenuFlyoutSeparator());
-        items.Add(Identify(Item("Duplicate Pane", Duplicate), a, "More.Duplicate"));
-        var copy = Item("Copy Result as JSON", CopyJson);
+        items.Add(Identify(Item(Loc.S("Analysis_More_Duplicate"), Duplicate), a, "More.Duplicate"));
+        var copy = Item(Loc.S("Analysis_More_CopyJson"), CopyJson);
         copy.IsEnabled = _pane.Output is not null;
         items.Add(Identify(copy, a, "More.CopyJson"));
         items.Add(new MenuFlyoutSeparator());
         var panel = PanelId.Analysis(_pane.Id);
         if (Host is { } host)
         {
-            if (host.Arrangement.IsDetached(panel)) items.Add(Identify(Item("Move to Main Window", () => host.MoveToMainWindow(panel)), a, "More.MoveToMain"));
-            if (!host.Arrangement.IsAloneInWindow(panel)) items.Add(Identify(Item("Move to New Window", () => host.MoveToNewWindow(panel)), a, "More.MoveToNewWindow"));
+            if (host.Arrangement.IsDetached(panel)) items.Add(Identify(Item(Loc.S("Analysis_More_MoveToMain"), () => host.MoveToMainWindow(panel)), a, "More.MoveToMain"));
+            if (!host.Arrangement.IsAloneInWindow(panel)) items.Add(Identify(Item(Loc.S("Analysis_More_MoveToNewWindow"), () => host.MoveToNewWindow(panel)), a, "More.MoveToNewWindow"));
         }
-        items.Add(Identify(Item("Close Pane", Close), a, "More.Close"));
+        items.Add(Identify(Item(Loc.S("Analysis_More_Close"), Close), a, "More.Close"));
         return items;
     }
 
@@ -221,10 +221,10 @@ public sealed partial class AnalysisPaneView
         AutomationProperties.SetName(this, AnalysisPaneChrome.AccessibleName(title, preview));
         AutomationProperties.SetAutomationId(this, "Pane." + a);
         Identify(Header, a, "Header");
-        AutomationProperties.SetName(Header, title + " header");
+        AutomationProperties.SetName(Header, Loc.F("Analysis_Pane_HeaderName", title));
         Identify(TitleButton, a, "Title");
         AutomationProperties.SetName(TitleButton, title);
-        AutomationProperties.SetHelpText(TitleButton, "Choose another analysis for this pane. Drag to move the pane.");
+        AutomationProperties.SetHelpText(TitleButton, Loc.S("Analysis_Pane_TitleHelp"));
         Identify(StateText, a, "State");
         Identify(RunButton, a, "Run");
         Identify(AutoButton, a, "AutoUpdate");

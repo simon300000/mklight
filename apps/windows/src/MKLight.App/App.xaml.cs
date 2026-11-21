@@ -30,6 +30,7 @@ public partial class App : Application
         var i = Array.IndexOf(args, "--theme");
         var theme = i >= 0 && i + 1 < args.Length ? (args[i + 1] == "dark" ? ElementTheme.Dark : ElementTheme.Light) : AppSettings.Theme;
         if (theme != ElementTheme.Default) RequestedTheme = theme == ElementTheme.Dark ? ApplicationTheme.Dark : ApplicationTheme.Light;
+        UiLanguage.Apply();
         InitializeComponent();
         UnhandledException += (_, e) =>
         {
@@ -54,7 +55,7 @@ public partial class App : Application
 
         if (!FFIEngine.IsAvailable)
         {
-            Track(new EngineMissingWindow(FFIEngine.UnavailableReason ?? "mklight_ffi.dll was not found.")).Activate();
+            Track(new EngineMissingWindow(FFIEngine.UnavailableReason ?? Loc.S("Shell_EngineMissing_NotFound"))).Activate();
             return;
         }
         // --gpu-emulation: the engine lists its CPU-f32 emulation as gpu:cpu_f32 (auto never picks it).
@@ -252,10 +253,10 @@ public partial class App : Application
         var picker = new FileSavePicker(owner.AppWindow.Id)
         {
             SuggestedStartLocation = PickerLocationId.DocumentsLibrary,
-            SuggestedFileName = string.IsNullOrWhiteSpace(suggestedName) ? "Untitled" : suggestedName,
+            SuggestedFileName = string.IsNullOrWhiteSpace(suggestedName) ? Loc.S("Shell_Document_Untitled") : suggestedName,
             DefaultFileExtension = ".mklight",
         };
-        picker.FileTypeChoices.Add("MKLight design", [".mklight"]);
+        picker.FileTypeChoices.Add(Loc.S("Shell_File_TypeDesign"), [".mklight"]);
         var result = await picker.PickSaveFileAsync();
         return result?.Path;
     }
@@ -284,9 +285,10 @@ public partial class App : Application
         catch (Exception e)
         {
             Log($"open failed: {e.Message}");
-            if (Windows.OfType<WelcomeWindow>().FirstOrDefault() is { } welcome) welcome.ShowError($"Could not open {Path.GetFileName(path)}: {e.Message}");
-            else if (Windows.OfType<DesignWindow>().FirstOrDefault() is { } dw) dw.Session.ShowToast($"Could not open {Path.GetFileName(path)}: {e.Message}");
-            else { ShowWelcome(); Windows.OfType<WelcomeWindow>().First().ShowError($"Could not open {Path.GetFileName(path)}: {e.Message}"); }
+            var message = Loc.F("Shell_Toast_OpenFailed", Path.GetFileName(path), e.Message);
+            if (Windows.OfType<WelcomeWindow>().FirstOrDefault() is { } welcome) welcome.ShowError(message);
+            else if (Windows.OfType<DesignWindow>().FirstOrDefault() is { } dw) dw.Session.ShowToast(message);
+            else { ShowWelcome(); Windows.OfType<WelcomeWindow>().First().ShowError(message); }
         }
     }
 

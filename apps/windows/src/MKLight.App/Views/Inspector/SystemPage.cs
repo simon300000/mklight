@@ -71,11 +71,13 @@ sealed partial class SystemPage : UserControl
     }
 
     VariableSpec Variable(OpticalSystem sys, ParamPath path) =>
-        new(InspectorVariables.IsVariable(Doc.Section("variables"), sys, path), sys.SolveFor(path)?.Kind.Type.Title(), on =>
+        new(InspectorVariables.IsVariable(Doc.Section("variables"), sys, path), SolveTitle(sys, path), on =>
         {
             if (InspectorVariables.Set(Doc.Section("variables"), Doc.System, path, on) is { } section)
-                Doc.EditSection("variables", section, on ? "Make Variable" : "Remove Variable");
+                Doc.EditSection("variables", section, on ? Loc.S("Lens_Undo_MakeVariable") : Loc.S("Lens_Undo_RemoveVariable"));
         });
+
+    static string? SolveTitle(OpticalSystem sys, ParamPath path) => sys.SolveFor(path) is { } s ? LensText.Solve(s.Kind.Type) : null;
 
     // ---- Conversions (convert_spec) ----
 
@@ -103,14 +105,14 @@ sealed partial class SystemPage : UserControl
     {
         var before = Doc.System;
         var c = await ConvertSpecAsync(before, null, k);
-        Edit("Change Aperture Type", s => s.SetApertureKind(k, s == before ? c : null));
+        Edit(Loc.S("Lens_Undo_ChangeApertureType"), s => s.SetApertureKind(k, s == before ? c : null));
     }
 
     async void SetFieldKind(FieldKind k)
     {
         var before = Doc.System;
         var c = await ConvertSpecAsync(before, k, null);
-        Edit("Change Field Type", s => s.SetFieldKind(k, s == before ? c : null));
+        Edit(Loc.S("Lens_Undo_ChangeFieldType"), s => s.SetFieldKind(k, s == before ? c : null));
     }
 
     // ---- The form ----
@@ -121,67 +123,67 @@ sealed partial class SystemPage : UserControl
         {
             new("names", null,
             [
-                new TextRow("name", "Name", sys.Name, v => Edit("Rename", s => s with { Name = v })),
-                new TextRow("notes", "Notes", sys.Notes, v => Edit("Change Notes", s => s with { Notes = v })) { Prompt = "none" },
+                new TextRow("name", Loc.S("Lens_System_Name"), sys.Name, v => Edit(Loc.S("Lens_Undo_Rename"), s => s with { Name = v })),
+                new TextRow("notes", Loc.S("Lens_System_Notes"), sys.Notes, v => Edit(Loc.S("Lens_Undo_ChangeNotes"), s => s with { Notes = v })) { Prompt = Loc.S("Lens_Field_None") },
             ]),
         };
 
         var aperture = new List<FormRow>
         {
-            new ChoiceRow("aperture.kind", "Type", ApertureKindExtensions.All.Select(k => (Wire.Name(k), k.Title())).ToList(), Wire.Name(sys.Aperture.Kind),
+            new ChoiceRow("aperture.kind", Loc.S("Lens_System_Type"), ApertureKindExtensions.All.Select(k => (Wire.Name(k), LensText.Aperture(k))).ToList(), Wire.Name(sys.Aperture.Kind),
                 v => { if (Wire.Parse<ApertureKind>(v) is { } k) SetApertureKind(k); }),
         };
         if (sys.Aperture.Value is { } av)
         {
-            aperture.Add(new NumberRow("aperture.value", "Value", av, v => Edit("Change Aperture", s => s with { Aperture = ApertureSpec.Of(s.Aperture.Kind, v) }))
+            aperture.Add(new NumberRow("aperture.value", Loc.S("Lens_Field_Value"), av, v => Edit(Loc.S("Lens_Undo_ChangeAperture"), s => s with { Aperture = ApertureSpec.Of(s.Aperture.Kind, v) }))
             {
                 Unit = sys.Aperture.Kind.Unit(), Parse = InspectorEdits.Positive,
-                Variable = Variable(sys, new ParamPath.ApertureValue()), Solve = sys.SolveFor(new ParamPath.ApertureValue())?.Kind.Type.Title(),
+                Variable = Variable(sys, new ParamPath.ApertureValue()), Solve = SolveTitle(sys, new ParamPath.ApertureValue()),
             });
         }
-        list.Add(new FormSection("aperture", "Aperture", aperture));
+        list.Add(new FormSection("aperture", Loc.S("Lens_Section_Aperture"), aperture));
 
         if (FirstOrder(sys) is { } fo) list.Add(fo);
         list.AddRange(Fields(sys));
         list.Add(Wavelengths(sys));
 
-        list.Add(new FormSection("environment", "Environment",
+        list.Add(new FormSection("environment", Loc.S("Lens_System_Environment"),
         [
-            new NumberRow("env.temperature", "Temperature", sys.Environment.TemperatureC,
-                v => Edit("Change Temperature", s => s with { Environment = s.Environment with { TemperatureC = v } })) { Unit = "°C" },
-            new NumberRow("env.pressure", "Pressure", sys.Environment.PressureAtm,
-                v => Edit("Change Pressure", s => s with { Environment = s.Environment with { PressureAtm = v } })) { Unit = "atm", Parse = InspectorEdits.Positive },
+            new NumberRow("env.temperature", Loc.S("Lens_System_Temperature"), sys.Environment.TemperatureC,
+                v => Edit(Loc.S("Lens_Undo_ChangeTemperature"), s => s with { Environment = s.Environment with { TemperatureC = v } })) { Unit = "°C" },
+            new NumberRow("env.pressure", Loc.S("Lens_System_Pressure"), sys.Environment.PressureAtm,
+                v => Edit(Loc.S("Lens_Undo_ChangePressure"), s => s with { Environment = s.Environment with { PressureAtm = v } })) { Unit = "atm", Parse = InspectorEdits.Positive },
         ]));
 
-        list.Add(new FormSection("aiming", "Ray Aiming",
+        list.Add(new FormSection("aiming", Loc.S("Lens_System_RayAiming"),
         [
-            new ToggleRow("aiming.real", "Real ray aiming", sys.RayAiming is RayAiming.Real,
-                on => Edit("Change Ray Aiming", s => s with { RayAiming = on ? new RayAiming.Real() : new RayAiming.Off() })),
+            new ToggleRow("aiming.real", Loc.S("Lens_System_RealRayAiming"), sys.RayAiming is RayAiming.Real,
+                on => Edit(Loc.S("Lens_Undo_ChangeRayAiming"), s => s with { RayAiming = on ? new RayAiming.Real() : new RayAiming.Off() })),
         ])
         {
-            Footer = "Aims every ray through the real stop instead of the paraxial entrance pupil. Slower, needed for wide fields and pupil aberration.",
+            Footer = Loc.S("Lens_System_RayAimingFooter"),
         });
 
         if (sys.Configurations.Count > 0)
         {
-            list.Add(new FormSection("configurations", "Configurations", sys.Configurations.Select((c, k) =>
-                (FormRow)new InfoRow($"config.{k}", c.Name.Length == 0 ? $"Configuration {k + 1}" : c.Name,
-                    c.Overrides.Count == 1 ? "1 override" : $"{c.Overrides.Count} overrides")).ToList()));
+            list.Add(new FormSection("configurations", Loc.S("Lens_System_Configurations"), sys.Configurations.Select((c, k) =>
+                (FormRow)new InfoRow($"config.{k}", c.Name.Length == 0 ? Loc.F("Lens_System_ConfigurationN", k + 1) : c.Name,
+                    Loc.F(c.Overrides.Count == 1 ? "Lens_System_Overrides_One" : "Lens_System_Overrides_Many", c.Overrides.Count))).ToList()));
         }
 
-        var catalogs = _catalogs.Select(c => (FormRow)new InfoRow("catalog." + c.Name, c.IsBuiltin ? "Built-in" : c.Name, $"{c.GlassCount} glasses")
+        var catalogs = _catalogs.Select(c => (FormRow)new InfoRow("catalog." + c.Name, c.IsBuiltin ? Loc.S("Lens_System_CatalogBuiltin") : c.Name, Loc.F("Lens_System_Glasses", c.GlassCount))
         {
             Caption = InspectorEdits.CatalogOrigin(c.IsBuiltin, c.Library, c.InProject),
             Help = c.Path ?? "",
         }).ToList();
         catalogs.AddRange(Ws.CatalogWarnings.Select((w, k) => (FormRow)new NoteRow($"catalog.warning.{k}", w) { Warning = true }));
-        catalogs.Add(new ButtonRow("catalog.manage", "Glass Catalogs…", () =>
+        catalogs.Add(new ButtonRow("catalog.manage", Loc.S("Lens_System_ManageCatalogs"), () =>
             Windows.GlassCatalogsWindow.Show(App.Windows.OfType<Windows.DesignWindow>().FirstOrDefault(w => w.Session == _session))));
         if (catalogs.Count > 0)
         {
-            list.Add(new FormSection("catalogs", "Glass Catalogs", catalogs)
+            list.Add(new FormSection("catalogs", Loc.S("Lens_System_Catalogs"), catalogs)
             {
-                Footer = "Library catalogs load into every design; a design records the ones it uses when saved. Manage them in the Glass Catalogs window.",
+                Footer = Loc.S("Lens_System_CatalogsFooter"),
             });
         }
         return list;
@@ -195,17 +197,17 @@ sealed partial class SystemPage : UserControl
         var rows = new List<FormRow>();
         if (FirstOrderXY.Read(json) is { } p)
         {
-            rows.Add(new InfoRow("fo.efl", "EFL x / y", InspectorFormat.Short(p.EflX) + " / " + InspectorFormat.Short(p.EflY) + " mm") { Secondary = false });
-            rows.Add(new InfoRow("fo.bfl", "BFL x / y", InspectorFormat.Short(p.BflX) + " / " + InspectorFormat.Short(p.BflY) + " mm") { Secondary = false });
-            rows.Add(new InfoRow("fo.squeeze", "Squeeze", FirstOrderXY.SqueezeText(p.Squeeze))
-            { Secondary = false, Help = "Squeeze: " + (p.SqueezeDefinition ?? "signed EFL y / EFL x") });
-            if (p.Symmetry is { } s) rows.Add(new InfoRow("fo.symmetry", "Symmetry", FirstOrderXY.SymmetryTitle(s)) { Secondary = false });
+            rows.Add(new InfoRow("fo.efl", Loc.S("Lens_FirstOrder_Efl"), InspectorFormat.Short(p.EflX) + " / " + InspectorFormat.Short(p.EflY) + " mm") { Secondary = false });
+            rows.Add(new InfoRow("fo.bfl", Loc.S("Lens_FirstOrder_Bfl"), InspectorFormat.Short(p.BflX) + " / " + InspectorFormat.Short(p.BflY) + " mm") { Secondary = false });
+            rows.Add(new InfoRow("fo.squeeze", Loc.S("Lens_FirstOrder_Squeeze"), FirstOrderXY.SqueezeText(p.Squeeze))
+            { Secondary = false, Help = Loc.F("Lens_FirstOrder_SqueezeHelp", p.SqueezeDefinition ?? Loc.S("Lens_FirstOrder_SqueezeDefault")) });
+            if (p.Symmetry is { } s) rows.Add(new InfoRow("fo.symmetry", Loc.S("Lens_FirstOrder_Symmetry"), FirstOrderXY.SymmetryTitle(s)) { Secondary = false });
         }
         else
         {
-            rows.Add(new NoteRow("fo.note", "Not rotationally symmetric. The engine's first-order data covers the y section."));
+            rows.Add(new NoteRow("fo.note", Loc.S("Lens_FirstOrder_Note")));
         }
-        return new FormSection("firstorder", "First Order", rows);
+        return new FormSection("firstorder", Loc.S("Lens_FirstOrder_Title"), rows);
     }
 
     IEnumerable<FormSection> Fields(OpticalSystem sys)
@@ -214,41 +216,41 @@ sealed partial class SystemPage : UserControl
         var unit = kind.Unit();
         var fields = sys.Fields.Fields;
         var lines = fields.Select((f, k) => new GridLine(
-            new GridLead(k, (dark) => Palette.Field(k, dark), false, null, $"Field {k + 1}"),
+            new GridLead(k, (dark) => Palette.Field(k, dark), false, null, Loc.F("Lens_System_FieldN", k + 1)),
             [
-                new GridCell(f.X, null, v => Edit("Change Field", s => InspectorEdits.WithField(s, k, x => x with { X = v }))),
-                new GridCell(f.Y, null, v => Edit("Change Field", s => InspectorEdits.WithField(s, k, x => x with { Y = v }))),
-                new GridCell(f.Weight, null, v => Edit("Change Field Weight", s => InspectorEdits.WithField(s, k, x => x with { Weight = v }))),
+                new GridCell(f.X, null, v => Edit(Loc.S("Lens_Undo_ChangeField"), s => InspectorEdits.WithField(s, k, x => x with { X = v }))),
+                new GridCell(f.Y, null, v => Edit(Loc.S("Lens_Undo_ChangeField"), s => InspectorEdits.WithField(s, k, x => x with { Y = v }))),
+                new GridCell(f.Weight, null, v => Edit(Loc.S("Lens_Undo_ChangeFieldWeight"), s => InspectorEdits.WithField(s, k, x => x with { Weight = v }))),
             ],
-            fields.Count > 1 ? () => Edit("Remove Field", s => s.RemoveField(k)) : null, "Remove Field")).ToList();
+            fields.Count > 1 ? () => Edit(Loc.S("Lens_System_RemoveField"), s => s.RemoveField(k)) : null, Loc.S("Lens_System_RemoveField"))).ToList();
         var rows = new List<FormRow>
         {
-            new ChoiceRow("fields.kind", "Type", FieldKindExtensions.All.Select(k => (Wire.Name(k), k.Title())).ToList(), Wire.Name(kind),
+            new ChoiceRow("fields.kind", Loc.S("Lens_System_Type"), FieldKindExtensions.All.Select(k => (Wire.Name(k), LensText.Field(k))).ToList(), Wire.Name(kind),
                 v => { if (Wire.Parse<FieldKind>(v) is { } k) SetFieldKind(k); }),
-            new CustomRow("fields.grid", () => new NumberGrid(), e => ((NumberGrid)e).Show([$"X ({unit})", $"Y ({unit})", "Weight"], lines, _session.ShowToast)),
-            new ButtonRow("fields.add", "Add Field", () => Edit("Add Field", InspectorEdits.AddField)) { Glyph = "\uE710" },
+            new CustomRow("fields.grid", () => new NumberGrid(), e => ((NumberGrid)e).Show([$"X ({unit})", $"Y ({unit})", Loc.S("Lens_System_Weight")], lines, _session.ShowToast)),
+            new ButtonRow("fields.add", Loc.S("Lens_System_AddField"), () => Edit(Loc.S("Lens_System_AddField"), InspectorEdits.AddField)) { Glyph = "\uE710" },
         };
         // Vignetting factors (CONVENTIONS §3), shown when used or asked for.
         var used = fields.Any(f => f.Vignetting != new Vignetting());
         if (!used && !_showVignetting)
-            rows.Add(new ButtonRow("vignetting.show", "Show Vignetting Factors", () => { _showVignetting = true; Refresh(); }));
-        yield return new FormSection("fields", "Fields", rows);
+            rows.Add(new ButtonRow("vignetting.show", Loc.S("Lens_System_ShowVignetting"), () => { _showVignetting = true; Refresh(); }));
+        yield return new FormSection("fields", Loc.S("Lens_System_Fields"), rows);
         if (used || _showVignetting)
         {
             var vlines = fields.Select((f, k) => new GridLine(
-                new GridLead(k, (dark) => Palette.Field(k, dark), false, null, $"Field {k + 1}"),
+                new GridLead(k, (dark) => Palette.Field(k, dark), false, null, Loc.F("Lens_System_FieldN", k + 1)),
                 [
-                    new GridCell(f.Vignetting.Vdx, null, v => Edit("Change Vignetting", s => InspectorEdits.WithField(s, k, x => x with { Vignetting = x.Vignetting with { Vdx = v } }))),
-                    new GridCell(f.Vignetting.Vdy, null, v => Edit("Change Vignetting", s => InspectorEdits.WithField(s, k, x => x with { Vignetting = x.Vignetting with { Vdy = v } }))),
-                    new GridCell(f.Vignetting.Vcx, null, v => Edit("Change Vignetting", s => InspectorEdits.WithField(s, k, x => x with { Vignetting = x.Vignetting with { Vcx = v } }))),
-                    new GridCell(f.Vignetting.Vcy, null, v => Edit("Change Vignetting", s => InspectorEdits.WithField(s, k, x => x with { Vignetting = x.Vignetting with { Vcy = v } }))),
+                    new GridCell(f.Vignetting.Vdx, null, v => Edit(Loc.S("Lens_Undo_ChangeVignetting"), s => InspectorEdits.WithField(s, k, x => x with { Vignetting = x.Vignetting with { Vdx = v } }))),
+                    new GridCell(f.Vignetting.Vdy, null, v => Edit(Loc.S("Lens_Undo_ChangeVignetting"), s => InspectorEdits.WithField(s, k, x => x with { Vignetting = x.Vignetting with { Vdy = v } }))),
+                    new GridCell(f.Vignetting.Vcx, null, v => Edit(Loc.S("Lens_Undo_ChangeVignetting"), s => InspectorEdits.WithField(s, k, x => x with { Vignetting = x.Vignetting with { Vcx = v } }))),
+                    new GridCell(f.Vignetting.Vcy, null, v => Edit(Loc.S("Lens_Undo_ChangeVignetting"), s => InspectorEdits.WithField(s, k, x => x with { Vignetting = x.Vignetting with { Vcy = v } }))),
                 ], null, "")).ToList();
             var vrows = new List<FormRow>
             {
                 new CustomRow("vignetting.grid", () => new NumberGrid(), e => ((NumberGrid)e).Show(["VDX", "VDY", "VCX", "VCY"], vlines, _session.ShowToast)),
             };
-            if (!used) vrows.Add(new ButtonRow("vignetting.hide", "Hide Vignetting Factors", () => { _showVignetting = false; Refresh(); }));
-            yield return new FormSection("vignetting", "Vignetting", vrows) { Footer = "Pupil coordinates per field: P′ = vd + (1 − vc)·P in x and y." };
+            if (!used) vrows.Add(new ButtonRow("vignetting.hide", Loc.S("Lens_System_HideVignetting"), () => { _showVignetting = false; Refresh(); }));
+            yield return new FormSection("vignetting", Loc.S("Lens_System_Vignetting"), vrows) { Footer = Loc.S("Lens_System_VignettingFooter") };
         }
     }
 
@@ -257,21 +259,21 @@ sealed partial class SystemPage : UserControl
         var ws = sys.Wavelengths;
         var lines = ws.Wavelengths.Select((w, k) => new GridLine(
             new GridLead(k, dark => Palette.Wavelength(w.Um, dark), ws.Primary == k,
-                ws.Primary == k ? null : () => Edit("Change Primary Wavelength", s => s with { Wavelengths = s.Wavelengths with { Primary = k } }),
-                ws.Primary == k ? "Primary wavelength" : "Make primary"),
+                ws.Primary == k ? null : () => Edit(Loc.S("Lens_Undo_ChangePrimaryWavelength"), s => s with { Wavelengths = s.Wavelengths with { Primary = k } }),
+                ws.Primary == k ? Loc.S("Lens_System_PrimaryWavelength") : Loc.S("Lens_System_MakePrimary")),
             [
-                new GridCell(w.Um, InspectorEdits.Positive, v => Edit("Change Wavelength", s => InspectorEdits.WithWavelength(s, k, x => x with { Um = v }))),
-                new GridCell(w.Weight, null, v => Edit("Change Wavelength Weight", s => InspectorEdits.WithWavelength(s, k, x => x with { Weight = v }))),
+                new GridCell(w.Um, InspectorEdits.Positive, v => Edit(Loc.S("Lens_Undo_ChangeWavelength"), s => InspectorEdits.WithWavelength(s, k, x => x with { Um = v }))),
+                new GridCell(w.Weight, null, v => Edit(Loc.S("Lens_Undo_ChangeWavelengthWeight"), s => InspectorEdits.WithWavelength(s, k, x => x with { Weight = v }))),
             ],
-            ws.Wavelengths.Count > 1 ? () => Edit("Remove Wavelength", s => s.RemoveWavelength(k)) : null, "Remove Wavelength")).ToList();
-        var presets = InspectorEdits.WavelengthPresets.Select((p, k) => (p.Name, (Action)(() => Edit("Apply Wavelength Preset", s => InspectorEdits.ApplyPreset(s, k))))).ToList();
-        return new FormSection("wavelengths", "Wavelengths",
+            ws.Wavelengths.Count > 1 ? () => Edit(Loc.S("Lens_System_RemoveWavelength"), s => s.RemoveWavelength(k)) : null, Loc.S("Lens_System_RemoveWavelength"))).ToList();
+        var presets = InspectorEdits.WavelengthPresets.Select((p, k) => (p.Name, (Action)(() => Edit(Loc.S("Lens_Undo_ApplyWavelengthPreset"), s => InspectorEdits.ApplyPreset(s, k))))).ToList();
+        return new FormSection("wavelengths", Loc.S("Lens_System_Wavelengths"),
         [
-            new CustomRow("wavelengths.grid", () => new NumberGrid(), e => ((NumberGrid)e).Show(["λ (µm)", "Weight"], lines, _session.ShowToast)),
-            new ButtonRow("wavelengths.add", "Add Wavelength", () => Edit("Add Wavelength", InspectorEdits.AddWavelength))
+            new CustomRow("wavelengths.grid", () => new NumberGrid(), e => ((NumberGrid)e).Show(["λ (µm)", Loc.S("Lens_System_Weight")], lines, _session.ShowToast)),
+            new ButtonRow("wavelengths.add", Loc.S("Lens_System_AddWavelength"), () => Edit(Loc.S("Lens_System_AddWavelength"), InspectorEdits.AddWavelength))
             {
                 Glyph = "\uE710",
-                Right = new MenuRow("wavelengths.presets", "Presets", presets) { Row = false },
+                Right = new MenuRow("wavelengths.presets", Loc.S("Lens_System_Presets"), presets) { Row = false },
             },
         ]);
     }
@@ -316,7 +318,7 @@ sealed partial class NumberGrid : Grid
             {
                 var cell = line.Cells[c];
                 _boxes[r][c].Set(cell.Value, null, cell.Parse, cell.Commit, reject);
-                NumberRow.AutomationName(_boxes[r][c].Box, $"{line.Lead.Name} {headers[c]}");
+                NumberRow.AutomationName(_boxes[r][c].Box, Loc.F("Lens_System_GridCellName", line.Lead.Name, headers[c]));
             }
             var (_, text, hit, remove) = _leads[r];
             text.Text = (line.Lead.Index + 1).ToString(System.Globalization.CultureInfo.InvariantCulture);

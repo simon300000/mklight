@@ -54,7 +54,7 @@ public sealed partial class ImageSimulationView : UserControl, IViewOptions
     AnalysisPaneModel? _pane;
     ImageSimulationData _run;
     LinearImage? _source;
-    string _sourceTitle = "Source";
+    string _sourceTitle = Loc.S("Results_ImageSim_Source");
     Compare _mode;
     double _exposure;
     double _split = 0.5;
@@ -75,49 +75,49 @@ public sealed partial class ImageSimulationView : UserControl, IViewOptions
         IsTabStop = false;
         _canvas = new PlotCanvas(Draw) { AllowDrop = true };
         _canvas.DeviceCreated += _ => { _sim = null; _src = null; };
-        _compare = new Choice("Compare", ["Side by Side", "Split", "Blink"]);
+        _compare = new Choice(Loc.S("Results_ImageSim_Compare"), [Loc.S("Results_ImageSim_SideBySide"), Loc.S("Results_ImageSim_Split"), Loc.S("Results_ImageSim_Blink")]);
         _compare.Changed += k => { _mode = (Compare)k; _s.Compare = k; UpdateBlink(); Describe(); _canvas.Invalidate(); };
         _opts["split"] = () => _compare.Select(1);
         _opts["blink"] = () => _compare.Select(2);
 
         var exposure = new Slider { Minimum = -4, Maximum = 4, StepFrequency = 0.5, SmallChange = 0.5, Value = 0, Width = 96, VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(0, -4, 0, -4) };
-        AutomationProperties.SetName(exposure, "Exposure");
+        AutomationProperties.SetName(exposure, Loc.S("Results_ImageSim_Exposure"));
         _ev = Kit.Text("+0.0 EV", "NumberText", 12);
         _ev.Width = 52;
         _ev.VerticalAlignment = VerticalAlignment.Center;
         exposure.ValueChanged += (_, e) => { _exposure = e.NewValue; _ev.Text = Fmt.Signed(_exposure, 1).Trim() + " EV"; _sim = null; UpdateCaption(); Describe(); _canvas.Invalidate(); };
         var exp = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 6 };
-        var expLabel = Kit.Text("Exposure", "SecondaryText", 12);
+        var expLabel = Kit.Text(Loc.S("Results_ImageSim_Exposure"), "SecondaryText", 12);
         expLabel.VerticalAlignment = VerticalAlignment.Center;
         exp.Children.Add(expLabel);
         exp.Children.Add(exposure);
         exp.Children.Add(_ev);
-        ToolTipService.SetToolTip(exp, "Scales the simulated image's linear light by 2^EV; the source is shown at unit exposure");
+        ToolTipService.SetToolTip(exp, Loc.S("Results_ImageSim_ExposureToolTip"));
 
         // Zoom: out, the factor, in, and Fit (also a double-click on the images).
-        _zoomOut = GlyphButton("\uE71F", "Zoom out", () => SetZoom(_s.Zoom / 2));
-        _zoomIn = GlyphButton("\uE8A3", "Zoom in", () => SetZoom(_s.Zoom * 2));
+        _zoomOut = GlyphButton("\uE71F", Loc.S("Results_ImageSim_ZoomOut"), () => SetZoom(_s.Zoom / 2));
+        _zoomIn = GlyphButton("\uE8A3", Loc.S("Results_ImageSim_ZoomIn"), () => SetZoom(_s.Zoom * 2));
         _zoomText = Kit.Text("100%", "NumberText", 12);
         _zoomText.MinWidth = 40;
         _zoomText.TextAlignment = TextAlignment.Center;
         _zoomText.VerticalAlignment = VerticalAlignment.Center;
-        _fitButton = Plain(Kit.Text("Fit", "BodyText", 12), "Fit the image and reset the pan (or double-click the image)", Fit);
-        AutomationProperties.SetName(_fitButton, "Fit");
+        _fitButton = Plain(Kit.Text(Loc.S("Results_ImageSim_Fit"), "BodyText", 12), Loc.S("Results_ImageSim_FitToolTip"), Fit);
+        AutomationProperties.SetName(_fitButton, Loc.S("Results_ImageSim_Fit"));
         var zoom = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 0 };
         zoom.Children.Add(_zoomOut);
         zoom.Children.Add(_zoomText);
         zoom.Children.Add(_zoomIn);
         zoom.Children.Add(_fitButton);
-        ToolTipService.SetToolTip(_zoomText, "Wheel over the images to zoom about the pointer; drag to pan");
+        ToolTipService.SetToolTip(_zoomText, Loc.S("Results_ImageSim_ZoomToolTip"));
 
         _top.Children.Add(_compare);
         _top.Children.Add(exp);
         _top.Children.Add(zoom);
         if (d.Nodes.Count > 0)
         {
-            var mapping = Plain(Kit.LegendItem(new FontIcon { Glyph = "\uE80A", FontSize = 12 }, Kit.Text("Field Mapping", "BodyText", 12)), null, () => { });
+            var mapping = Plain(Kit.LegendItem(new FontIcon { Glyph = "\uE80A", FontSize = 12 }, Kit.Text(Loc.S("Results_ImageSim_FieldMapping"), "BodyText", 12)), null, () => { });
             mapping.Flyout = new Flyout { Content = MappingTable(d), Placement = FlyoutPlacementMode.Bottom };
-            AutomationProperties.SetName(mapping, "Field mapping");
+            AutomationProperties.SetName(mapping, Loc.S("Results_ImageSim_FieldMappingName"));
             _top.Children.Add(mapping);
         }
 
@@ -178,7 +178,7 @@ public sealed partial class ImageSimulationView : UserControl, IViewOptions
     {
         if (!await ImageSimulationFiles.RefreshAsync(pane))
         {
-            _dropFailed = Path.GetFileName(ImageSourceImport.FileName(pane.Settings) ?? "The image");
+            _dropFailed = Path.GetFileName(ImageSourceImport.FileName(pane.Settings) ?? Loc.S("Results_ImageSim_TheImage"));
             UpdateCaption();
         }
     }
@@ -255,7 +255,7 @@ public sealed partial class ImageSimulationView : UserControl, IViewOptions
         _zoomOut.IsEnabled = _s.Zoom > 1;
         _zoomIn.IsEnabled = _s.Zoom < MaxZoom;
         _fitButton.IsEnabled = _s.Zoom != 1 || _s.U != 0.5 || _s.V != 0.5;
-        AutomationProperties.SetName(_zoomText, "Zoom " + _zoomText.Text);
+        AutomationProperties.SetName(_zoomText, Loc.F("Results_ImageSim_ZoomName", _zoomText.Text));
         Describe();
     }
 
@@ -344,7 +344,7 @@ public sealed partial class ImageSimulationView : UserControl, IViewOptions
             if (_pane is null || !e.DataView.Contains(StandardDataFormats.StorageItems)) return;
             e.Handled = true; // the image, not the window, takes the file (the window would open it as a design)
             e.AcceptedOperation = DataPackageOperation.Copy;
-            e.DragUIOverride.Caption = "Use as Source";
+            e.DragUIOverride.Caption = Loc.S("Results_ImageSim_UseAsSource");
             if (!_dropTargeted) { _dropTargeted = true; _canvas.Invalidate(); }
         };
         _canvas.DragLeave += (_, _) => { _dropTargeted = false; _canvas.Invalidate(); };
@@ -389,21 +389,23 @@ public sealed partial class ImageSimulationView : UserControl, IViewOptions
             _caption.Children.Add(t);
         }
         var img = d.Image;
-        Add(Kit.Inv($"{img.Width} × {img.Height} px") + (img.Channels == 3 ? ", RGB" : ", monochrome"));
-        if (double.IsFinite(d.PixelX)) Add(Math.Abs(d.PixelX - d.PixelY) > 1e-9 * d.PixelX ? $"Pixel {Fmt.Length(d.PixelX)} × {Fmt.Length(d.PixelY)}" : "Pixel " + Fmt.Length(d.PixelX));
+        Add(Loc.F(img.Channels == 3 ? "Results_ImageSim_SizeRgb" : "Results_ImageSim_SizeMono", img.Width, img.Height));
+        if (double.IsFinite(d.PixelX)) Add(Math.Abs(d.PixelX - d.PixelY) > 1e-9 * d.PixelX ? Loc.F("Results_ImageSim_PixelXY", Fmt.Length(d.PixelX), Fmt.Length(d.PixelY)) : Loc.F("Results_ImageSim_Pixel", Fmt.Length(d.PixelX)));
         if (d.FieldCenter is var (cx, cy))
         {
             var near = d.Nodes.MinBy(n => (n.Hx - cx) * (n.Hx - cx) + (n.Hy - cy) * (n.Hy - cy));
-            var at = CenterTitle((cx, cy));
-            Add((at == "on axis" ? "On axis" : "At " + at) + (d.FieldExtent is double e ? " · view " + ImageSimulationSettings.ExtentTitle(e) : ""),
-                "Patch centered at normalized field " + ImageSimulationData.Coordinates(cx, cy) + (near is not null && double.IsFinite(near.RealX) ? $", image point ({Fmt.Fixed(near.RealX, 3)}, {Fmt.Fixed(near.RealY, 3)}) mm" : "") + ".");
+            var at = cx == 0 && cy == 0 ? Loc.S("Results_ImageSim_OnAxis") : Loc.F("Results_ImageSim_At", CenterTitle((cx, cy)));
+            var tip = near is not null && double.IsFinite(near.RealX)
+                ? Loc.F("Results_ImageSim_PatchTipImage", ImageSimulationData.Coordinates(cx, cy), Fmt.Fixed(near.RealX, 3), Fmt.Fixed(near.RealY, 3))
+                : Loc.F("Results_ImageSim_PatchTip", ImageSimulationData.Coordinates(cx, cy));
+            Add(d.FieldExtent is double e ? Loc.F("Results_ImageSim_AtView", at, ImageSimulationSettings.ExtentTitle(e)) : at, tip);
         }
-        if (d.PsfSize is int n && double.IsFinite(d.PsfSpacing)) Add(Kit.Inv($"PSF {n} × {Fmt.Length(d.PsfSpacing)}"), "The PSF window and sample spacing this run used");
+        if (d.PsfSize is int n && double.IsFinite(d.PsfSpacing)) Add(Loc.F("Results_ImageSim_Psf", n, Fmt.Length(d.PsfSpacing)), Loc.S("Results_ImageSim_PsfTip"));
         var clipped = img.ClippedFraction(Math.Pow(2, _exposure));
-        if (clipped > 0.001) Add(Fmt.Fixed(clipped * 100, 1) + "% clipped", "Samples brighter than full scale at this exposure", warn: true);
-        if (_dropFailed is not null) Add(_dropFailed + " could not be read", "Choose an image file Windows can open (PNG, JPEG, TIFF, BMP, GIF, HEIC, WebP)", warn: true);
+        if (clipped > 0.001) Add(Loc.F("Results_ImageSim_Clipped", Fmt.Fixed(clipped * 100, 1)), Loc.S("Results_ImageSim_ClippedTip"), warn: true);
+        if (_dropFailed is not null) Add(Loc.F("Results_ImageSim_ReadFailed", _dropFailed), Loc.S("Results_ImageSim_ReadFailedTip"), warn: true);
         if (d.SourceKind == "pattern")
-            Add("Pattern area-sampled", "The engine evaluates the built-in pattern at each pixel's exact source point (through the distortion), averaged over the pixel, so the blur is the lens's. The source shown is drawn with the same definition.");
+            Add(Loc.S("Results_ImageSim_AreaSampled"), Loc.S("Results_ImageSim_AreaSampledTip"));
         Describe();
     }
 
@@ -413,27 +415,26 @@ public sealed partial class ImageSimulationView : UserControl, IViewOptions
     void Describe()
     {
         var d = _run;
-        var name = Kit.Inv($"Simulated image, {d.Image.Width}×{d.Image.Height} px");
-        if (d.FieldExtent is double e) name += ", field " + ImageSimulationSettings.ExtentTitle(e);
-        if (d.FieldCenter is var (cx, cy)) name += ", centre " + CenterTitle((cx, cy));
+        var name = Loc.F("Results_ImageSim_Name", d.Image.Width, d.Image.Height);
+        if (d.FieldExtent is double e) name = Loc.F("Results_ImageSim_NameField", name, ImageSimulationSettings.ExtentTitle(e));
+        if (d.FieldCenter is var (cx, cy)) name = Loc.F("Results_ImageSim_NameCentre", name, CenterTitle((cx, cy)));
         AutomationProperties.SetName(_canvas, name);
-        var mode = _source is null ? "the simulated image alone" : _mode switch
+        var mode = _source is null ? Loc.S("Results_ImageSim_ModeAlone") : _mode switch
         {
-            Compare.Split => "split with the source " + _sourceTitle + Kit.Inv($" ({_split * 100:F0} % source)"),
-            Compare.Blink => "blinking with the source " + _sourceTitle,
-            _ => "side by side with the source " + _sourceTitle,
+            Compare.Split => Loc.F("Results_ImageSim_ModeSplit", _sourceTitle, Kit.Inv($"{_split * 100:F0}")),
+            Compare.Blink => Loc.F("Results_ImageSim_ModeBlink", _sourceTitle),
+            _ => Loc.F("Results_ImageSim_ModeSideBySide", _sourceTitle),
         };
-        AutomationProperties.SetHelpText(_canvas, "Shown " + mode + ", zoom " + Fmt.Fixed(_s.Zoom * 100, 0) + " %, exposure " + _ev.Text
-            + ". Wheel to zoom about the pointer, drag to pan, double-click to fit; drop an image file to use it as the source.");
+        AutomationProperties.SetHelpText(_canvas, Loc.F("Results_ImageSim_Help", mode, Fmt.Fixed(_s.Zoom * 100, 0), _ev.Text));
     }
 
     static FrameworkElement MappingTable(ImageSimulationData d)
     {
         var p = new StackPanel { Spacing = 6, MaxHeight = 380 };
-        p.Children.Add(Kit.Text("Field Mapping", "PanelTitleText", 13));
-        p.Children.Add(Kit.Caption("PSF grid nodes; the image is mapped bilinearly between them."));
+        p.Children.Add(Kit.Text(Loc.S("Results_ImageSim_FieldMapping"), "PanelTitleText", 13));
+        p.Children.Add(Kit.Caption(Loc.S("Results_ImageSim_MappingNote")));
         var g = new Grid { ColumnSpacing = 14, RowSpacing = 2 };
-        string[] heads = ["Field (Hx, Hy)", "Ideal (mm)", "Real (mm)", "Distortion", "Rel. illum."];
+        string[] heads = [Loc.S("Results_ImageSim_HeadField"), Loc.S("Results_ImageSim_HeadIdeal"), Loc.S("Results_ImageSim_HeadReal"), Loc.S("Results_Chart_Distortion"), Loc.S("Results_ImageSim_HeadRelIllum")];
         for (var c = 0; c < heads.Length; c++)
         {
             g.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
@@ -507,7 +508,7 @@ public sealed partial class ImageSimulationView : UserControl, IViewOptions
                 var a = wide ? new Rect(0, 0, (size.Width - gap) / 2, size.Height) : new Rect(0, 0, size.Width, (size.Height - gap) / 2);
                 var b = wide ? new Rect(a.Right + gap, 0, a.Width, size.Height) : new Rect(0, a.Bottom + gap, size.Width, a.Height);
                 Image(ds, _src, Fitted(aspect, a), _sourceTitle, style);
-                Image(ds, _sim, _fit = Fitted(aspect, b), "Simulated", style);
+                Image(ds, _sim, _fit = Fitted(aspect, b), Loc.S("Results_ImageSim_Simulated"), style);
                 break;
             case Compare.Split:
                 _fit = Fitted(aspect, area);
@@ -516,7 +517,7 @@ public sealed partial class ImageSimulationView : UserControl, IViewOptions
                 using (ds.CreateLayer(1, new Rect(_fit.X, _fit.Y, Math.Max(x - _fit.X, 0), _fit.Height)))
                     Zoomed(ds, _src!, _fit);
                 ImageTag(ds, _sourceTitle, _fit.X + 6, _fit.Y + 6, TextAnchor.Start);
-                ImageTag(ds, "Simulated", _fit.Right - 6, _fit.Y + 6, TextAnchor.End);
+                ImageTag(ds, Loc.S("Results_ImageSim_Simulated"), _fit.Right - 6, _fit.Y + 6, TextAnchor.End);
                 ds.DrawLine((float)x, (float)_fit.Y, (float)x, (float)_fit.Bottom, Color.FromArgb(0x66, 0, 0, 0), 3);
                 ds.DrawLine((float)x, (float)_fit.Y, (float)x, (float)_fit.Bottom, White, 1.5f);
                 var cy = (float)(_fit.Y + _fit.Height / 2);
@@ -527,10 +528,10 @@ public sealed partial class ImageSimulationView : UserControl, IViewOptions
             case Compare.Blink:
                 _fit = Fitted(aspect, area);
                 if (_blinkSource) Image(ds, _src, _fit, _sourceTitle, style);
-                else Image(ds, _sim, _fit, "Simulated", style);
+                else Image(ds, _sim, _fit, Loc.S("Results_ImageSim_Simulated"), style);
                 break;
             default:
-                Image(ds, _sim, _fit = Fitted(aspect, area), "Simulated", style);
+                Image(ds, _sim, _fit = Fitted(aspect, area), Loc.S("Results_ImageSim_Simulated"), style);
                 break;
         }
         if (_dropTargeted)

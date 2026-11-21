@@ -43,10 +43,10 @@ public sealed class GlassEditorDialog
         var names = new Grid { ColumnSpacing = 12 };
         names.ColumnDefinitions.Add(new ColumnDefinition());
         names.ColumnDefinitions.Add(new ColumnDefinition());
-        var name = new TextBox { Header = "Name", Text = editor.Name };
+        var name = new TextBox { Header = Loc.S("Glass_Label_Name"), Text = editor.Name };
         name.TextChanged += (_, _) => { editor.Name = name.Text; Changed(); };
         names.Children.Add(name);
-        var catalog = new ComboBox { Header = "Catalog", HorizontalAlignment = HorizontalAlignment.Stretch, IsEnabled = editor.OriginalName is null };
+        var catalog = new ComboBox { Header = Loc.S("Glass_Editor_Catalog"), HorizontalAlignment = HorizontalAlignment.Stretch, IsEnabled = editor.OriginalName is null };
         foreach (var c in browser.Library.UserCatalogs) catalog.Items.Add(c.Name);
         catalog.SelectedItem = browser.Library.UserCatalogNamed(editor.Catalog)?.Name;
         catalog.SelectionChanged += (_, _) => { if (catalog.SelectedItem is string s) { editor.Catalog = s; Changed(); } };
@@ -56,10 +56,10 @@ public sealed class GlassEditorDialog
 
         // Dispersion: a model glass or an AGF formula.
         var dispersion = new StackPanel { Spacing = 8 };
-        dispersion.Children.Add(Heading("Dispersion"));
+        dispersion.Children.Add(Heading(Loc.S("Glass_Detail_Dispersion")));
         var kind = new SelectorBar();
-        var model = new SelectorBarItem { Text = "Model Glass" };
-        var formula = new SelectorBarItem { Text = "Dispersion Formula" };
+        var model = new SelectorBarItem { Text = Loc.S("Glass_Editor_ModelGlass") };
+        var formula = new SelectorBarItem { Text = Loc.S("Glass_Editor_DispersionFormula") };
         kind.Items.Add(model);
         kind.Items.Add(formula);
         kind.SelectedItem = editor.Dispersion == GlassEditorModel.Kind.Model ? model : formula;
@@ -77,32 +77,32 @@ public sealed class GlassEditorDialog
 
         // Range and data.
         var data = new StackPanel { Spacing = 8 };
-        data.Children.Add(Heading("Range and Data"));
+        data.Children.Add(Heading(Loc.S("Glass_Editor_RangeAndData")));
         data.Children.Add(Pairs(
-            Optional("Shortest λ (µm)", editor.MinUm, v => editor.MinUm = v),
-            Optional("Longest λ (µm)", editor.MaxUm, v => editor.MaxUm = v),
-            Optional("Density (g/cm³)", editor.Density, v => editor.Density = v),
+            Optional(Loc.S("Glass_Editor_ShortestLambda"), editor.MinUm, v => editor.MinUm = v),
+            Optional(Loc.S("Glass_Editor_LongestLambda"), editor.MaxUm, v => editor.MaxUm = v),
+            Optional(Loc.S("Glass_Editor_Density"), editor.Density, v => editor.Density = v),
             Optional("TCE (10⁻⁶/K)", editor.Tce, v => editor.Tce = v),
-            Optional("Relative cost", editor.RelativeCost, v => editor.RelativeCost = v)));
+            Optional(Loc.S("Glass_Detail_RelativeCost"), editor.RelativeCost, v => editor.RelativeCost = v)));
         form.Children.Add(data);
 
         // Availability.
         var availability = new StackPanel { Spacing = 8 };
-        availability.Children.Add(Heading("Availability"));
+        availability.Children.Add(Heading(Loc.S("Glass_Detail_Availability")));
         var row = new Grid { ColumnSpacing = 12 };
         row.ColumnDefinitions.Add(new ColumnDefinition());
         row.ColumnDefinitions.Add(new ColumnDefinition());
-        var status = new ComboBox { Header = "Status", HorizontalAlignment = HorizontalAlignment.Stretch };
-        foreach (var s in GlassStatus.Choices) status.Items.Add(s.Title);
+        var status = new ComboBox { Header = Loc.S("Glass_Label_Status"), HorizontalAlignment = HorizontalAlignment.Stretch };
+        foreach (var s in GlassStatus.Choices) status.Items.Add(GlassFormat.StatusTitle(s));
         status.SelectedIndex = Math.Max(0, GlassStatus.Choices.ToList().IndexOf(editor.Status));
         status.SelectionChanged += (_, _) => { if (status.SelectedIndex >= 0) { editor.Status = GlassStatus.Choices[status.SelectedIndex]; Changed(); } };
         row.Children.Add(status);
-        var exclude = new CheckBox { Content = "Exclude from glass substitution", IsChecked = editor.ExcludeSubstitution, VerticalAlignment = VerticalAlignment.Bottom };
+        var exclude = new CheckBox { Content = Loc.S("Glass_Editor_Exclude"), IsChecked = editor.ExcludeSubstitution, VerticalAlignment = VerticalAlignment.Bottom };
         exclude.Click += (_, _) => { editor.ExcludeSubstitution = exclude.IsChecked == true; Changed(); };
         Grid.SetColumn(exclude, 1);
         row.Children.Add(exclude);
         availability.Children.Add(row);
-        var comment = new TextBox { Header = "Comment", Text = editor.Comment, AcceptsReturn = true, TextWrapping = TextWrapping.Wrap, MaxHeight = 72 };
+        var comment = new TextBox { Header = Loc.S("Glass_Editor_Comment"), Text = editor.Comment, AcceptsReturn = true, TextWrapping = TextWrapping.Wrap, MaxHeight = 72 };
         comment.TextChanged += (_, _) => { editor.Comment = comment.Text; Changed(); };
         availability.Children.Add(comment);
         form.Children.Add(availability);
@@ -125,7 +125,7 @@ public sealed class GlassEditorDialog
         _dialog = new ContentDialog
         {
             Title = editor.Title, Content = content,
-            PrimaryButtonText = "Save", CloseButtonText = "Cancel", DefaultButton = ContentDialogButton.Primary,
+            PrimaryButtonText = Loc.S("Glass_Editor_Save"), CloseButtonText = Loc.S("Common_Cancel"), DefaultButton = ContentDialogButton.Primary,
             XamlRoot = owner.XamlRoot, RequestedTheme = owner.ActualTheme,
         };
         _dialog.Resources["ContentDialogMaxWidth"] = 560.0;
@@ -153,10 +153,10 @@ public sealed class GlassEditorDialog
                 Required("nd", _e.Nd, v => _e.Nd = v),
                 Required("Vd", _e.Vd, v => _e.Vd = v),
                 Required("ΔPg,F", _e.Dpgf, v => _e.Dpgf = v)));
-            _hint.Text = "A Cauchy fit through nd, the F–C dispersion and ΔPg,F from the normal line (valid 0.35–1.1 µm unless set below).";
+            _hint.Text = Loc.S("Glass_Editor_ModelHint");
             return;
         }
-        var formula = new ComboBox { Header = "Formula", HorizontalAlignment = HorizontalAlignment.Stretch };
+        var formula = new ComboBox { Header = Loc.S("Glass_Editor_Formula"), HorizontalAlignment = HorizontalAlignment.Stretch };
         foreach (var (f, n) in GlassEditorModel.FormulaNames) formula.Items.Add($"{f}: {n}");
         formula.SelectedIndex = GlassEditorModel.FormulaNames.Select(x => x.Formula).ToList().IndexOf(_e.Formula);
         formula.SelectionChanged += (_, _) =>
@@ -175,7 +175,7 @@ public sealed class GlassEditorDialog
             fields.Add(Required(names[i], i < _e.Coefficients.Length ? _e.Coefficients[i] : 0, v => { if (k < _e.Coefficients.Length) _e.Coefficients[k] = v; }));
         }
         _dispersionFields.Children.Add(Pairs([.. fields]));
-        _hint.Text = "AGF formula coefficients, λ in µm.";
+        _hint.Text = Loc.S("Glass_Editor_FormulaHint");
     }
 
     static TextBlock Heading(string text) => new() { Text = text, Style = S("ColumnHeaderText") };
@@ -200,7 +200,7 @@ public sealed class GlassEditorDialog
         NumberField(header, value, null, v => set(v ?? double.NaN));
 
     TextBox Optional(string header, double? value, Action<double?> set) =>
-        NumberField(header, value, "none", set);
+        NumberField(header, value, Loc.S("Glass_Value_None"), set);
 
     /// <summary>A number in the app's format (decimal point, no grouping); empty is "none" for optional values.</summary>
     TextBox NumberField(string header, double? value, string? placeholder, Action<double?> set)
@@ -235,7 +235,7 @@ public sealed class GlassEditorDialog
         {
             _statusIcon.Visibility = Visibility.Visible;
             _statusIcon.Foreground = ThemeLookup.Brush(_owner, "WarningBrush");
-            _status.Text = p;
+            _status.Text = EngineText.T(p);
             _status.FontWeight = FontWeights.Normal;
         }
         else

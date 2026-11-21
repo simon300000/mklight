@@ -1,3 +1,4 @@
+using MKLight.App.Support;
 using MKLight.Model;
 
 namespace MKLight.App.ViewModels;
@@ -26,17 +27,17 @@ public abstract record LensEdit
 
     public string ActionName => this switch
     {
-        SetCurvature => "Change Radius",
-        SetThickness => "Change Thickness",
-        SetConic => "Change Conic",
-        SetSemiDiameter => "Change Semi-Diameter",
-        SetMaterial => "Change Material",
-        SetLabel => "Change Label",
-        SetType => "Change Surface Type",
-        SetShapeParameter p => "Change " + p.Parameter.Title(),
-        Insert => "Insert Surface",
-        Delete => "Delete Surface",
-        _ => "Set Stop",
+        SetCurvature => Loc.S("Lens_Undo_ChangeRadius"),
+        SetThickness => Loc.S("Lens_Undo_ChangeThickness"),
+        SetConic => Loc.S("Lens_Undo_ChangeConic"),
+        SetSemiDiameter => Loc.S("Lens_Undo_ChangeSemiDiameter"),
+        SetMaterial => Loc.S("Lens_Undo_ChangeMaterial"),
+        SetLabel => Loc.S("Lens_Undo_ChangeLabel"),
+        SetType => Loc.S("Lens_Undo_ChangeSurfaceType"),
+        SetShapeParameter p => Loc.F("Lens_Undo_ChangeNamed", LensText.Parameter(p.Parameter)),
+        Insert => Loc.S("Lens_Undo_InsertSurface"),
+        Delete => Loc.S("Lens_Undo_DeleteSurface"),
+        _ => Loc.S("Lens_Undo_SetStop"),
     };
 
     public OpticalSystem? Apply(OpticalSystem s)

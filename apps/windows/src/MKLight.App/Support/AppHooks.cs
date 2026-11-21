@@ -6,8 +6,8 @@ namespace MKLight.App.Support;
 
 /// <summary>
 /// A command a feature adds to the design window's menu bar, with an optional shortcut. <paramref name="Menu"/>
-/// names the top-level menu (File, Edit, View, Lens, Design, Analysis or Help; null is File); the command
-/// goes above that menu's final group, in <paramref name="Order"/>.
+/// names the top-level menu by its English name (File, Edit, View, Lens, Design, Analysis or Help; null is File);
+/// the command goes above that menu's final group, in <paramref name="Order"/>.
 /// </summary>
 public sealed record WindowCommand(string Text, string Glyph, Action<DesignWindow> Invoke,
     VirtualKey? Key = null, VirtualKeyModifiers Modifiers = VirtualKeyModifiers.None, int Order = 100, string? Menu = null);

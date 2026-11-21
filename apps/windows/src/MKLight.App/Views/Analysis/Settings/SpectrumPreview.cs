@@ -54,22 +54,22 @@ public sealed partial class SpectrumPreview : UserControl
         Content = panel;
         _canvas.SizeChanged += (_, _) => Draw();
         ActualThemeChanged += (_, _) => Draw();
-        Microsoft.UI.Xaml.Automation.AutomationProperties.SetName(this, $"Spectrum preview, {Title(source).ToLowerInvariant()}");
+        Microsoft.UI.Xaml.Automation.AutomationProperties.SetName(this, Loc.F("Analysis_Spectrum_PreviewName", Title(source).ToLowerInvariant()));
         Microsoft.UI.Xaml.Automation.AutomationProperties.SetHelpText(this, Spoken());
     }
 
-    static string Title(Source s) => s switch
+    static string Title(Source s) => Loc.S(s switch
     {
-        Source.Design => "Design",
-        Source.Exact => "Explicit",
-        Source.Engine => "Engine-resolved",
-        _ => "Approximate preview",
-    };
+        Source.Design => "Analysis_Spectrum_SourceDesign",
+        Source.Exact => "Analysis_Spectrum_SourceExplicit",
+        Source.Engine => "Analysis_Spectrum_SourceEngine",
+        _ => "Analysis_Spectrum_SourceApproximate",
+    });
 
     string Caption(Source s)
     {
-        var t = $"{Title(s)} · {_samples.Count.ToString(CultureInfo.InvariantCulture)} λ";
-        if (_primary is int p) t += " · primary " + _samples[p].Um.ToString("0.0000", CultureInfo.InvariantCulture) + " µm";
+        var t = Loc.F("Analysis_Spectrum_Caption", Title(s), _samples.Count);
+        if (_primary is int p) t = Loc.F("Analysis_Spectrum_CaptionPrimary", t, _samples[p].Um.ToString("0.0000", CultureInfo.InvariantCulture));
         return t;
     }
 
@@ -77,8 +77,8 @@ public sealed partial class SpectrumPreview : UserControl
     {
         if (_samples.Count == 0) return "";
         double lo = _samples.Min(w => w.Um), hi = _samples.Max(w => w.Um);
-        var s = string.Create(CultureInfo.InvariantCulture, $"{_samples.Count} wavelengths from {lo:0.000} to {hi:0.000} micrometres");
-        if (_primary is int p) s += string.Create(CultureInfo.InvariantCulture, $", primary {_samples[p].Um:0.0000}");
+        var s = Loc.F("Analysis_Spectrum_Spoken", _samples.Count, lo.ToString("0.000", CultureInfo.InvariantCulture), hi.ToString("0.000", CultureInfo.InvariantCulture));
+        if (_primary is int p) s = Loc.F("Analysis_Spectrum_SpokenPrimary", s, _samples[p].Um.ToString("0.0000", CultureInfo.InvariantCulture));
         return s;
     }
 

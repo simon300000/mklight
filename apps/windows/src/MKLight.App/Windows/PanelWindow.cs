@@ -46,12 +46,10 @@ public sealed partial class PanelWindow : Window
                     <TitleBar.RightHeader>
                         <StackPanel Orientation="Horizontal" Spacing="2" Margin="0,0,4,0" VerticalAlignment="Center">
                             <DropDownButton x:Name="AddButton" Height="30" CornerRadius="15" Padding="9,0,7,0"
-                                            Background="Transparent" BorderThickness="0"
-                                            ToolTipService.ToolTip="Add an analysis pane to this window">
+                                            Background="Transparent" BorderThickness="0">
                                 <FontIcon Glyph="&#xECCD;" FontSize="14" />
                             </DropDownButton>
-                            <Button x:Name="DockButton" Style="{StaticResource CircleButton}" Content="&#xE73F;"
-                                    ToolTipService.ToolTip="Move to Main Window: these panels go back into the design's window" />
+                            <Button x:Name="DockButton" Style="{StaticResource CircleButton}" Content="&#xE73F;" />
                         </StackPanel>
                     </TitleBar.RightHeader>
                 </TitleBar>
@@ -71,7 +69,9 @@ public sealed partial class PanelWindow : Window
         var add = new MenuFlyout { Placement = Microsoft.UI.Xaml.Controls.Primitives.FlyoutPlacementMode.BottomEdgeAlignedRight };
         PanelMenus.FillAnalyses(add, host.Session.Workspace, a => host.AddPane(a, model.Id));
         ((DropDownButton)_root.FindName("AddButton")).Flyout = add;
+        ToolTipService.SetToolTip((DropDownButton)_root.FindName("AddButton"), Loc.S("Shell_PanelWindow_AddTip"));
         ((Button)_root.FindName("DockButton")).Click += (_, _) => host.Dock(model);
+        ToolTipService.SetToolTip((Button)_root.FindName("DockButton"), Loc.S("Shell_PanelWindow_DockTip"));
 
         ThemeSwitch.Attach(this, _root);
         BuildAccelerators();
@@ -109,11 +109,13 @@ public sealed partial class PanelWindow : Window
     internal void UpdateTitle()
     {
         var shown = Model.Groups.Select(g => g.Current).OfType<PanelId>().Select(_host.Title).ToList();
-        var title = shown.Count == 0 ? "Panels" : shown.Count > 3 ? string.Join(", ", shown.Take(3)) + $" +{shown.Count - 3}" : string.Join(", ", shown);
+        var separator = Loc.S("Shell_Welcome_ListSeparator");
+        var title = shown.Count == 0 ? Loc.S("Shell_PanelWindow_Panels")
+            : shown.Count > 3 ? Loc.F("Shell_PanelWindow_More", string.Join(separator, shown.Take(3)), shown.Count - 3) : string.Join(separator, shown);
         var doc = _host.Session.Document;
         _bar.Title = title;
         // A narrow window keeps the title and the buttons clear of the caption buttons.
-        _bar.Subtitle = _root.ActualWidth is > 0 and < 560 ? "" : string.IsNullOrEmpty(doc.System.Name) ? doc.DisplayName : doc.System.Name;
+        _bar.Subtitle = _root.ActualWidth is > 0 and < 560 ? "" : string.IsNullOrEmpty(doc.System.Name) ? doc.DisplayName : MKLight.Model.EngineText.T(doc.System.Name);
         Title = $"{title} — {doc.DisplayName}";
     }
 

@@ -34,22 +34,22 @@ static class ImportReportDialog
         var dialog = new ContentDialog
         {
             Content = Body(report),
-            PrimaryButtonText = "Copy Report",
-            CloseButtonText = "Done",
+            PrimaryButtonText = Loc.S("Shell_Import_CopyReport"),
+            CloseButtonText = Loc.S("Shell_Import_Done"),
             DefaultButton = ContentDialogButton.Close,
             XamlRoot = root.XamlRoot,
             RequestedTheme = root.ActualTheme,
         };
         dialog.Resources["ContentDialogMaxWidth"] = 720.0;
         dialog.Resources["ContentDialogMaxHeight"] = 760.0;
-        if (canLoadCatalog && report.HasUnknownGlasses) dialog.SecondaryButtonText = "Load Glass Catalog…";
+        if (canLoadCatalog && report.HasUnknownGlasses) dialog.SecondaryButtonText = Loc.S("Shell_Import_LoadCatalog");
         dialog.PrimaryButtonClick += (d, e) =>
         {
             e.Cancel = true; // copying keeps the report open
             var data = new DataPackage();
             data.SetText(report.PlainText);
             Clipboard.SetContent(data);
-            d.PrimaryButtonText = "Copied";
+            d.PrimaryButtonText = Loc.S("Shell_Import_Copied");
         };
         return dialog;
     }
@@ -70,7 +70,7 @@ static class ImportReportDialog
         var text = new StackPanel { Spacing = 4 };
         text.Children.Add(new TextBlock
         {
-            Text = $"Imported “{report.FileName}”", Style = Style("BodyText"), FontSize = 20, FontWeight = Microsoft.UI.Text.FontWeights.SemiBold,
+            Text = Loc.F("Shell_Import_Title", report.FileName), Style = Style("BodyText"), FontSize = 20, FontWeight = Microsoft.UI.Text.FontWeights.SemiBold,
             FontFamily = (FontFamily)Application.Current.Resources["UIDisplayFont"],
         });
         text.Children.Add(new TextBlock { Text = report.Headline, Style = Style("SecondaryText"), TextWrapping = TextWrapping.Wrap, TextTrimming = TextTrimming.None });

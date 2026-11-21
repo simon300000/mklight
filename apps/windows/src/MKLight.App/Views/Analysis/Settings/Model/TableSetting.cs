@@ -1,6 +1,7 @@
 using System.Globalization;
 using System.Text.Json.Nodes;
 using System.Text.RegularExpressions;
+using MKLight.App.Support;
 using MKLight.App.Views.Analysis.Results.Readers;
 
 namespace MKLight.App.Views.Analysis.Settings;
@@ -74,15 +75,15 @@ public static partial class TableSetting
     {
         var m = EmptyClause().Match(f.Description);
         if (m.Success && m.Groups[1].Value.Trim() is { Length: > 0 } t) return char.ToUpperInvariant(t[0]) + t[1..];
-        return f.Nullable ? "Automatic" : "None";
+        return Loc.S(f.Nullable ? "Analysis_Settings_Automatic" : "Analysis_Settings_None");
     }
 
     /// <summary>"3 rows", "1 row", or what an empty list means.</summary>
     public static string ButtonTitle(SettingsField f, JsonNode? value) => (Json.Arr(value)?.Count ?? 0) switch
     {
         0 => EmptyTitle(f),
-        1 => "1 row",
-        var n => n.ToString(CultureInfo.InvariantCulture) + " rows",
+        1 => Loc.S("Analysis_Settings_Rows_One"),
+        var n => Loc.F("Analysis_Settings_Rows_Many", n),
     };
 
     /// <summary>The row keys a description states as <c>[{"hx", "hy"}]</c>.</summary>
@@ -124,12 +125,12 @@ public static class SensorLimit
     public static string Title(JsonNode? value)
     {
         var rows = Rows(value);
-        return "Sensor limit: " + rows.Count switch
+        return Loc.F("Analysis_Settings_SensorLimitTitle", rows.Count switch
         {
-            0 => "None",
+            0 => Loc.S("Analysis_Settings_None"),
             1 => rows[0].Angle.ToString("0.0", CultureInfo.InvariantCulture) + "°",
-            var n => n.ToString(CultureInfo.InvariantCulture) + " points",
-        };
+            var n => Loc.F("Analysis_Settings_Points_Many", n),
+        });
     }
 
     /// <summary>The row a new point starts as: one mm past the last radius, its angle (30° on an empty table).</summary>

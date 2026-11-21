@@ -1,4 +1,6 @@
+using MKLight.App.Support;
 using MKLight.Engine;
+using MKLight.Model;
 
 namespace MKLight.App.Windows;
 
@@ -46,11 +48,11 @@ public sealed class ImportReport
 
     public static string Title(ImportCategory c) => c switch
     {
-        ImportCategory.Problems => "Problems",
-        ImportCategory.Glasses => "Glasses",
-        ImportCategory.Surfaces => "Surfaces",
-        ImportCategory.Dropped => "Not Imported",
-        _ => "Assumed or Approximated",
+        ImportCategory.Problems => Loc.S("Shell_Import_Problems"),
+        ImportCategory.Glasses => Loc.S("Shell_Import_Glasses"),
+        ImportCategory.Surfaces => Loc.S("Shell_Import_Surfaces"),
+        ImportCategory.Dropped => Loc.S("Shell_Import_NotImported"),
+        _ => Loc.S("Shell_Import_Assumed"),
     };
 
     /// <summary>The category's Segoe Fluent Icons glyph.</summary>
@@ -72,13 +74,13 @@ public sealed class ImportReport
 
     /// <summary>"6 surfaces · .zmx · UTF-16"</summary>
     public string Summary => string.Join(" · ",
-        LensSurfaces == 1 ? "1 surface" : $"{LensSurfaces.ToString(System.Globalization.CultureInfo.InvariantCulture)} surfaces",
+        Loc.F(LensSurfaces == 1 ? "Shell_Import_SurfaceCountOne" : "Shell_Import_SurfaceCountMany", LensSurfaces),
         "." + Format.WireName(), EncodingName(Encoding));
 
     /// <summary>The explanation under the title.</summary>
     public string Headline => Warnings.Count == 1
-        ? "1 item could not be imported exactly. Review it before relying on the design."
-        : $"{Warnings.Count.ToString(System.Globalization.CultureInfo.InvariantCulture)} items could not be imported exactly. Review them before relying on the design.";
+        ? Loc.S("Shell_Import_HeadlineOne")
+        : Loc.F("Shell_Import_HeadlineMany", Warnings.Count);
 
     public static string EncodingName(string e) => e switch
     {
@@ -88,17 +90,20 @@ public sealed class ImportReport
         _ => e,
     };
 
-    /// <summary>The engine's message as a sentence (it starts in lower case).</summary>
-    public static string Sentence(ImportWarning w) =>
-        w.Message.Length == 0 ? w.Message : char.ToUpperInvariant(w.Message[0]) + w.Message[1..];
+    /// <summary>The engine's message as a sentence (it starts in lower case), translated when the catalog has it.</summary>
+    public static string Sentence(ImportWarning w)
+    {
+        if (EngineText.T(w.Message) is var t && !string.Equals(t, w.Message, StringComparison.Ordinal)) return t;
+        return w.Message.Length == 0 ? w.Message : char.ToUpperInvariant(w.Message[0]) + w.Message[1..];
+    }
 
     /// <summary>"Surface 3 · Line 42", or null for warnings about the whole file.</summary>
     public static string? Location(ImportWarning w)
     {
         var parts = new[]
         {
-            w.Surface is { } s ? $"Surface {s.ToString(System.Globalization.CultureInfo.InvariantCulture)}" : null,
-            w.Line is { } l ? $"Line {l.ToString(System.Globalization.CultureInfo.InvariantCulture)}" : null,
+            w.Surface is { } s ? Loc.F("Shell_Import_SurfaceAt", s) : null,
+            w.Line is { } l ? Loc.F("Shell_Import_LineAt", l) : null,
         }.OfType<string>().ToList();
         return parts.Count == 0 ? null : string.Join(" · ", parts);
     }
@@ -108,11 +113,11 @@ public sealed class ImportReport
     {
         get
         {
-            var lines = new List<string> { $"Imported {FileName} ({Summary})" };
+            var lines = new List<string> { Loc.F("Shell_Import_PlainHeading", FileName, Summary) };
             foreach (var g in Groups)
             {
                 lines.Add("");
-                lines.Add($"{Title(g.Category)}:");
+                lines.Add(Loc.F("Shell_Import_PlainGroup", Title(g.Category)));
                 foreach (var w in g.Warnings) lines.Add("- " + Sentence(w) + (Location(w) is { } at ? $" [{at}]" : ""));
             }
             return string.Join("\n", lines);
