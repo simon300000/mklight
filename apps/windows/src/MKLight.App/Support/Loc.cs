@@ -9,11 +9,35 @@ namespace MKLight.App.Support;
 /// with invariant number formatting. In the app the lookup is MRT Core (<see cref="Provider"/>, set at launch);
 /// without one (unit tests, which link this file) it reads the English <c>Resources.resw</c> beside the
 /// assembly. A key that is not found shows as itself, so a missing string is visible rather than blank.
+/// The app's lookup is made on first use, so <c>[ModuleInitializer]</c> registrations, which run before
+/// <c>App</c> starts, get the chosen language too (<see cref="CreateProvider"/>, Support/UiLanguage.cs).
 /// </summary>
-public static class Loc
+public static partial class Loc
 {
-    /// <summary>The lookup for the chosen language (the app sets MRT Core's); null reads the English resw.</summary>
-    public static Func<string, string?>? Provider { get; set; }
+    static Func<string, string?>? _provider;
+    static bool _created;
+
+    /// <summary>The lookup for the chosen language (the app's MRT Core one); null reads the English resw.</summary>
+    public static Func<string, string?>? Provider
+    {
+        get
+        {
+            if (!_created)
+            {
+                _created = true;
+                CreateProvider(ref _provider);
+            }
+            return _provider;
+        }
+        set
+        {
+            _created = true;
+            _provider = value;
+        }
+    }
+
+    /// <summary>The app's lookup, made on first use (implemented in the app only; unit tests read English).</summary>
+    static partial void CreateProvider(ref Func<string, string?>? provider);
 
     static Dictionary<string, string>? _english;
 
