@@ -1,4 +1,6 @@
+using MKLight.App.Support;
 using MKLight.Engine;
+using MKLight.Model;
 
 namespace MKLight.App.ViewModels;
 
@@ -111,7 +113,7 @@ public sealed class GlassBrowserModel
         }
     }
 
-    public static string ScopeTitle(string? scope) => scope switch { null => "All Glasses", "BUILTIN" => "Built-in Glasses", _ => scope };
+    public static string ScopeTitle(string? scope) => scope switch { null => Loc.S("Glass_Scope_AllGlasses"), "BUILTIN" => Loc.S("Glass_Scope_BuiltinGlasses"), _ => scope };
 
     int _catalogsRequest;
 
@@ -124,10 +126,10 @@ public sealed class GlassBrowserModel
         {
             if (await GlassLibrarySync.SyncAsync(engine, Library) && Target is { } t) await t.CatalogsDidChange();
         }
-        catch (EngineException e) { Say(e.Message); }
+        catch (EngineException e) { Say(EngineText.T(e.Message)); }
         IReadOnlyList<CatalogInfo> catalogs;
         try { catalogs = await engine.CatalogsAsync(); }
-        catch (EngineException e) { catalogs = []; Say(e.Message); }
+        catch (EngineException e) { catalogs = []; Say(EngineText.T(e.Message)); }
         if (request != _catalogsRequest) return; // a newer refresh (another design) owns the catalogs
         Catalogs = catalogs;
         Warnings = [.. Library.Problems, .. GlassLibrarySync.Warnings(engine)];
@@ -171,10 +173,10 @@ public sealed class GlassBrowserModel
 
     public static string FilterTitle(GlassFilter f) => f switch
     {
-        GlassFilter.Available => "Hide Obsolete",
-        GlassFilter.Preferred => "Preferred Only",
-        GlassFilter.Substitution => "Usable in Glass Substitution",
-        _ => "All Glasses",
+        GlassFilter.Available => Loc.S("Glass_Filter_HideObsolete"),
+        GlassFilter.Preferred => Loc.S("Glass_Filter_PreferredOnly"),
+        GlassFilter.Substitution => Loc.S("Glass_Filter_Substitution"),
+        _ => Loc.S("Glass_Scope_AllGlasses"),
     };
 
     public GlassColumn SortColumn { get; private set; } = GlassColumn.Name;
@@ -289,15 +291,15 @@ public sealed class GlassBrowserModel
 
     /// <summary>What "Use for Surface" would do: the surface index, or why not.</summary>
     public (int? Index, string? Why) Assignment =>
-        Target is not { } t ? (null, "Open a design to use a glass in it.")
+        Target is not { } t ? (null, Loc.S("Glass_Use_OpenDesign"))
         : t.GlassSurface() is int i ? (i, null)
-        : (null, "Select a surface in the lens data to use a glass after it.");
+        : (null, Loc.S("Glass_Use_SelectSurface"));
 
     public void UseSelected()
     {
         if (SelectedRow is not { } row || Target is not { } t || Assignment.Index is not int i) return;
         t.Assign(i, row.Catalog, row.Name);
-        Say($"Surface {i} is followed by {row.Name} ({row.Catalog}).");
+        Say(Loc.F("Glass_Toast_Used", i, row.Name, row.Catalog));
     }
 
     // ---- Status ----
@@ -311,18 +313,18 @@ public sealed class GlassBrowserModel
     public void AddToLibrary(IEnumerable<string> paths)
     {
         var added = paths.Where(Library.Add).Select(Path.GetFileName).ToList();
-        Say(added.Count == 0 ? "Already in the library." : $"Added {string.Join(", ", added)} to the library.");
+        Say(added.Count == 0 ? Loc.S("Glass_Toast_AlreadyInLibrary") : Loc.F("Glass_Toast_AddedToLibrary", string.Join(Loc.S("Glass_List_Comma"), added)));
     }
 
     public void RemoveFromLibrary(CatalogInfo info)
     {
         if (info.Path is not { } path || Library.EntryContaining(path) is not { } e)
         {
-            Say($"{info.Name} is not a registered library file.");
+            Say(Loc.F("Glass_Toast_NotRegistered", info.Name));
             return;
         }
         Library.Remove(e);
-        Say(e.IsFolder ? $"Removed the folder {e.Title} from the library." : $"Removed {info.Name} from the library.");
+        Say(e.IsFolder ? Loc.F("Glass_Toast_RemovedFolder", e.Title) : Loc.F("Glass_Toast_RemovedFromLibrary", info.Name));
     }
 
     public async Task AddToDesignAsync(string path)
@@ -332,16 +334,16 @@ public sealed class GlassBrowserModel
         {
             var info = await t.AddCatalog(path);
             Scope = info.Name;
-            Say($"Added {info.Name} ({info.GlassCount} glasses) to {t.Title()}.");
+            Say(Loc.F("Glass_Toast_AddedToTarget", info.Name, info.GlassCount, t.Title()));
         }
-        catch (EngineException e) { Say($"{Path.GetFileName(path)} could not be loaded: {e.Message}"); }
+        catch (EngineException e) { Say(Loc.F("Glass_Toast_LoadFailed", Path.GetFileName(path), EngineText.T(e.Message))); }
     }
 
     public void RemoveFromDesign(CatalogInfo info)
     {
         if (Target is not { } t) return;
         t.RemoveCatalog(info.Name);
-        Say($"Removed {info.Name} from {t.Title()}. Undo in the design window to restore it.");
+        Say(Loc.F("Glass_Toast_RemovedFromDesign", info.Name, t.Title()));
     }
 
     /// <summary>Reads a catalog again from its file; returns what changed (null on failure).</summary>
@@ -351,7 +353,7 @@ public sealed class GlassBrowserModel
         try
         {
             var changes = await engine.ReloadCatalogAsync(info.Name);
-            Say($"{info.Name} reloaded: {changes.Summary.ToLowerInvariant()}.");
+            Say(Loc.F("Glass_Toast_Reloaded", info.Name, GlassFormat.ChangeSummary(changes).ToLowerInvariant()));
             if (Target is { } t) await t.CatalogsDidChange();
             // A library catalog is then read again in every open design.
             if (info.Library) Library.Touch();
@@ -360,7 +362,7 @@ public sealed class GlassBrowserModel
         }
         catch (EngineException e)
         {
-            Say($"{info.Name} could not be reloaded: {e.Message}");
+            Say(Loc.F("Glass_Toast_ReloadFailed", info.Name, EngineText.T(e.Message)));
             return null;
         }
     }
@@ -396,7 +398,7 @@ public sealed class GlassBrowserModel
         if (Engine is not { } engine) return null;
         GlassDetails d;
         try { d = row.Id == Details?.Row.Id ? Details : await engine.GlassDetailsAsync(row.Catalog, row.Name); }
-        catch (EngineException e) { Say(e.Message); return null; }
+        catch (EngineException e) { Say(EngineText.T(e.Message)); return null; }
         return (DefaultUserCatalog ?? NewUserCatalog()) is { } cat ? GlassEditorModel.Duplicate(d, cat, Library) : null;
     }
 
@@ -410,7 +412,7 @@ public sealed class GlassBrowserModel
         {
             Library.DeleteGlass(row.Name, row.Catalog);
             Selection = null;
-            Say($"Deleted {row.Name}.");
+            Say(Loc.F("Glass_Toast_Deleted", row.Name));
         }
         catch (Exception e) when (e is GlassLibrary.LibraryException or IOException or UnauthorizedAccessException) { Say(e.Message); }
     }
@@ -420,7 +422,7 @@ public sealed class GlassBrowserModel
     {
         if (Engine is not { } engine || !editor.Save(engine)) return false;
         var name = editor.Name.Trim();
-        Say($"Saved {name} in {editor.Catalog}.");
+        Say(Loc.F("Glass_Toast_Saved", name, editor.Catalog));
         // Show the saved glass, whatever was searched for.
         _search = "";
         _filter = GlassFilter.All;
@@ -436,7 +438,7 @@ public sealed class GlassBrowserModel
     {
         if (Library.UserCatalogNamed(catalog) is not { } c || Engine is not { } engine) return null;
         try { return engine.Agf(c.Json); }
-        catch (EngineException e) { Say(e.Message); return null; }
+        catch (EngineException e) { Say(EngineText.T(e.Message)); return null; }
     }
 
     public void Say(string message) => Message?.Invoke(message);

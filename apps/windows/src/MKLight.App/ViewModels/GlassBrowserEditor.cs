@@ -1,4 +1,5 @@
 using System.Text.Json.Nodes;
+using MKLight.App.Support;
 using MKLight.Engine;
 
 namespace MKLight.App.ViewModels;
@@ -55,7 +56,7 @@ public sealed class GlassEditorModel
     public JsonObject? Preview { get; private set; }
     public string? Problem { get; private set; }
 
-    public string Title => OriginalName is null ? "New Glass" : $"Edit {OriginalName}";
+    public string Title => OriginalName is null ? Loc.S("Glass_Editor_NewTitle") : Loc.F("Glass_Editor_EditTitle", OriginalName);
 
     public static GlassEditorModel New(string catalog, GlassLibrary library) =>
         new(library, catalog, library.FreeGlassName("NEWGLASS", catalog), null, null);
@@ -175,12 +176,12 @@ public sealed class GlassEditorModel
         if (Dispersion == Kind.Model && !(double.IsFinite(Nd) && double.IsFinite(Vd) && double.IsFinite(Dpgf))
             || Dispersion == Kind.Formula && !Coefficients.All(double.IsFinite))
         {
-            (Preview, Problem) = (null, "Enter a number in every field.");
+            (Preview, Problem) = (null, Loc.S("Glass_Editor_EnterNumbers"));
             return null;
         }
         try
         {
-            var g = engine.GlassFromSpec(Spec()) as JsonObject ?? throw EngineException.Engine(EngineErrorCode.Parse, "The engine made no glass.");
+            var g = engine.GlassFromSpec(Spec()) as JsonObject ?? throw EngineException.Engine(EngineErrorCode.Parse, Loc.S("Glass_Editor_NoGlassMade"));
             (Preview, Problem) = (g, null);
             return g;
         }
@@ -212,8 +213,8 @@ public sealed class GlassEditorModel
     {
         null => "",
         ({ } nd, { } vd) => $"nd {GlassFormat.Fixed(nd, 5)}    Vd {GlassFormat.Fixed(vd, 2)}",
-        ({ } nd, null) => $"nd {GlassFormat.Fixed(nd, 5)}    No Vd (the F or C line is outside the range)",
-        _ => "No nd, Vd (the d line is outside the range)",
+        ({ } nd, null) => Loc.F("Glass_Editor_PreviewNoVd", GlassFormat.Fixed(nd, 5)),
+        _ => Loc.S("Glass_Editor_PreviewNone"),
     };
 
     /// <summary>The d, F and C lines (µm).</summary>

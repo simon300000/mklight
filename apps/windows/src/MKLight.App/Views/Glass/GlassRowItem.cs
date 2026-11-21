@@ -23,7 +23,7 @@ public sealed class GlassRowItem(GlassRow row, bool dark, Brush ink, Brush dimBr
     public string Tce => GlassFormat.Tce(Row);
     public string Lambda80 => GlassFormat.Lambda80(Row);
     public string Range => GlassFormat.Range(Row);
-    public string StatusTitle => Row.Status.Title;
+    public string StatusTitle => GlassFormat.StatusTitle(Row.Status);
 
     /// <summary>The IR glass's tooltip on n_d and V_d (the values its catalog lists).</summary>
     public string? IrTip => GlassFormat.IrTip(Row);
