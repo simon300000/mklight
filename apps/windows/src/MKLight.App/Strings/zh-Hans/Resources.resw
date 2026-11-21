@@ -22,6 +22,303 @@
   <!-- area: Lens -->
   <!-- end area: Lens -->
   <!-- area: Analysis -->
+  <data name="Analysis_Csv_CannotRead" xml:space="preserve"><value>无法读取</value></data>
+  <data name="Analysis_Csv_NotNumber" xml:space="preserve"><value>不是数字</value></data>
+  <data name="Analysis_Csv_RepeatsWavelength" xml:space="preserve"><value>波长重复</value></data>
+  <data name="Analysis_Csv_ResponseNegative" xml:space="preserve"><value>响应不能为负</value></data>
+  <data name="Analysis_Csv_TwoColumns" xml:space="preserve"><value>需要两列</value></data>
+  <data name="Analysis_Csv_WavelengthPositive" xml:space="preserve"><value>波长必须为正</value></data>
+  <data name="Analysis_ImageSim_ExtentLabel" xml:space="preserve"><value>{0} · 宽 {1}，像素 {2}</value></data>
+  <data name="Analysis_ImageSim_FieldPoint" xml:space="preserve"><value>视场 {0} {1}</value></data>
+  <data name="Analysis_ImageSim_FullField" xml:space="preserve"><value>全视场</value></data>
+  <data name="Analysis_ImageSim_FullSquare" xml:space="preserve"><value>完整正方形</value></data>
+  <data name="Analysis_ImageSim_OnAxis" xml:space="preserve"><value>轴上</value></data>
+  <data name="Analysis_ImageSim_OnAxisTitle" xml:space="preserve"><value>轴上</value></data>
+  <data name="Analysis_ImageSim_PatternGrid" xml:space="preserve"><value>网格</value></data>
+  <data name="Analysis_ImageSim_PatternSiemensStar" xml:space="preserve"><value>西门子星</value></data>
+  <data name="Analysis_ImageSim_PatternSlantedEdge" xml:space="preserve"><value>倾斜刃边</value></data>
+  <data name="Analysis_ImageSim_PatternTextChart" xml:space="preserve"><value>文字图卡</value></data>
+  <data name="Analysis_More_AutoUpdate" xml:space="preserve"><value>自动更新</value></data>
+  <data name="Analysis_More_Close" xml:space="preserve"><value>关闭窗格</value></data>
+  <data name="Analysis_More_CopyJson" xml:space="preserve"><value>将结果复制为 JSON</value></data>
+  <data name="Analysis_More_Duplicate" xml:space="preserve"><value>复制窗格</value></data>
+  <data name="Analysis_More_MoveToMain" xml:space="preserve"><value>移到主窗口</value></data>
+  <data name="Analysis_More_MoveToNewWindow" xml:space="preserve"><value>移到新窗口</value></data>
+  <data name="Analysis_More_ShowSettings" xml:space="preserve"><value>显示设置</value></data>
+  <data name="Analysis_Pane_AccessibleName" xml:space="preserve"><value>{0} 窗格</value></data>
+  <data name="Analysis_Pane_AccessibleNamePreview" xml:space="preserve"><value>{0} 窗格，{1}</value></data>
+  <data name="Analysis_Pane_AutoOffTip" xml:space="preserve"><value>仅在请求时更新。单击改为自动更新。</value></data>
+  <data name="Analysis_Pane_AutoOnTip" xml:space="preserve"><value>设计更改时自动更新。单击改为仅在请求时更新。</value></data>
+  <data name="Analysis_Pane_CancelTip" xml:space="preserve"><value>取消该分析</value></data>
+  <data name="Analysis_Pane_CopiedJson" xml:space="preserve"><value>已将结果复制为 JSON。</value></data>
+  <data name="Analysis_Pane_DefaultSettings" xml:space="preserve"><value>默认设置</value></data>
+  <data name="Analysis_Pane_DefaultSettingsManual" xml:space="preserve"><value>默认设置 · 手动</value></data>
+  <data name="Analysis_Pane_Defaults.Content" xml:space="preserve"><value>默认值</value></data>
+  <data name="Analysis_Pane_Done.Content" xml:space="preserve"><value>完成</value></data>
+  <data name="Analysis_Pane_FailedCapsule" xml:space="preserve"><value>更新失败 · {0}</value></data>
+  <data name="Analysis_Pane_FailedName" xml:space="preserve"><value>更新失败：{0}</value></data>
+  <data name="Analysis_Pane_FailedNote.Text" xml:space="preserve"><value>显示的结果来自上一次成功的运行。</value></data>
+  <data name="Analysis_Pane_FailedRetry.Content" xml:space="preserve"><value>重试</value></data>
+  <data name="Analysis_Pane_FailedTip" xml:space="preserve"><value>更新失败：{0}</value></data>
+  <data name="Analysis_Pane_FailedTipNote" xml:space="preserve"><value>显示的结果来自上一次成功的运行。单击查看详情。</value></data>
+  <data name="Analysis_Pane_FailedTitle.Text" xml:space="preserve"><value>更新失败</value></data>
+  <data name="Analysis_Pane_HeaderName" xml:space="preserve"><value>{0} 标题栏</value></data>
+  <data name="Analysis_Pane_HideSettingsTip" xml:space="preserve"><value>隐藏设置</value></data>
+  <data name="Analysis_Pane_More" xml:space="preserve"><value>更多</value></data>
+  <data name="Analysis_Pane_OutOfDate" xml:space="preserve"><value>已过期</value></data>
+  <data name="Analysis_Pane_OutOfDateSummary" xml:space="preserve"><value>已过期 · {0}</value></data>
+  <data name="Analysis_Pane_PreviewLabel" xml:space="preserve"><value>正在预览 {0} · 未应用</value></data>
+  <data name="Analysis_Pane_PreviewNote" xml:space="preserve"><value> · 未应用</value></data>
+  <data name="Analysis_Pane_PreviewTip" xml:space="preserve"><value>此窗格显示 {0}，这是尚未应用到设计的候选设计。请在设计作业中应用它或结束预览。</value></data>
+  <data name="Analysis_Pane_PreviewTitle" xml:space="preserve"><value>正在预览 {0}</value></data>
+  <data name="Analysis_Pane_RunDetailsTip" xml:space="preserve"><value>运行详情</value></data>
+  <data name="Analysis_Pane_RunTip" xml:space="preserve"><value>重新运行 (F5)</value></data>
+  <data name="Analysis_Pane_Settings" xml:space="preserve"><value>设置</value></data>
+  <data name="Analysis_Pane_ShowSettingsTip" xml:space="preserve"><value>显示该分析的设置</value></data>
+  <data name="Analysis_Pane_StageProgress" xml:space="preserve"><value>{0} · {1}%</value></data>
+  <data name="Analysis_Pane_StaleChanged" xml:space="preserve"><value>设计已更改</value></data>
+  <data name="Analysis_Pane_StaleChangedReason" xml:space="preserve"><value>该结果来自较早的设计。</value></data>
+  <data name="Analysis_Pane_StaleErrors" xml:space="preserve"><value>设计有错误</value></data>
+  <data name="Analysis_Pane_StaleErrorsReason" xml:space="preserve"><value>修正错误后即可更新该结果。</value></data>
+  <data name="Analysis_Pane_StaleUpdate.Content" xml:space="preserve"><value>更新</value></data>
+  <data name="Analysis_Pane_TitleHelp" xml:space="preserve"><value>为此窗格选择其他分析。拖动可移动窗格。</value></data>
+  <data name="Analysis_Pane_TitleTip" xml:space="preserve"><value>{0}：{1}</value></data>
+  <data name="Analysis_Pane_TitleTipDrag" xml:space="preserve"><value>拖动可移动窗格，拖出窗口可在单独的窗口中打开。</value></data>
+  <data name="Analysis_Placeholder_Cancelled" xml:space="preserve"><value>已取消</value></data>
+  <data name="Analysis_Placeholder_Computing" xml:space="preserve"><value>正在计算…</value></data>
+  <data name="Analysis_Placeholder_DesignHasErrors" xml:space="preserve"><value>设计有错误</value></data>
+  <data name="Analysis_Placeholder_Failed" xml:space="preserve"><value>分析失败</value></data>
+  <data name="Analysis_Placeholder_FailedText" xml:space="preserve"><value>分析失败。</value></data>
+  <data name="Analysis_Placeholder_Name" xml:space="preserve"><value>{0}。{1}</value></data>
+  <data name="Analysis_Placeholder_NotAvailable" xml:space="preserve"><value>不可用</value></data>
+  <data name="Analysis_Placeholder_NotAvailableText" xml:space="preserve"><value>此引擎版本不提供该分析。</value></data>
+  <data name="Analysis_Placeholder_NotDrawn" xml:space="preserve"><value>无法绘制结果</value></data>
+  <data name="Analysis_Placeholder_NotDrawnText" xml:space="preserve"><value>无法绘制该结果：{0}</value></data>
+  <data name="Analysis_Placeholder_NotReady" xml:space="preserve"><value>设计尚未就绪</value></data>
+  <data name="Analysis_Placeholder_NotRunYet" xml:space="preserve"><value>尚未运行</value></data>
+  <data name="Analysis_Placeholder_OnRequest" xml:space="preserve"><value>该分析仅在请求时运行。</value></data>
+  <data name="Analysis_Placeholder_Run" xml:space="preserve"><value>运行</value></data>
+  <data name="Analysis_Placeholder_ShowIssues" xml:space="preserve"><value>显示问题</value></data>
+  <data name="Analysis_Placeholder_TryAgain" xml:space="preserve"><value>重试</value></data>
+  <data name="Analysis_Placeholder_Waiting" xml:space="preserve"><value>正在等待设计</value></data>
+  <data name="Analysis_Remedy_ImageGridHelp" xml:space="preserve"><value>像面网格当前为 {0}。自动网格可容纳弥散斑及其衍射旁瓣，然后重新运行。</value></data>
+  <data name="Analysis_Remedy_ImageGridTitle" xml:space="preserve"><value>自动确定像面网格大小（{0} → 自动）</value></data>
+  <data name="Analysis_Remedy_PsfWindowHelp" xml:space="preserve"><value>PSF 窗口当前为 {0} 个采样点。自动窗口可容纳弥散斑及其衍射旁瓣，然后重新运行。</value></data>
+  <data name="Analysis_Remedy_PsfWindowTitle" xml:space="preserve"><value>自动确定 PSF 窗口大小（{0} → 自动）</value></data>
+  <data name="Analysis_Remedy_PupilHelp" xml:space="preserve"><value>光瞳网格当前为 {0}。自动采样会按波前斜率选择足够精细的网格（64 到 1024），然后重新运行。</value></data>
+  <data name="Analysis_Remedy_PupilTitle" xml:space="preserve"><value>自动采样光瞳（网格 {0} → 自动）</value></data>
+  <data name="Analysis_Route_AttemptCompleted" xml:space="preserve"><value>{0} 路径在 CPU 上完成了结果</value></data>
+  <data name="Analysis_Route_AttemptCompletedTook" xml:space="preserve"><value>{0} 路径在 CPU 上完成了结果（{1}）</value></data>
+  <data name="Analysis_Route_AttemptFailed" xml:space="preserve"><value>{0} 失败；已在 CPU 上完成</value></data>
+  <data name="Analysis_Route_AttemptFailedAfter" xml:space="preserve"><value>{0} 在 {1} 后失败；已在 CPU 上完成</value></data>
+  <data name="Analysis_Route_AttemptNotUsed" xml:space="preserve"><value>未使用 {0}（{1}）</value></data>
+  <data name="Analysis_Route_AttemptSkipped" xml:space="preserve"><value>未尝试 {0}：相同输入曾在其上失败</value></data>
+  <data name="Analysis_Route_Automatic" xml:space="preserve"><value>自动</value></data>
+  <data name="Analysis_Route_CpuAccuracy" xml:space="preserve"><value>CPU：该分析在 GPU 上精度不足</value></data>
+  <data name="Analysis_Route_CpuBelowBreakEven" xml:space="preserve"><value>CPU：运行规模低于实测盈亏平衡点</value></data>
+  <data name="Analysis_Route_CpuKnownFailure" xml:space="preserve"><value>CPU：该请求曾在 GPU 上失败</value></data>
+  <data name="Analysis_Route_CpuMeasuredGainSmall" xml:space="preserve"><value>CPU：GPU 的实测收益太小{0}</value></data>
+  <data name="Analysis_Route_CpuNoMeasuredGain" xml:space="preserve"><value>CPU：该分析没有实测的 GPU 收益</value></data>
+  <data name="Analysis_Route_CpuNoShare" xml:space="preserve"><value>CPU：此规模和形态的运行不分配给 GPU</value></data>
+  <data name="Analysis_Route_CpuPredicted" xml:space="preserve"><value>按预测用时选择 CPU{0}</value></data>
+  <data name="Analysis_Route_CpuPredictedGainSmall" xml:space="preserve"><value>CPU：GPU 的预测收益太小{0}</value></data>
+  <data name="Analysis_Route_CpuReference" xml:space="preserve"><value>CPU 参考</value></data>
+  <data name="Analysis_Route_EngineDefault" xml:space="preserve"><value>{0}（引擎默认）</value></data>
+  <data name="Analysis_Route_Gpu" xml:space="preserve"><value>GPU（{0}）</value></data>
+  <data name="Analysis_Route_GpuAboveBreakEven" xml:space="preserve"><value>GPU：运行规模高于实测盈亏平衡点</value></data>
+  <data name="Analysis_Route_GpuMeasured" xml:space="preserve"><value>按实测用时选择 GPU{0}</value></data>
+  <data name="Analysis_Route_GpuNoAnalysisTimings" xml:space="preserve"><value>GPU：该分析没有计时数据，因此无法预测</value></data>
+  <data name="Analysis_Route_GpuNoDeviceTimings" xml:space="preserve"><value>GPU：此设备没有计时数据，因此无法预测</value></data>
+  <data name="Analysis_Route_GpuNoPrediction" xml:space="preserve"><value>GPU，无预测</value></data>
+  <data name="Analysis_Route_GpuPredicted" xml:space="preserve"><value>按预测用时选择 GPU{0}</value></data>
+  <data name="Analysis_Route_Predicted" xml:space="preserve"><value>（GPU 预测 {0}，CPU {1}）</value></data>
+  <data name="Analysis_Route_PreviewTier" xml:space="preserve"><value>预览：采样较粗，不宜用于最终决策</value></data>
+  <data name="Analysis_Route_Repeated" xml:space="preserve"><value>{0}；沿用首次相同请求的结果</value></data>
+  <data name="Analysis_RunDetails_AllMessages" xml:space="preserve"><value>引擎的全部 {0} 条消息</value></data>
+  <data name="Analysis_RunDetails_AttemptsNotUsed_Many" xml:space="preserve"><value>{0} 次未采用的尝试</value></data>
+  <data name="Analysis_RunDetails_AttemptsNotUsed_One" xml:space="preserve"><value>未采用的尝试</value></data>
+  <data name="Analysis_RunDetails_ComputedOn" xml:space="preserve"><value>计算设备</value></data>
+  <data name="Analysis_RunDetails_Engine" xml:space="preserve"><value>引擎</value></data>
+  <data name="Analysis_RunDetails_Field" xml:space="preserve"><value>视场 {0}</value></data>
+  <data name="Analysis_RunDetails_FieldPoint" xml:space="preserve"><value>视场 {0}</value></data>
+  <data name="Analysis_RunDetails_Heading" xml:space="preserve"><value>运行信息</value></data>
+  <data name="Analysis_RunDetails_ItemName" xml:space="preserve"><value>{0}：{1}</value></data>
+  <data name="Analysis_RunDetails_Precision" xml:space="preserve"><value>精度</value></data>
+  <data name="Analysis_RunDetails_PrecisionF32" xml:space="preserve"><value>f32（GPU，已验证）</value></data>
+  <data name="Analysis_RunDetails_PrecisionF64" xml:space="preserve"><value>f64 参考</value></data>
+  <data name="Analysis_RunDetails_RanOnCpu" xml:space="preserve"><value>改在 CPU 上运行</value></data>
+  <data name="Analysis_RunDetails_RanOnCpuTip" xml:space="preserve"><value>改在 CPU 上运行：{0}</value></data>
+  <data name="Analysis_RunDetails_Requested" xml:space="preserve"><value>请求</value></data>
+  <data name="Analysis_RunDetails_Route" xml:space="preserve"><value>路由</value></data>
+  <data name="Analysis_RunDetails_ScopedWarning" xml:space="preserve"><value>{0}：{1}</value></data>
+  <data name="Analysis_RunDetails_Seed" xml:space="preserve"><value>种子</value></data>
+  <data name="Analysis_RunDetails_Snapshot" xml:space="preserve"><value>快照</value></data>
+  <data name="Analysis_RunDetails_Surface" xml:space="preserve"><value>面 {0}</value></data>
+  <data name="Analysis_RunDetails_Tier" xml:space="preserve"><value>级别</value></data>
+  <data name="Analysis_RunDetails_Time" xml:space="preserve"><value>用时</value></data>
+  <data name="Analysis_RunDetails_WarningSummary" xml:space="preserve"><value>{0}（另有 {1} 条）</value></data>
+  <data name="Analysis_RunDetails_Warnings_Many" xml:space="preserve"><value>{0} 条警告</value></data>
+  <data name="Analysis_RunDetails_Warnings_One" xml:space="preserve"><value>警告</value></data>
+  <data name="Analysis_Settings_AddPoint" xml:space="preserve"><value>添加点</value></data>
+  <data name="Analysis_Settings_AddRow" xml:space="preserve"><value>添加行</value></data>
+  <data name="Analysis_Settings_All" xml:space="preserve"><value>全部</value></data>
+  <data name="Analysis_Settings_AllCount" xml:space="preserve"><value>全部 {0} 个</value></data>
+  <data name="Analysis_Settings_Any" xml:space="preserve"><value>任意</value></data>
+  <data name="Analysis_Settings_Auto" xml:space="preserve"><value>自动</value></data>
+  <data name="Analysis_Settings_AutoClearHelp" xml:space="preserve"><value>清空此框即由引擎选择。</value></data>
+  <data name="Analysis_Settings_AutoClearZeroHelp" xml:space="preserve"><value>清空此框（或输入 0）即由引擎选择。</value></data>
+  <data name="Analysis_Settings_AutoHelp" xml:space="preserve"><value>自动：由引擎根据系统选择。</value></data>
+  <data name="Analysis_Settings_AutoUsed" xml:space="preserve"><value>自动（{0}）</value></data>
+  <data name="Analysis_Settings_AutoWord" xml:space="preserve"><value>自动</value></data>
+  <data name="Analysis_Settings_Automatic" xml:space="preserve"><value>自动</value></data>
+  <data name="Analysis_Settings_BoundHelp" xml:space="preserve"><value>平面的半范围；留空则由引擎根据焦深和几何弥散选择。</value></data>
+  <data name="Analysis_Settings_ChooseImage" xml:space="preserve"><value>选择图像…</value></data>
+  <data name="Analysis_Settings_Clear" xml:space="preserve"><value>清除</value></data>
+  <data name="Analysis_Settings_CountOf" xml:space="preserve"><value>{0}（共 {1}）</value></data>
+  <data name="Analysis_Settings_DeletePoint" xml:space="preserve"><value>删除此点</value></data>
+  <data name="Analysis_Settings_DeleteRow" xml:space="preserve"><value>删除此行</value></data>
+  <data name="Analysis_Settings_FewerPlanes" xml:space="preserve"><value>减少平面</value></data>
+  <data name="Analysis_Settings_ImageBuffer" xml:space="preserve"><value>图像缓冲区</value></data>
+  <data name="Analysis_Settings_ListAutoHelp" xml:space="preserve"><value>以逗号分隔；留空则由引擎选择。</value></data>
+  <data name="Analysis_Settings_ListHelp" xml:space="preserve"><value>以逗号分隔。</value></data>
+  <data name="Analysis_Settings_MorePlanes" xml:space="preserve"><value>增加平面</value></data>
+  <data name="Analysis_Settings_NoLimit" xml:space="preserve"><value>无限制</value></data>
+  <data name="Analysis_Settings_NoSettings" xml:space="preserve"><value>该分析没有可更改的设置。</value></data>
+  <data name="Analysis_Settings_None" xml:space="preserve"><value>无</value></data>
+  <data name="Analysis_Settings_NoneCheckedHelp" xml:space="preserve"><value>未勾选任何项：全部。</value></data>
+  <data name="Analysis_Settings_NoneWord" xml:space="preserve"><value>无</value></data>
+  <data name="Analysis_Settings_NumbersHelp" xml:space="preserve"><value>编号，以逗号分隔；留空：全部。</value></data>
+  <data name="Analysis_Settings_Off" xml:space="preserve"><value>关</value></data>
+  <data name="Analysis_Settings_On" xml:space="preserve"><value>开</value></data>
+  <data name="Analysis_Settings_OpticsPsfGrid" xml:space="preserve"><value>PSF 网格</value></data>
+  <data name="Analysis_Settings_OpticsPsfGridHelp" xml:space="preserve"><value>区域每边的 PSF 数；图像在它们之间映射。</value></data>
+  <data name="Analysis_Settings_OpticsPsfGridTip" xml:space="preserve"><value>区域每边的 PSF 数</value></data>
+  <data name="Analysis_Settings_OpticsPsfWindow" xml:space="preserve"><value>PSF 窗口</value></data>
+  <data name="Analysis_Settings_OpticsPsfWindowHelp" xml:space="preserve"><value>PSF 窗口每边采样数（奇数）；0 表示按弥散和衍射确定大小。</value></data>
+  <data name="Analysis_Settings_OpticsPsfWindowTip" xml:space="preserve"><value>PSF 窗口每边采样数</value></data>
+  <data name="Analysis_Settings_OpticsPupil" xml:space="preserve"><value>光瞳</value></data>
+  <data name="Analysis_Settings_OpticsPupilHelp" xml:space="preserve"><value>光瞳网格每边采样数；0 表示按波前斜率选择（64 到 1024）。</value></data>
+  <data name="Analysis_Settings_OpticsRaysHelp" xml:space="preserve"><value>每个光瞳直径追迹的光线数。</value></data>
+  <data name="Analysis_Settings_OpticsSpacing" xml:space="preserve"><value>间距</value></data>
+  <data name="Analysis_Settings_OpticsSpacingHelp" xml:space="preserve"><value>PSF 采样间距；留空则取区域内最小的 λ·F/# 除以 2.5。</value></data>
+  <data name="Analysis_Settings_OpticsSpacingTip" xml:space="preserve"><value>PSF 采样间距</value></data>
+  <data name="Analysis_Settings_PairTo" xml:space="preserve"><value>至</value></data>
+  <data name="Analysis_Settings_Planes_Many" xml:space="preserve"><value>{0} 个平面</value></data>
+  <data name="Analysis_Settings_Planes_One" xml:space="preserve"><value>1 个平面</value></data>
+  <data name="Analysis_Settings_Points_Many" xml:space="preserve"><value>{0} 个点</value></data>
+  <data name="Analysis_Settings_Primary" xml:space="preserve"><value>主波长</value></data>
+  <data name="Analysis_Settings_PrimarySuffix" xml:space="preserve"><value>{0}（主波长）</value></data>
+  <data name="Analysis_Settings_Range" xml:space="preserve"><value>{0} 至 {1}</value></data>
+  <data name="Analysis_Settings_Rays" xml:space="preserve"><value>光线</value></data>
+  <data name="Analysis_Settings_Rows_Many" xml:space="preserve"><value>{0} 行</value></data>
+  <data name="Analysis_Settings_Rows_One" xml:space="preserve"><value>1 行</value></data>
+  <data name="Analysis_Settings_SelectedCount" xml:space="preserve"><value>已选 {0} 个</value></data>
+  <data name="Analysis_Settings_SelectionHelp" xml:space="preserve"><value>{0}：{1}</value></data>
+  <data name="Analysis_Settings_SensorAngle" xml:space="preserve"><value>最大角度</value></data>
+  <data name="Analysis_Settings_SensorAngleHeader" xml:space="preserve"><value>最大角度 (°)</value></data>
+  <data name="Analysis_Settings_SensorHeading" xml:space="preserve"><value>传感器 CRA 限制</value></data>
+  <data name="Analysis_Settings_SensorHint" xml:space="preserve"><value>主光线最大入射角随像高半径变化；点之间线性插值，两端之外保持不变。</value></data>
+  <data name="Analysis_Settings_SensorLimitTitle" xml:space="preserve"><value>传感器限制：{0}</value></data>
+  <data name="Analysis_Settings_SensorRadius" xml:space="preserve"><value>半径</value></data>
+  <data name="Analysis_Settings_SensorRadiusHeader" xml:space="preserve"><value>半径 (mm)</value></data>
+  <data name="Analysis_Settings_SurfaceImage" xml:space="preserve"><value>像面</value></data>
+  <data name="Analysis_Settings_SurfaceObject" xml:space="preserve"><value>物面</value></data>
+  <data name="Analysis_Settings_SurfaceStop" xml:space="preserve"><value>{0}（光阑）</value></data>
+  <data name="Analysis_Settings_ThroughFocusAuto" xml:space="preserve"><value>自动范围 · {0}</value></data>
+  <data name="Analysis_Settings_ThroughFocusOff" xml:space="preserve"><value>仅像面</value></data>
+  <data name="Analysis_Settings_ThroughFocusOn" xml:space="preserve"><value>焦前和焦后平面</value></data>
+  <data name="Analysis_Settings_ThroughFocusRange" xml:space="preserve"><value>{0} 至 {1} mm · {2}</value></data>
+  <data name="Analysis_Settings_ThroughFocusSymmetric" xml:space="preserve"><value>±{0} mm · {1}</value></data>
+  <data name="Analysis_Settings_ThroughFocusUsed" xml:space="preserve"><value>{0} mm · {1}</value></data>
+  <data name="Analysis_Spectrum_Add" xml:space="preserve"><value>添加</value></data>
+  <data name="Analysis_Spectrum_CannotEdit" xml:space="preserve"><value>此控件无法编辑的光谱：{0}</value></data>
+  <data name="Analysis_Spectrum_Caption" xml:space="preserve"><value>{0} · {1} 个 λ</value></data>
+  <data name="Analysis_Spectrum_CaptionPrimary" xml:space="preserve"><value>{0} · 主波长 {1} µm</value></data>
+  <data name="Analysis_Spectrum_Custom" xml:space="preserve"><value>自定义</value></data>
+  <data name="Analysis_Spectrum_Daylight" xml:space="preserve"><value>日光，5500 K</value></data>
+  <data name="Analysis_Spectrum_DesignWavelengths" xml:space="preserve"><value>设计波长</value></data>
+  <data name="Analysis_Spectrum_DesignWavelengthsTip" xml:space="preserve"><value>从设计的波长和权重重新开始</value></data>
+  <data name="Analysis_Spectrum_EqualEnergy" xml:space="preserve"><value>等能量</value></data>
+  <data name="Analysis_Spectrum_FileProblem" xml:space="preserve"><value>{0}：{1}</value></data>
+  <data name="Analysis_Spectrum_FromCsv" xml:space="preserve"><value>从 CSV 导入传感器响应…</value></data>
+  <data name="Analysis_Spectrum_ImportCsv" xml:space="preserve"><value>导入 CSV…</value></data>
+  <data name="Analysis_Spectrum_ImportCsvHelp" xml:space="preserve"><value>两列：波长（µm 或 nm）和响应；表头行可选。</value></data>
+  <data name="Analysis_Spectrum_Imported" xml:space="preserve"><value>已导入 {0} 行，单位 {1}</value></data>
+  <data name="Analysis_Spectrum_ImportedHeader" xml:space="preserve"><value>已导入 {0} 行，单位 {1}，已跳过表头</value></data>
+  <data name="Analysis_Spectrum_IssueNoWavelength" xml:space="preserve"><value>请至少添加一个波长。</value></data>
+  <data name="Analysis_Spectrum_IssueRange" xml:space="preserve"><value>范围必须为正且递增。</value></data>
+  <data name="Analysis_Spectrum_IssueRangePhotopic" xml:space="preserve"><value>范围必须位于明视觉表之内（{0}–{1} µm）。</value></data>
+  <data name="Analysis_Spectrum_IssueRangeScotopic" xml:space="preserve"><value>范围必须位于暗视觉表之内（{0}–{1} µm）。</value></data>
+  <data name="Analysis_Spectrum_IssueRangeTable" xml:space="preserve"><value>范围必须位于响应表之内（{0}–{1} µm）。</value></data>
+  <data name="Analysis_Spectrum_IssueResponseNegative" xml:space="preserve"><value>响应不能为负。</value></data>
+  <data name="Analysis_Spectrum_IssueSamples" xml:space="preserve"><value>采样数必须在 {0} 到 {1} 之间。</value></data>
+  <data name="Analysis_Spectrum_IssueTableRows" xml:space="preserve"><value>响应表至少需要两行。</value></data>
+  <data name="Analysis_Spectrum_IssueTemperature" xml:space="preserve"><value>温度必须为正。</value></data>
+  <data name="Analysis_Spectrum_IssueWavelengthPositive" xml:space="preserve"><value>波长必须为正。</value></data>
+  <data name="Analysis_Spectrum_IssueWavelengthsIncrease" xml:space="preserve"><value>波长必须递增。</value></data>
+  <data name="Analysis_Spectrum_IssueWeightNegative" xml:space="preserve"><value>权重不能为负。</value></data>
+  <data name="Analysis_Spectrum_KindBlackbody" xml:space="preserve"><value>黑体</value></data>
+  <data name="Analysis_Spectrum_KindDesign" xml:space="preserve"><value>设计波长</value></data>
+  <data name="Analysis_Spectrum_KindExplicit" xml:space="preserve"><value>指定波长</value></data>
+  <data name="Analysis_Spectrum_KindPhotopic" xml:space="preserve"><value>明视觉 V(λ)</value></data>
+  <data name="Analysis_Spectrum_KindScotopic" xml:space="preserve"><value>暗视觉 V′(λ)</value></data>
+  <data name="Analysis_Spectrum_KindSensor" xml:space="preserve"><value>传感器响应</value></data>
+  <data name="Analysis_Spectrum_Label" xml:space="preserve"><value>光谱</value></data>
+  <data name="Analysis_Spectrum_LineProblem" xml:space="preserve"><value>第 {0} 行：{1} — {2}</value></data>
+  <data name="Analysis_Spectrum_LowerName" xml:space="preserve"><value>最短波长（微米）</value></data>
+  <data name="Analysis_Spectrum_MenuHelp" xml:space="preserve"><value>该分析运行所用的波长：设计的波长，或仅为本次运行采样的光谱。</value></data>
+  <data name="Analysis_Spectrum_MoreProblems" xml:space="preserve"><value>… 另有 {0} 行</value></data>
+  <data name="Analysis_Spectrum_NoTable" xml:space="preserve"><value>无表格</value></data>
+  <data name="Analysis_Spectrum_NoTableRows" xml:space="preserve"><value>文件中没有至少两行的表格。</value></data>
+  <data name="Analysis_Spectrum_PreviewName" xml:space="preserve"><value>光谱预览，{0}</value></data>
+  <data name="Analysis_Spectrum_Range" xml:space="preserve"><value>范围</value></data>
+  <data name="Analysis_Spectrum_RemoveName" xml:space="preserve"><value>移除波长 {0}</value></data>
+  <data name="Analysis_Spectrum_RemoveTip" xml:space="preserve"><value>移除此波长</value></data>
+  <data name="Analysis_Spectrum_Response" xml:space="preserve"><value>响应</value></data>
+  <data name="Analysis_Spectrum_Samples" xml:space="preserve"><value>采样</value></data>
+  <data name="Analysis_Spectrum_SamplesName" xml:space="preserve"><value>采样数</value></data>
+  <data name="Analysis_Spectrum_Skipped_Many" xml:space="preserve"><value>跳过了 {0} 行</value></data>
+  <data name="Analysis_Spectrum_Skipped_One" xml:space="preserve"><value>跳过了 1 行</value></data>
+  <data name="Analysis_Spectrum_SourceApproximate" xml:space="preserve"><value>近似预览</value></data>
+  <data name="Analysis_Spectrum_SourceDesign" xml:space="preserve"><value>设计</value></data>
+  <data name="Analysis_Spectrum_SourceEngine" xml:space="preserve"><value>引擎解析</value></data>
+  <data name="Analysis_Spectrum_SourceExplicit" xml:space="preserve"><value>指定</value></data>
+  <data name="Analysis_Spectrum_SpacingHelp" xml:space="preserve"><value>等能量：按能量均分区间，每个采样位于区间质心。均匀：等间距采样，按各自的能量加权。</value></data>
+  <data name="Analysis_Spectrum_Spoken" xml:space="preserve"><value>{0} 个波长，从 {1} 到 {2} 微米</value></data>
+  <data name="Analysis_Spectrum_SpokenPrimary" xml:space="preserve"><value>{0}，主波长 {1}</value></data>
+  <data name="Analysis_Spectrum_SummaryBlackbody" xml:space="preserve"><value>黑体 {0}</value></data>
+  <data name="Analysis_Spectrum_SummaryDesign" xml:space="preserve"><value>设计</value></data>
+  <data name="Analysis_Spectrum_SummaryPhotopic" xml:space="preserve"><value>明视觉</value></data>
+  <data name="Analysis_Spectrum_SummaryScotopic" xml:space="preserve"><value>暗视觉</value></data>
+  <data name="Analysis_Spectrum_SummarySensor" xml:space="preserve"><value>传感器（{0} 行）</value></data>
+  <data name="Analysis_Spectrum_SummaryWavelengths" xml:space="preserve"><value>{0} 个波长</value></data>
+  <data name="Analysis_Spectrum_TableSummary" xml:space="preserve"><value>{0} 行 · {1}–{2} µm</value></data>
+  <data name="Analysis_Spectrum_Temperature" xml:space="preserve"><value>温度</value></data>
+  <data name="Analysis_Spectrum_TemperatureName" xml:space="preserve"><value>温度（开尔文）</value></data>
+  <data name="Analysis_Spectrum_Tungsten" xml:space="preserve"><value>卤钨灯，3200 K</value></data>
+  <data name="Analysis_Spectrum_Uniform" xml:space="preserve"><value>均匀</value></data>
+  <data name="Analysis_Spectrum_Unreadable" xml:space="preserve"><value>无法读取该文件</value></data>
+  <data name="Analysis_Spectrum_UpperName" xml:space="preserve"><value>最长波长（微米）</value></data>
+  <data name="Analysis_Spectrum_WavelengthName" xml:space="preserve"><value>波长 {0}（微米）</value></data>
+  <data name="Analysis_Spectrum_Weight" xml:space="preserve"><value>权重</value></data>
+  <data name="Analysis_Spectrum_WeightName" xml:space="preserve"><value>波长 {0} 的权重</value></data>
+  <data name="Analysis_Summary_All" xml:space="preserve"><value>全部</value></data>
+  <data name="Analysis_Summary_Auto" xml:space="preserve"><value>{0} 自动</value></data>
+  <data name="Analysis_Summary_Off" xml:space="preserve"><value>关</value></data>
+  <data name="Analysis_Summary_On" xml:space="preserve"><value>开</value></data>
+  <data name="Analysis_Summary_Pair" xml:space="preserve"><value>{0} {1} {2} {3}</value></data>
+  <data name="Analysis_Summary_Point" xml:space="preserve"><value>{0} ({1}, {2})</value></data>
+  <data name="Analysis_Summary_Primary" xml:space="preserve"><value>主波长</value></data>
+  <data name="Analysis_Summary_Pupil" xml:space="preserve"><value>光瞳 {0}</value></data>
+  <data name="Analysis_Summary_SensorLimitNone" xml:space="preserve"><value>传感器限制 无</value></data>
+  <data name="Analysis_Summary_SensorLimit_Many" xml:space="preserve"><value>传感器限制 {0} 个点</value></data>
+  <data name="Analysis_Summary_SensorLimit_One" xml:space="preserve"><value>传感器限制 1 个点</value></data>
+  <data name="Analysis_Summary_SinglePlane" xml:space="preserve"><value>单一平面</value></data>
+  <data name="Analysis_Summary_Source" xml:space="preserve"><value>源 {0}</value></data>
+  <data name="Analysis_Summary_SourceImage" xml:space="preserve"><value>图像</value></data>
+  <data name="Analysis_Summary_Spectrum" xml:space="preserve"><value>光谱 {0}</value></data>
+  <data name="Analysis_Summary_SpectrumCustom" xml:space="preserve"><value>光谱 自定义</value></data>
+  <data name="Analysis_Summary_Value" xml:space="preserve"><value>{0} {1}</value></data>
   <!-- end area: Analysis -->
   <!-- area: Jobs -->
   <!-- end area: Jobs -->

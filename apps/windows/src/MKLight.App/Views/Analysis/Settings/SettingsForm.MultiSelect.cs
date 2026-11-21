@@ -2,6 +2,7 @@ using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Automation;
 using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Controls.Primitives;
+using MKLight.App.Support;
 using static MKLight.App.Views.Analysis.Settings.FormControls;
 
 namespace MKLight.App.Views.Analysis.Settings;
@@ -34,14 +35,14 @@ public sealed partial class SettingsForm
         var options = _ctx.Options(domain);
         // Menus number fields and wavelengths from 1, surfaces by their index.
         var offset = domain == IndexDomain.Surfaces ? 0 : 1;
-        var noneHelp = encoding == SelectionEncoding.List ? "\nNone checked: all." : "";
+        var noneHelp = encoding == SelectionEncoding.List ? "\n" + Loc.S("Analysis_Settings_NoneCheckedHelp") : "";
         if (options.Count == 0)
         {
             var box = new CommitBox(
                 _ => IndexSelection.Read(slot.Current, encoding).Text(offset),
                 text => IndexSelection.Parse(text, allowsPrimary, offset) is { } s ? new Edit(s.Write(encoding)) : null,
                 e => slot.Write(e, false), 110, number: false) { PlaceholderText = "all", TextAlignment = TextAlignment.Left };
-            ToolTipService.SetToolTip(box, Help(f) + "\nNumbers, comma separated; empty: all.");
+            ToolTipService.SetToolTip(box, Help(f) + "\n" + Loc.S("Analysis_Settings_NumbersHelp"));
             return box;
         }
 
@@ -56,8 +57,8 @@ public sealed partial class SettingsForm
             MenuFlyoutPresenterStyle = (Style)Microsoft.UI.Xaml.Markup.XamlReader.Load(PresenterStyle),
         };
         var button = Menu("", menu, Help(f) + noneHelp);
-        var all = new ToggleMenuFlyoutItem { Text = "All" };
-        var primary = allowsPrimary ? new ToggleMenuFlyoutItem { Text = "Primary" } : null;
+        var all = new ToggleMenuFlyoutItem { Text = Loc.S("Analysis_Settings_All") };
+        var primary = allowsPrimary ? new ToggleMenuFlyoutItem { Text = Loc.S("Analysis_Settings_Primary") } : null;
         var items = options.Select(o => (o.Index, Item: new ToggleMenuFlyoutItem { Text = o.Title })).ToList();
 
         void Show()
@@ -66,7 +67,7 @@ public sealed partial class SettingsForm
             if (primary is not null) primary.IsChecked = selection.Kind == SelectionKind.Primary;
             foreach (var (k, item) in items) item.IsChecked = selection.IsChecked(k);
             button.Content = selection.Title(options);
-            AutomationProperties.SetHelpText(button, $"{label}: {selection.AccessibleValue(options)}");
+            AutomationProperties.SetHelpText(button, Loc.F("Analysis_Settings_SelectionHelp", label, selection.AccessibleValue(options)));
         }
 
         // An option toggled keeps the menu open: its click comes before the menu's

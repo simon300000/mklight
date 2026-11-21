@@ -2,7 +2,9 @@ using System.Globalization;
 using System.Text.Json.Nodes;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
+using MKLight.App.Support;
 using MKLight.App.Views.Analysis.Results.Readers;
+using MKLight.Model;
 using static MKLight.App.Views.Analysis.Settings.FormControls;
 
 namespace MKLight.App.Views.Analysis.Settings;
@@ -114,7 +116,7 @@ public sealed partial class SettingsForm : UserControl
             .Where(r => r.Control.Kind != ControlKind.Hidden).ToList();
         if (rows.Count == 0)
         {
-            _root.Children.Add(Label("This analysis has no settings to change."));
+            _root.Children.Add(Label(Loc.S("Analysis_Settings_NoSettings")));
             return;
         }
         // The spectrum, the largest control, comes last on its own.
@@ -149,7 +151,7 @@ public sealed partial class SettingsForm : UserControl
         foreach (var (slot, control) in rows)
         {
             var f = slot.Field;
-            var label = Label(SettingEntry.Label(f), string.IsNullOrEmpty(f.Description) ? f.Title : f.Description);
+            var label = Label(SettingEntry.Label(f), Help(f));
             label.HorizontalAlignment = HorizontalAlignment.Right;
             label.VerticalAlignment = VerticalAlignment.Top;
             label.Margin = new Thickness(0, 5, 0, 0);
@@ -176,9 +178,9 @@ public sealed partial class SettingsForm : UserControl
         ControlKind.Picker => Picker(slot),
         ControlKind.FieldSelection => MultiSelect(slot, IndexDomain.Fields, SelectionEncoding.Tagged, allowsPrimary: false),
         ControlKind.WavelengthSelection => MultiSelect(slot, IndexDomain.Wavelengths, SelectionEncoding.Tagged, allowsPrimary: true),
-        ControlKind.FieldIndex => IndexMenu(slot, _ctx.FieldOptions, slot.Field.Nullable ? "Auto" : null),
-        ControlKind.WavelengthIndex => IndexMenu(slot, _ctx.WavelengthOptions, slot.Field.Name == "wavelength" ? "Primary" : "Auto"),
-        ControlKind.SurfaceIndex => IndexMenu(slot, _ctx.SurfaceOptions, slot.Field.Nullable ? "Auto" : null),
+        ControlKind.FieldIndex => IndexMenu(slot, _ctx.FieldOptions, slot.Field.Nullable ? Loc.S("Analysis_Settings_Auto") : null),
+        ControlKind.WavelengthIndex => IndexMenu(slot, _ctx.WavelengthOptions, Loc.S(slot.Field.Name == "wavelength" ? "Analysis_Settings_Primary" : "Analysis_Settings_Auto")),
+        ControlKind.SurfaceIndex => IndexMenu(slot, _ctx.SurfaceOptions, slot.Field.Nullable ? Loc.S("Analysis_Settings_Auto") : null),
         ControlKind.IndexList => MultiSelect(slot, c.Domain, SelectionEncoding.List, allowsPrimary: false),
         ControlKind.NumberList => NumberList(slot, c.Integer),
         ControlKind.Pair => Pair(slot, c.Integer, c.Nullable),
@@ -193,7 +195,8 @@ public sealed partial class SettingsForm : UserControl
         _ => null,
     };
 
-    static string Help(SettingsField f) => string.IsNullOrEmpty(f.Description) ? f.Title : f.Description;
+    /// <summary>A setting's tooltip: its description, else its title (engine text).</summary>
+    static string Help(SettingsField f) => EngineText.T(string.IsNullOrEmpty(f.Description) ? f.Title : f.Description);
 
     // MARK: Scalars
 
@@ -209,7 +212,7 @@ public sealed partial class SettingsForm : UserControl
     {
         var f = slot.Field;
         var auto = AutoSettings.Sentinel(slot.Path, _analysis);
-        var placeholder = auto is not null ? AutoSettings.Display(AutoSettings.Used(slot.Path, _analysis, _ctx.LastResult)) : f.Nullable ? "auto" : "";
+        var placeholder = auto is not null ? AutoSettings.Display(AutoSettings.Used(slot.Path, _analysis, _ctx.LastResult)) : f.Nullable ? Loc.S("Analysis_Settings_AutoWord") : "";
         var box = new CommitBox(
             exact => SettingEntry.NumberDisplay(slot.Current, f.IsInteger, auto, exact),
             text => SettingEntry.ParseNumber(text, f, auto),
@@ -218,8 +221,8 @@ public sealed partial class SettingsForm : UserControl
         var help = Help(f);
         if (auto is not null)
             help += AutoSettings.IsAuto(slot.Current, auto.Value)
-                ? "\nAutomatic: the engine chooses from the system."
-                : auto == AutoSentinel.Zero ? "\nClear the field (or type 0) to let the engine choose." : "\nClear the field to let the engine choose.";
+                ? "\n" + Loc.S("Analysis_Settings_AutoHelp")
+                : "\n" + Loc.S(auto == AutoSentinel.Zero ? "Analysis_Settings_AutoClearZeroHelp" : "Analysis_Settings_AutoClearHelp");
         ToolTipService.SetToolTip(box, help);
         return f.Unit.Length > 0 ? Row(box, Label(f.Unit)) : box;
     }
@@ -229,7 +232,7 @@ public sealed partial class SettingsForm : UserControl
         var f = slot.Field;
         var box = new CommitBox(_ => Json.Str(slot.Current) ?? "", text => SettingEntry.ParseText(text, f), e => slot.Write(e, false), 150, number: false)
         {
-            PlaceholderText = f.Nullable ? "any" : "",
+            PlaceholderText = f.Nullable ? Loc.S("Analysis_Settings_Any") : "",
         };
         ToolTipService.SetToolTip(box, Help(f));
         return box;
@@ -266,13 +269,14 @@ public sealed partial class SettingsForm : UserControl
     {
         var f = slot.Field;
         var auto = AutoSettings.Sentinel(slot.Path, _analysis);
-        var placeholder = auto is not null ? AutoSettings.Display(AutoSettings.Used(slot.Path, _analysis, _ctx.LastResult)) : f.Nullable ? "auto" : "none";
+        var placeholder = auto is not null ? AutoSettings.Display(AutoSettings.Used(slot.Path, _analysis, _ctx.LastResult))
+            : Loc.S(f.Nullable ? "Analysis_Settings_AutoWord" : "Analysis_Settings_NoneWord");
         var box = new CommitBox(
             exact => SettingEntry.ListDisplay(slot.Current, integer, exact),
             text => SettingEntry.ParseList(text, f, integer, auto),
             e => slot.Write(e, false),
             Math.Max(110, placeholder.Length * 7 + 20)) { PlaceholderText = placeholder, TextAlignment = TextAlignment.Left };
-        ToolTipService.SetToolTip(box, Help(f) + "\nComma separated" + (auto is not null ? "; empty lets the engine choose." : "."));
+        ToolTipService.SetToolTip(box, Help(f) + "\n" + Loc.S(auto is not null ? "Analysis_Settings_ListAutoHelp" : "Analysis_Settings_ListHelp"));
         var unit = f.Unit.Length > 0 ? f.Unit : auto is not null ? "cycles/mm" : "";
         return unit.Length > 0 ? Row(box, Label(unit)) : box;
     }
@@ -308,7 +312,7 @@ public sealed partial class SettingsForm : UserControl
                     return i == 0 ? SettingEntry.Pair(x, o, integer, nullable) : SettingEntry.Pair(o, x, integer, nullable);
                 },
                 e => slot.Write(e, false),
-                nullable ? 60 : integer ? 52 : 64) { PlaceholderText = nullable ? "auto" : "" };
+                nullable ? 60 : integer ? 52 : 64) { PlaceholderText = nullable ? Loc.S("Analysis_Settings_AutoWord") : "" };
             ToolTipService.SetToolTip(boxes[k], Help(f));
         }
         var row = Row();
@@ -339,7 +343,7 @@ public sealed partial class SettingsForm : UserControl
         var p = new StackPanel { Spacing = 4 };
         if (nullable)
         {
-            var box = new CheckBox { IsChecked = on, Content = on ? "On" : "Off", MinWidth = 0, MinHeight = 28, FontSize = 12 };
+            var box = new CheckBox { IsChecked = on, Content = Loc.S(on ? "Analysis_Settings_On" : "Analysis_Settings_Off"), MinWidth = 0, MinHeight = 28, FontSize = 12 };
             ToolTipService.SetToolTip(box, Help(f));
             box.Click += (_, _) => slot.Write(new Edit(box.IsChecked == true ? SettingControls.EnabledValue(f) : null), true);
             p.Children.Add(box);
@@ -354,8 +358,8 @@ public sealed partial class SettingsForm : UserControl
         var f = slot.Field;
         var current = f.VariantOf(slot.Current);
         var combo = new ComboBox { FontSize = 12, MinHeight = 28, MinWidth = 0, Padding = new Thickness(8, 3, 6, 4) };
-        if (nullable) combo.Items.Add("Off");
-        foreach (var v in f.Variants) combo.Items.Add(v.Title);
+        if (nullable) combo.Items.Add(Loc.S("Analysis_Settings_Off"));
+        foreach (var v in f.Variants) combo.Items.Add(EngineText.T(v.Title));
         var offset = nullable ? 1 : 0;
         combo.SelectedIndex = current is null ? (nullable && slot.Current is null ? 0 : -1) : f.Variants.ToList().IndexOf(current) + offset;
         combo.SelectionChanged += (_, _) =>
@@ -393,7 +397,7 @@ public sealed partial class SettingsForm : UserControl
         var steps = Steps();
         var symmetric = (min0 is null && max0 is null) || (min0 is double a && max0 is double b && Math.Abs(a + b) <= 1e-12 * Math.Max(1, Math.Abs(b)));
         var p = new StackPanel { Spacing = 4 };
-        var box = new CheckBox { IsChecked = on, Content = on ? "Planes before and after focus" : "Image surface only", MinWidth = 0, MinHeight = 28, FontSize = 12 };
+        var box = new CheckBox { IsChecked = on, Content = Loc.S(on ? "Analysis_Settings_ThroughFocusOn" : "Analysis_Settings_ThroughFocusOff"), MinWidth = 0, MinHeight = 28, FontSize = 12 };
         ToolTipService.SetToolTip(box, Help(slot.Field));
         box.Click += (_, _) => slot.Write(new Edit(box.IsChecked == true ? SettingEntry.ThroughFocus(null, null, steps) : null), true);
         p.Children.Add(box);
@@ -410,22 +414,22 @@ public sealed partial class SettingsForm : UserControl
         {
             var used = AutoSettings.Used("through_focus", _analysis, _ctx.LastResult)?.Replace("±", "");
             var half = BoundBox(Max, d => Write(d is double x ? -Math.Abs(x) : null, d is double y ? Math.Abs(y) : null, Steps(), false), AutoSettings.Display(used));
-            ToolTipService.SetToolTip(half, Bound.Description);
+            ToolTipService.SetToolTip(half, Loc.S("Analysis_Settings_BoundHelp"));
             row.Children.Add(Label("±"));
             row.Children.Add(half);
         }
         else
         {
-            row.Children.Add(BoundBox(Min, d => Write(d, Max(), Steps(), false), "auto"));
-            row.Children.Add(Label("to"));
-            row.Children.Add(BoundBox(Max, d => Write(Min(), d, Steps(), false), "auto"));
+            row.Children.Add(BoundBox(Min, d => Write(d, Max(), Steps(), false), Loc.S("Analysis_Settings_AutoWord")));
+            row.Children.Add(Label(Loc.S("Analysis_Settings_PairTo")));
+            row.Children.Add(BoundBox(Max, d => Write(Min(), d, Steps(), false), Loc.S("Analysis_Settings_AutoWord")));
         }
         row.Children.Add(Label("mm"));
-        var count = Label(steps == 1 ? "1 plane" : steps.ToString(CultureInfo.InvariantCulture) + " planes", style: "NumberText");
+        var count = Label(SettingEntry.Planes(steps), style: "NumberText");
         count.Margin = new Thickness(6, 0, 0, 0);
         row.Children.Add(count);
-        row.Children.Add(StepButton("\uE949", "Fewer planes", steps > 1, () => Write(Min(), Max(), Math.Max(Steps() - 1, 1), true)));
-        row.Children.Add(StepButton("\uE948", "More planes", steps < 15, () => Write(Min(), Max(), Math.Min(Steps() + 1, 15), true)));
+        row.Children.Add(StepButton("\uE949", Loc.S("Analysis_Settings_FewerPlanes"), steps > 1, () => Write(Min(), Max(), Math.Max(Steps() - 1, 1), true)));
+        row.Children.Add(StepButton("\uE948", Loc.S("Analysis_Settings_MorePlanes"), steps < 15, () => Write(Min(), Max(), Math.Min(Steps() + 1, 15), true)));
         p.Children.Add(row);
         return p;
     }

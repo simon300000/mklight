@@ -6,6 +6,7 @@ using Microsoft.UI.Xaml.Media;
 using MKLight.App.Support;
 using MKLight.App.ViewModels;
 using MKLight.Engine;
+using MKLight.Model;
 
 namespace MKLight.App.Views.Analysis.RunDetails;
 
@@ -21,6 +22,9 @@ namespace MKLight.App.Views.Analysis.RunDetails;
 public static class RunDetailsView
 {
     const double LabelWidth = 104;
+
+    /// <summary>The <see cref="FrameworkElement.Tag"/> of a remedy button.</summary>
+    public const string RemedyTag = "RunRemedy";
 
     /// <summary>Fill <paramref name="panel"/> (the badge's flyout) for <paramref name="output"/> of <paramref name="pane"/>.</summary>
     public static void Build(StackPanel panel, AnalysisOutput output, AnalysisPaneModel pane, DesignSession session)
@@ -51,39 +55,40 @@ public static class RunDetailsView
             rows.Children.Add(v);
         }
 
-        panel.Children.Add(Heading("Run Information", top: 0));
-        Row("Computed on", b?.Summary ?? info.Backend);
-        Row("Requested", b is null || b.Requested.Length == 0 ? null : RunRoute.Requested(b.Requested));
-        if (b is not null) Row("Route", RunRoute.Line(b.Requested, b.CostDecision));
-        Row("Ran on the CPU", b?.FallbackReason);
-        Row("Precision", info.Precision == MKLight.Engine.Precision.F64Reference ? "f64 reference" : "f32 (GPU, qualified)");
-        Row("Tier", RunRoute.Tier(info.Tier == Tier.Preview));
-        Row("Seed", info.Seed?.ToString(CultureInfo.InvariantCulture));
-        Row("Snapshot", info.SnapshotHash.ToString() is { Length: > 12 } h ? h[..12] + "…" : info.SnapshotHash.ToString());
-        Row("Engine", info.EngineVersion);
-        Row("Time", Time(output));
+        // The backend's summary, a fallback's reason and an attempt's reason are the engine's words.
+        panel.Children.Add(Heading(Loc.S("Analysis_RunDetails_Heading"), top: 0));
+        Row(Loc.S("Analysis_RunDetails_ComputedOn"), EngineText.T(b?.Summary ?? info.Backend));
+        Row(Loc.S("Analysis_RunDetails_Requested"), b is null || b.Requested.Length == 0 ? null : RunRoute.Requested(b.Requested));
+        if (b is not null) Row(Loc.S("Analysis_RunDetails_Route"), RunRoute.Line(b.Requested, b.CostDecision));
+        Row(Loc.S("Analysis_RunDetails_RanOnCpu"), b?.FallbackReason is { } reason ? EngineText.T(reason) : null);
+        Row(Loc.S("Analysis_RunDetails_Precision"), Loc.S(info.Precision == MKLight.Engine.Precision.F64Reference ? "Analysis_RunDetails_PrecisionF64" : "Analysis_RunDetails_PrecisionF32"));
+        Row(Loc.S("Analysis_RunDetails_Tier"), RunRoute.Tier(info.Tier == Tier.Preview));
+        Row(Loc.S("Analysis_RunDetails_Seed"), info.Seed?.ToString(CultureInfo.InvariantCulture));
+        Row(Loc.S("Analysis_RunDetails_Snapshot"), info.SnapshotHash.ToString() is { Length: > 12 } h ? h[..12] + "…" : info.SnapshotHash.ToString());
+        Row(Loc.S("Analysis_RunDetails_Engine"), info.EngineVersion);
+        Row(Loc.S("Analysis_RunDetails_Time"), Time(output));
         panel.Children.Add(rows);
 
         if (info.FailedAttempts.Count > 0)
         {
             panel.Children.Add(Divider());
             var n = info.FailedAttempts.Count;
-            panel.Children.Add(Heading(n == 1 ? "Attempt Not Used" : $"{n.ToString(CultureInfo.InvariantCulture)} Attempts Not Used"));
+            panel.Children.Add(Heading(n == 1 ? Loc.S("Analysis_RunDetails_AttemptsNotUsed_One") : Loc.F("Analysis_RunDetails_AttemptsNotUsed_Many", n)));
             foreach (var a in info.FailedAttempts)
-                panel.Children.Add(Item(RunRoute.AttemptTitle(a.Backend, a.Outcome, a.ElapsedMs), a.Reason, null));
+                panel.Children.Add(Item(RunRoute.AttemptTitle(a.Backend, a.Outcome, a.ElapsedMs), a.Reason is { } why ? EngineText.T(why) : null, null));
         }
 
         if (info.Warnings.Count > 0)
         {
             panel.Children.Add(Divider());
             var groups = RunWarnings.Group(info.Warnings);
-            panel.Children.Add(Heading(groups.Count == 1 ? "Warning" : $"{groups.Count.ToString(CultureInfo.InvariantCulture)} Warnings"));
+            panel.Children.Add(Heading(groups.Count == 1 ? Loc.S("Analysis_RunDetails_Warnings_One") : Loc.F("Analysis_RunDetails_Warnings_Many", groups.Count)));
             var defaults = session.Workspace.Descriptor(pane.Analysis)?.ToJson()["default_settings"] as JsonObject;
             JsonNode? Value(string key) => pane.Settings[key] ?? defaults?[key];
             foreach (var g in groups)
             {
                 var fix = RunRemedy.For(g.Remedy, Value);
-                panel.Children.Add(Item(g.Message, g.Scopes.Count > 0 ? string.Join(", ", g.Scopes) : null, fix is null ? null : RemedyButton(fix, pane)));
+                panel.Children.Add(Item(EngineText.T(g.Message), g.Scopes.Count > 0 ? string.Join(", ", g.Scopes) : null, fix is null ? null : RemedyButton(fix, pane)));
             }
             if (info.Warnings.Count > groups.Count)
             {
@@ -99,7 +104,7 @@ public static class RunDetailsView
                 }
                 panel.Children.Add(new Expander
                 {
-                    Header = Text($"All {info.Warnings.Count.ToString(CultureInfo.InvariantCulture)} messages from the engine", "CaptionText"),
+                    Header = Text(Loc.F("Analysis_RunDetails_AllMessages", info.Warnings.Count), "CaptionText"),
                     Content = all, HorizontalAlignment = HorizontalAlignment.Stretch, HorizontalContentAlignment = HorizontalAlignment.Left,
                     MinHeight = 0, Padding = new Thickness(12, 6, 8, 6), Margin = new Thickness(0, 4, 0, 0),
                 });
@@ -156,7 +161,7 @@ public static class RunDetailsView
         }
         if (action is not null) lines.Children.Add(action);
         g.Children.Add(lines);
-        Microsoft.UI.Xaml.Automation.AutomationProperties.SetName(g, string.IsNullOrEmpty(detail) ? title : $"{detail}: {title}");
+        Microsoft.UI.Xaml.Automation.AutomationProperties.SetName(g, string.IsNullOrEmpty(detail) ? title : Loc.F("Analysis_RunDetails_ItemName", detail, title));
         return g;
     }
 
@@ -169,6 +174,7 @@ public static class RunDetailsView
         };
         Microsoft.UI.Xaml.Documents.Typography.SetNumeralAlignment(b, FontNumeralAlignment.Tabular);
         ToolTipService.SetToolTip(b, fix.Help);
+        b.Tag = RemedyTag; // the remedy launch action finds it by this, whatever the language
         b.Click += (_, _) =>
         {
             var settings = (JsonObject)pane.Settings.DeepClone();
@@ -204,7 +210,7 @@ public static class RunDetailsView
     public static IReadOnlyList<string> Warnings(AnalysisOutput output)
     {
         var b = output.Backend;
-        var fallback = b?.FallbackReason is not null && b.Requested is not ("auto" or "default:auto" or "" or "cpu_reference" or "default:cpu_reference") ? "Ran on the CPU: " + b.FallbackReason : null;
+        var fallback = b?.FallbackReason is not null && b.Requested is not ("auto" or "default:auto" or "" or "cpu_reference" or "default:cpu_reference") ? Loc.F("Analysis_RunDetails_RanOnCpuTip", EngineText.T(b.FallbackReason)) : null;
         return
         [
             .. RunWarnings.Group(output.RunInfo.Warnings).Select(g => g.Line),

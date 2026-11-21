@@ -1,3 +1,4 @@
+using MKLight.App.Support;
 using MKLight.App.Views.Analysis.Results.Readers;
 
 namespace MKLight.App.Views.Analysis.Settings;
@@ -26,7 +27,7 @@ public sealed class SettingsContext
         FieldLabels.Select((l, k) => (k, $"{k + 1}: {l}")).ToList();
 
     public IReadOnlyList<(int Index, string Title)> WavelengthOptions =>
-        WavelengthsUm.Select((w, k) => (k, Fmt.Wavelength(w) + (k == PrimaryWavelength ? " (primary)" : ""))).ToList();
+        WavelengthsUm.Select((w, k) => (k, k == PrimaryWavelength ? Loc.F("Analysis_Settings_PrimarySuffix", Fmt.Wavelength(w)) : Fmt.Wavelength(w))).ToList();
 
     public IReadOnlyList<(int Index, string Title)> SurfaceOptions =>
         SurfaceLabels.Select((l, k) => (k, l)).Skip(1).ToList();

@@ -62,7 +62,7 @@ static class SettingsLaunchActions
         {
             var button = VisualTreeHelper.GetOpenPopupsForXamlRoot(w.RootElement.XamlRoot)
                 .SelectMany(p => p.Child is { } c ? Descendants<Button>(c) : [])
-                .FirstOrDefault(b => b.Content is string s && (s.StartsWith("Sample the Pupil", StringComparison.Ordinal) || s.StartsWith("Size the", StringComparison.Ordinal)));
+                .FirstOrDefault(b => b.Tag is RunDetails.RunDetailsView.RemedyTag);
             if (button is not null) new Microsoft.UI.Xaml.Automation.Peers.ButtonAutomationPeer(button).Invoke();
             await Task.Delay(500);
         };
@@ -77,7 +77,8 @@ static class SettingsLaunchActions
                 {
                     menu.ShowAt(button);
                     await Task.Delay(300);
-                    var options = menu.Items.OfType<ToggleMenuFlyoutItem>().Where(i => i.Text is not ("All" or "Primary")).ToList();
+                    // The options come after the separator ("All" and "Primary" are before it).
+                    var options = menu.Items.SkipWhile(i => i is not MenuFlyoutSeparator).OfType<ToggleMenuFlyoutItem>().ToList();
                     foreach (var n in parts.Length > 1 ? parts[1].Split(',', StringSplitOptions.RemoveEmptyEntries) : [])
                         if (int.TryParse(n, System.Globalization.CultureInfo.InvariantCulture, out var k) && k >= 1 && k <= options.Count)
                         {

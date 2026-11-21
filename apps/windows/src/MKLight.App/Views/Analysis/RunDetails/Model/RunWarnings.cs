@@ -1,7 +1,9 @@
 using System.Globalization;
 using System.Text.Json.Nodes;
 using System.Text.RegularExpressions;
+using MKLight.App.Support;
 using MKLight.App.Views.Analysis.Results.Readers;
+using MKLight.Model;
 
 namespace MKLight.App.Views.Analysis.RunDetails;
 
@@ -23,8 +25,8 @@ public enum WarningRemedy
 /// </summary>
 public sealed record WarningGroup(string Message, IReadOnlyList<string> Scopes, WarningRemedy Remedy)
 {
-    /// <summary>One line for tooltips and screen readers: "Field 1, Field 3: message".</summary>
-    public string Line => Scopes.Count == 0 ? Message : string.Join(", ", Scopes) + ": " + Message;
+    /// <summary>One line for tooltips and screen readers: "Field 1, Field 3: message" (the message is engine text).</summary>
+    public string Line => Scopes.Count == 0 ? EngineText.T(Message) : Loc.F("Analysis_RunDetails_ScopedWarning", string.Join(", ", Scopes), EngineText.T(Message));
 }
 
 /// <summary>
@@ -61,7 +63,7 @@ public static partial class RunWarnings
     {
         var g = Group(warnings);
         if (g.Count == 0) return "";
-        return g[0].Line + (g.Count > 1 ? $" (and {(g.Count - 1).ToString(CultureInfo.InvariantCulture)} more)" : "");
+        return g.Count > 1 ? Loc.F("Analysis_RunDetails_WarningSummary", g[0].Line, g.Count - 1) : g[0].Line;
     }
 
     /// <summary><c>field 2, wavelength 1: text</c> → (<c>Field 3 · λ2</c>, <c>text</c>); also <c>field (1, -1): text</c>.</summary>
@@ -71,7 +73,7 @@ public static partial class RunWarnings
         var colon = t.IndexOf(": ", StringComparison.Ordinal);
         if (colon < 0) return (null, t);
         string head = t[..colon], rest = t[(colon + 2)..];
-        if (head.StartsWith("field (", StringComparison.Ordinal)) return ("field " + head["field ".Length..].Replace('-', '−'), rest);
+        if (head.StartsWith("field (", StringComparison.Ordinal)) return (Loc.F("Analysis_RunDetails_FieldPoint", head["field ".Length..].Replace('-', '−')), rest);
         var scope = new List<string>();
         foreach (var p in head.Split(',').Select(p => p.Trim()))
         {
@@ -79,9 +81,9 @@ public static partial class RunWarnings
             if (words.Length != 2 || !int.TryParse(words[1], NumberStyles.None, CultureInfo.InvariantCulture, out var k)) return (null, t);
             switch (words[0])
             {
-                case "field": scope.Add("Field " + (k + 1).ToString(CultureInfo.InvariantCulture)); break;
+                case "field": scope.Add(Loc.F("Analysis_RunDetails_Field", k + 1)); break;
                 case "wavelength": scope.Add("λ" + (k + 1).ToString(CultureInfo.InvariantCulture)); break;
-                case "surface": scope.Add("Surface " + k.ToString(CultureInfo.InvariantCulture)); break;
+                case "surface": scope.Add(Loc.F("Analysis_RunDetails_Surface", k)); break;
                 default: return (null, t);
             }
         }
@@ -124,8 +126,8 @@ public sealed record RunRemedy(string Title, string Help, string Key, JsonNode V
             case WarningRemedy.PupilSampling:
                 if ((optics?["pupil"] ?? value("pupil"))?.DeepClone() is not JsonObject pupil || Json.Int(pupil["grid"]) is not int grid || grid <= 0) return null;
                 pupil["grid"] = 0;
-                var title = $"Sample the Pupil Automatically (grid {I(grid)} → auto)";
-                var help = $"The pupil grid is set to {I(grid)}. Automatic sampling picks a grid fine enough for the wavefront's slope (64 to 1024), then runs again.";
+                var title = Loc.F("Analysis_Remedy_PupilTitle", I(grid));
+                var help = Loc.F("Analysis_Remedy_PupilHelp", I(grid));
                 if (optics is not null)
                 {
                     optics["pupil"] = pupil;
@@ -137,13 +139,11 @@ public sealed record RunRemedy(string Title, string Help, string Key, JsonNode V
                 {
                     if (Json.Int(optics["psf_size"]) is not int window || window <= 0) return null;
                     optics["psf_size"] = 0;
-                    return new($"Size the PSF Window Automatically ({I(window)} → auto)",
-                        $"The PSF window is set to {I(window)} samples. The automatic window holds the blur and its diffraction wings, then runs again.",
+                    return new(Loc.F("Analysis_Remedy_PsfWindowTitle", I(window)), Loc.F("Analysis_Remedy_PsfWindowHelp", I(window)),
                         "optics", optics);
                 }
                 if (Json.Int(value("grid_size")) is not int size || size <= 0) return null;
-                return new($"Size the Image Grid Automatically ({I(size)} → auto)",
-                    $"The image grid is set to {I(size)}. The automatic grid holds the blur and its diffraction wings, then runs again.",
+                return new(Loc.F("Analysis_Remedy_ImageGridTitle", I(size)), Loc.F("Analysis_Remedy_ImageGridHelp", I(size)),
                     "grid_size", 0);
             default:
                 return null;
