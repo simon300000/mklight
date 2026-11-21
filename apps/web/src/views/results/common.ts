@@ -4,9 +4,9 @@ import { useLayoutEffect, useRef, useState, type RefObject } from 'react'
 import type { AnalysisResult, Json, JsonObject } from '@/engine/types'
 import { nf, sig } from '@/model/format'
 import { fieldUnit, type System } from '@/model/system'
-import { wavelengthColor } from '@/lib/theme'
+import { FONT_FAMILY, wavelengthColor } from '@/lib/theme'
 
-export const FONT = '11px -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif'
+export const FONT = `11px ${FONT_FAMILY}`
 
 export const arr = (v: Json | undefined): Json[] => (Array.isArray(v) ? v : [])
 export const obj = (v: Json | undefined): JsonObject | null =>

@@ -12,7 +12,7 @@ import {
   type Phase,
 } from '@/model/shapeSag'
 import type { Shape } from '@/model/system'
-import { cssVar, seriesColor, useDark } from '@/lib/theme'
+import { cssVar, FONT_FAMILY, seriesColor, useDark } from '@/lib/theme'
 
 interface Series {
   label: string
@@ -21,7 +21,7 @@ interface Series {
   points: [number, number][]
 }
 
-const FONT = '10px -apple-system, BlinkMacSystemFont, "SF Pro Text", system-ui, sans-serif'
+const FONT = `10px ${FONT_FAMILY}`
 
 /** A compact line chart on a canvas: zero lines, the extremes as ticks. */
 function LineChart({ series, xDomain, xLabel, yLabel, height = 116, ariaLabel }: { series: Series[]; xDomain: [number, number]; xLabel: string; yLabel: string; height?: number; ariaLabel: string }) {

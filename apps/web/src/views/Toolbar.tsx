@@ -1,4 +1,4 @@
-import { Menu, PanelLeft, PanelRight, Plus } from 'lucide-react'
+import { Languages, Menu, PanelLeft, PanelRight, Plus } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import {
   DropdownMenu,
@@ -28,6 +28,33 @@ import { StatusCapsule } from './StatusCapsule'
 import { CommandPalette } from './CommandPalette'
 import { closePanel, commandPanel, isDetached, moveToMainWindow, moveToNewWindow, panelTitle, resetPanelLayout } from './panels/actions'
 import { LAYOUT_PANEL, LENS_DATA } from '@/state/arrangement'
+import { LANGUAGES, useI18n, useT, type LanguageChoice } from '@/i18n'
+
+/** Language: the system's (default) or a fixed one; switches live. Each
+ *  language is named in itself. */
+function LanguageMenu() {
+  const t = useT()
+  const choice = useI18n((s) => s.choice)
+  const setChoice = useI18n((s) => s.setChoice)
+  return (
+    <DropdownMenuSub>
+      <DropdownMenuSubTrigger data-testid="language-menu">
+        <Languages />
+        {t('app.language.menu')}
+      </DropdownMenuSubTrigger>
+      <DropdownMenuSubContent>
+        <DropdownMenuRadioGroup value={choice} onValueChange={(c) => void setChoice(c as LanguageChoice)}>
+          <DropdownMenuRadioItem value="system">{t('app.language.system')}</DropdownMenuRadioItem>
+          {LANGUAGES.map((l) => (
+            <DropdownMenuRadioItem key={l.value} value={l.value} lang={l.value}>
+              {l.name}
+            </DropdownMenuRadioItem>
+          ))}
+        </DropdownMenuRadioGroup>
+      </DropdownMenuSubContent>
+    </DropdownMenuSub>
+  )
+}
 
 /** View ▸ Panel: for the focused panel (the selected tab of the window in front). */
 function PanelMenu() {
@@ -196,6 +223,8 @@ function AppMenu() {
           <CommandItem id="surfacePage" title="Surface Inspector" />
           <CommandItem id="systemPage" title="System Inspector" />
         </MenuGroup>
+        <DropdownMenuSeparator />
+        <LanguageMenu />
       </DropdownMenuContent>
     </DropdownMenu>
   )

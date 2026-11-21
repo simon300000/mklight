@@ -58,7 +58,7 @@ import { LENS_DATA } from '@/state/arrangement'
 import { useDocument } from '@/state/document'
 import { useView } from '@/state/view'
 import { allIssues, LAYOUT, useWorkspace, type Issue } from '@/state/workspace'
-import { cssVar, useDark } from '@/lib/theme'
+import { cssVar, FONT_FAMILY, useDark } from '@/lib/theme'
 import { cn, shortcutLabel } from '@/lib/utils'
 import { PanelHeader } from './PanelHeader'
 import { usePortalContainer } from './panels/context'
@@ -387,7 +387,7 @@ function useGridTheme(): Partial<Theme> {
       borderColor: dark ? 'rgba(255,255,255,0.07)' : 'rgba(0,0,0,0.06)',
       horizontalBorderColor: dark ? 'rgba(255,255,255,0.07)' : 'rgba(0,0,0,0.06)',
       headerBottomBorderColor: dark ? 'rgba(255,255,255,0.14)' : 'rgba(0,0,0,0.12)',
-      fontFamily: '-apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", system-ui, sans-serif',
+      fontFamily: FONT_FAMILY,
       baseFontStyle: '13px',
       headerFontStyle: '600 11px',
       editorFontSize: '13px',
