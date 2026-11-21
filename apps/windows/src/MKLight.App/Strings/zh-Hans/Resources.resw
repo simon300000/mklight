@@ -668,7 +668,7 @@
   <data name="Jobs_Tolerance_Panel_WorstTrialsHelp" xml:space="preserve"><value>列出最差试验，而非所选柱条的试验</value></data>
   <data name="Jobs_Tolerance_Panel_WorstTrialsTitle" xml:space="preserve"><value>最差试验</value></data>
   <data name="Jobs_Tolerance_Panel_Yield" xml:space="preserve"><value>良率（合格限 {0}）</value></data>
-  <data name="Jobs_Tolerance_Result_PreviewAtLimit" xml:space="preserve"><value>{0}（{1}）</value></data>
+  <data name="Jobs_Tolerance_Result_PreviewAtLimit" xml:space="preserve"><value>{0} 处于 {1}</value></data>
   <data name="Jobs_Tolerance_Result_PreviewCase" xml:space="preserve"><value>公差：{0}</value></data>
   <data name="Jobs_Tolerance_Result_PreviewCaseCompensated" xml:space="preserve"><value>公差：{0}，已补偿</value></data>
   <data name="Jobs_Tolerance_Result_PreviewOperand" xml:space="preserve"><value>操作数 {0}</value></data>

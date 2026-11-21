@@ -867,11 +867,15 @@ public sealed partial class TolerancePanel : UserControl
     UIElement PreviewCard(ViewModels.Jobs.ToleranceResult r, CriterionDisplay d)
     {
         var p = new StackPanel { Spacing = 4 };
-        var head = new Grid();
-        var title = JobUI.Text(_s.Previewed!.Title(r, _s.RunSystem, _s.ResultRows), "PanelTitleText");
+        // The title wraps beside End Preview rather than running under it.
+        var head = new Grid { ColumnSpacing = 8 };
+        head.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        head.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        var title = JobUI.Text(_s.Previewed!.Title(r, _s.RunSystem, _s.ResultRows), "PanelTitleText", wrap: true);
         JobUI.Bind(title, "AccentTextFillColorPrimaryBrush", b => title.Foreground = b);
         head.Children.Add(title);
-        var end = new HyperlinkButton { Content = Loc.S("Jobs_Tolerance_Panel_EndPreview"), Padding = new Thickness(0), FontSize = 12, HorizontalAlignment = HorizontalAlignment.Right };
+        var end = new HyperlinkButton { Content = Loc.S("Jobs_Tolerance_Panel_EndPreview"), Padding = new Thickness(0), FontSize = 12, HorizontalAlignment = HorizontalAlignment.Right, VerticalAlignment = VerticalAlignment.Top };
+        Grid.SetColumn(end, 1);
         end.Click += (_, _) => _s.EndPreview();
         head.Children.Add(end);
         p.Children.Add(head);
