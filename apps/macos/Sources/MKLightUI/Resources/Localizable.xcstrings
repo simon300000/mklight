@@ -83,7 +83,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : " (GPU 预计 %1$@，CPU %2$@)"
+            "value" : "（GPU 预计 %1$@，CPU %2$@）"
           }
         }
       }
@@ -357,7 +357,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "%@ 带有熔炼批次偏移。替换玻璃安装时不带该偏移，即使是同一种玻璃也是如此：该偏移属于原熔炼批次。"
+            "value" : "%@ 带有熔炼偏差。替换玻璃不带此偏差，即使是同一种玻璃：偏差属于原来的熔炼批次。"
           }
         }
       }
@@ -367,7 +367,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "%@ 带有熔炼批次偏移。替换玻璃安装时不带这些偏移，即使是同一种玻璃也是如此：偏移属于原熔炼批次。"
+            "value" : "%@ 带有熔炼偏差。替换玻璃不带这些偏差，即使是同一种玻璃：偏差属于原来的熔炼批次。"
           }
         }
       }
@@ -423,7 +423,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "已用时 %@"
+            "value" : "已用 %@"
           }
         }
       }
@@ -439,7 +439,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "%1$@ 在 %2$@ 后失败；已改在 CPU 上完成"
+            "value" : "%1$@ 在 %2$@ 后失败；已在 CPU 上完成"
           }
         }
       }
@@ -449,7 +449,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "%@ 失败；已改在 CPU 上完成"
+            "value" : "%@ 失败；已在 CPU 上完成"
           }
         }
       }
@@ -509,7 +509,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "%@ 不是已注册的玻璃库文件。"
+            "value" : "%@ 不是已注册的资料库文件。"
           }
         }
       }
@@ -581,7 +581,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "%1$@ 在归一化视场上的分布图，%2$lld × %3$lld 个采样点"
+            "value" : "归一化视场上的 %1$@ 分布图，%2$lld × %3$lld 个采样点"
           }
         }
       }
@@ -669,7 +669,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "未使用 %1$@ (%2$@)"
+            "value" : "未使用 %1$@（%2$@）"
           }
         }
       }
@@ -725,7 +725,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "%@ 路径的结果已在 CPU 上补全"
+            "value" : "%@ 路径的结果已在 CPU 上完成"
           }
         }
       }
@@ -741,7 +741,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "%1$@ 路径的结果已在 CPU 上补全 (%2$@)"
+            "value" : "%1$@ 路径的结果已在 CPU 上完成（%2$@）"
           }
         }
       }
@@ -777,7 +777,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "百分之 %1$@ 的成品至少为 %2$@"
+            "value" : "%1$@% 的成品至少为 %2$@"
           }
         }
       }
@@ -793,7 +793,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "百分之 %1$@ 的成品至多为 %2$@"
+            "value" : "%1$@% 的成品至多为 %2$@"
           }
         }
       }
@@ -1038,7 +1038,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "%@%% 被截断"
+            "value" : "%@%% 过曝"
           }
         }
       }
@@ -1187,7 +1187,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "%1$@：%2$@ / %3$@"
+            "value" : "%1$@：%2$@（限值 %3$@）"
           }
         }
       }
@@ -1235,7 +1235,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "%1$@；%2$lld 项未更改。"
+            "value" : "%1$@；%2$lld 种未变。"
           }
         }
       }
@@ -1245,7 +1245,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "%@；沿用首个相同请求的结果"
+            "value" : "%@；沿用首次相同请求的结果"
           }
         }
       }
@@ -1320,7 +1320,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "已添加 %lld 项"
+            "value" : "新增 %lld 种"
           }
         }
       }
@@ -1330,7 +1330,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "%lld 项已更改"
+            "value" : "变更 %lld 种"
           }
         }
       }
@@ -1488,7 +1488,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "另外 %lld 行"
+            "value" : "另有 %lld 行"
           }
         }
       }
@@ -1498,7 +1498,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "最近的 %lld 种"
+            "value" : "最接近的 %lld 种"
           }
         }
       }
@@ -1524,7 +1524,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "%1$lld / %2$@"
+            "value" : "%1$lld/%2$@"
           }
         }
       }
@@ -1540,7 +1540,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "%1$lld / %2$lld"
+            "value" : "%1$lld/%2$lld"
           }
         }
       }
@@ -1596,7 +1596,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "%lld 个像素"
+            "value" : "%lld 像素"
           }
         }
       }
@@ -1629,7 +1629,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "已移除 %lld 项"
+            "value" : "移除 %lld 种"
           }
         }
       }
@@ -1705,7 +1705,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "已选择 %lld 项"
+            "value" : "已选 %lld 个"
           }
         }
       }
@@ -1721,7 +1721,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "%2$@ 中有 %1$lld 个求解"
+            "value" : "%2$@：%1$lld 个求解"
           }
         }
       }
@@ -1763,7 +1763,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "%1$lld 个面 · 光阑位于 %2$lld · mm"
+            "value" : "%1$lld 个面 · 光阑在第 %2$lld 面 · mm"
           }
         }
       }
@@ -1773,7 +1773,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "%lld 项，此类型允许的最多项数。"
+            "value" : "%lld 项，已达此面型的上限。"
           }
         }
       }
@@ -2046,7 +2046,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "0 到 1"
+            "value" : "0 至 1"
           }
         }
       }
@@ -2056,7 +2056,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "0 到 100"
+            "value" : "0 至 100"
           }
         }
       }
@@ -2146,7 +2146,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "有 1 项未能精确导入。使用此设计前请先检查该项。"
+            "value" : "有 1 项未能精确导入。请先检查，再使用此设计。"
           }
         }
       }
@@ -2391,7 +2391,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "：移动了 %1$@ 至 +%2$@ %3$@"
+            "value" : "：移动 %1$@ 至 +%2$@ %3$@"
           }
         }
       }
@@ -2421,7 +2421,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "%@求解设定了此值，因此优化器在运行中不使用此变量。请移除变量，或移除求解以使其可变。"
+            "value" : "%@ 求解设定了此值，因此优化器在运行中不使用此变量。请移除变量，或移除求解以使其可变。"
           }
         }
       }
@@ -2441,7 +2441,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "柱面是只有一个剖面为平面的双锥面。"
+            "value" : "柱面是一个截面为平面的双锥面。"
           }
         }
       }
@@ -2481,7 +2481,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "聚焦相位的 A₁ 为负。系数描述 +1 级，在波长或衍射级次改变时保持不变。"
+            "value" : "会聚相位的 A₁ 为负。系数描述 +1 级，波长或级次改变时保持不变。"
           }
         }
       }
@@ -2588,7 +2588,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "关于半径范围"
+            "value" : "关于半径边界"
           }
         }
       }
@@ -2608,7 +2608,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "耐酸性 (SR)"
+            "value" : "耐酸性（SR）"
           }
         }
       }
@@ -2628,7 +2628,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "添加%@"
+            "value" : "添加 %@"
           }
         }
       }
@@ -2674,7 +2674,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "将玻璃库添加到设计…"
+            "value" : "添加玻璃库到设计…"
           }
         }
       }
@@ -2734,7 +2734,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "将玻璃库添加到设计…"
+            "value" : "添加玻璃库到设计…"
           }
         }
       }
@@ -2934,7 +2934,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "已添加"
+            "value" : "新增"
           }
         }
       }
@@ -2960,7 +2960,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "已将 %@ 添加到玻璃库。"
+            "value" : "已将 %@ 添加到资料库。"
           }
         }
       }
@@ -2970,7 +2970,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "之后"
+            "value" : "优化后"
           }
         }
       }
@@ -2990,7 +2990,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "让每条光线瞄准实际光阑而非近轴入瞳。速度较慢，大视场和存在光瞳像差时需要。"
+            "value" : "让每条光线瞄准实际光阑，而非近轴入瞳。速度较慢，大视场和存在光瞳像差时需要。"
           }
         }
       }
@@ -3090,7 +3090,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "耐碱性 (AR)"
+            "value" : "耐碱性（AR）"
           }
         }
       }
@@ -3190,7 +3190,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "已在玻璃库中。"
+            "value" : "已在资料库中。"
           }
         }
       }
@@ -3210,7 +3210,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "透镜移动物面与像面之间的面，从第一个到最后一个。"
+            "value" : "元件移动的是物面与像面之间、从首面到末面的各面。"
           }
         }
       }
@@ -3380,7 +3380,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "将结果作为一个可撤销的步骤应用"
+            "value" : "将结果作为一步应用，可撤销"
           }
         }
       }
@@ -3420,7 +3420,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "对前面的操作数做运算"
+            "value" : "对前面操作数的运算"
           }
         }
       }
@@ -3500,7 +3500,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "每个透镜面的像散和球面不规则度，各为 %@ nm 下的此数量检测光圈（通光口径内峰谷值）。"
+            "value" : "每个透镜面的像散和球面不规则度，各为 %@ nm 下的此数量检验光圈（通光孔径内峰谷值）。"
           }
         }
       }
@@ -3540,7 +3540,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "λ = %.4f µm 时"
+            "value" : "λ = %.4f µm"
           }
         }
       }
@@ -3742,7 +3742,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "恢复为目录玻璃"
+            "value" : "恢复为玻璃库玻璃"
           }
         }
       }
@@ -3762,7 +3762,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "返回玻璃与搜索设置"
+            "value" : "返回玻璃和搜索设置"
           }
         }
       }
@@ -3812,7 +3812,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "基底圆锥"
+            "value" : "基底二次曲面"
           }
         }
       }
@@ -3832,7 +3832,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "基底面型"
+            "value" : "基底面形"
           }
         }
       }
@@ -3882,7 +3882,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "之前"
+            "value" : "原设计"
           }
         }
       }
@@ -3912,7 +3912,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "最佳离焦"
+            "value" : "最佳离焦量"
           }
         }
       }
@@ -3982,7 +3982,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "模糊 ⌀ (mm)"
+            "value" : "弥散斑 ⌀（mm）"
           }
         }
       }
@@ -3992,7 +3992,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "双向"
+            "value" : "两者"
           }
         }
       }
@@ -4002,7 +4002,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "两个极限均为零。"
+            "value" : "两个限值均为零。"
           }
         }
       }
@@ -4012,7 +4012,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "曲率范围单位"
+            "value" : "曲率边界的表示方式"
           }
         }
       }
@@ -4022,7 +4022,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "范围以%@表示。"
+            "value" : "边界以 %@ 表示。"
           }
         }
       }
@@ -4032,7 +4032,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "以 mm 为单位的曲率半径区间作为范围；优化器约束的是曲率 c = 1/R。留空表示该侧不设限。最小值大于最大值时经平面（R = ∞）绕回：最小 100、最大 −100 即 |R| ≥ 100。0 表示该侧不约束曲率。"
+            "value" : "以毫米为单位的半径范围边界；优化器约束的是曲率 c = 1/R。留空表示该侧无边界。最小值大于最大值时经过平面（R = ∞）：最小值 100、最大值 −100 即 |R| ≥ 100。0 表示该侧曲率不设边界。"
           }
         }
       }
@@ -4042,7 +4042,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "范围单位为 %@。"
+            "value" : "边界单位为 %@。"
           }
         }
       }
@@ -4052,7 +4052,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "无量纲参数的范围。"
+            "value" : "无量纲参数的边界。"
           }
         }
       }
@@ -4062,7 +4062,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "曲率 c = 1/R 的范围 (1/mm)。"
+            "value" : "曲率 c = 1/R 的边界（1/mm）。"
           }
         }
       }
@@ -4082,7 +4082,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "每个视场的方框半宽，显示在各行"
+            "value" : "方框半宽按视场，见各行"
           }
         }
       }
@@ -4092,7 +4092,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "方框比例：所有单元格统一，或每个视场单独设置"
+            "value" : "方框比例：所有单元格统一，或按视场分别设定"
           }
         }
       }
@@ -4132,7 +4132,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "CPU 参考 (f64)"
+            "value" : "CPU 参考（f64）"
           }
         }
       }
@@ -4142,7 +4142,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "按预计时间选择 CPU"
+            "value" : "CPU（按预计耗时）"
           }
         }
       }
@@ -4245,7 +4245,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "C_T 垂轴"
+            "value" : "C_T 垂轴色差"
           }
         }
       }
@@ -4315,7 +4315,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "所有透镜的候选"
+            "value" : "所有透镜的候选玻璃"
           }
         }
       }
@@ -4331,7 +4331,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "S%1$lld 的候选 · %2$@"
+            "value" : "S%1$lld · %2$@ 的候选玻璃"
           }
         }
       }
@@ -4341,7 +4341,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "面 %lld 的候选"
+            "value" : "第 %lld 面的候选玻璃"
           }
         }
       }
@@ -4351,7 +4351,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "仅此透镜的候选"
+            "value" : "仅此透镜的候选玻璃"
           }
         }
       }
@@ -4371,7 +4371,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "玻璃库 (%@)"
+            "value" : "玻璃库（%@）"
           }
         }
       }
@@ -4417,7 +4417,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "目录相对价格"
+            "value" : "玻璃库中的相对成本"
           }
         }
       }
@@ -4447,7 +4447,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "库中的玻璃库和文件夹会载入每个设计"
+            "value" : "资料库中的玻璃库文件和文件夹会载入每个设计"
           }
         }
       }
@@ -4547,7 +4547,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "更改基底面型"
+            "value" : "更改基底面形"
           }
         }
       }
@@ -4557,7 +4557,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "更改范围"
+            "value" : "更改边界"
           }
         }
       }
@@ -4587,7 +4587,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "更改注释"
+            "value" : "更改备注"
           }
         }
       }
@@ -4737,7 +4737,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "更改光线作用"
+            "value" : "更改作用方式"
           }
         }
       }
@@ -4747,7 +4747,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "更改标签"
+            "value" : "更改备注"
           }
         }
       }
@@ -4807,7 +4807,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "更改评价视场"
+            "value" : "更改评价函数视场"
           }
         }
       }
@@ -4817,7 +4817,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "更改评价波长"
+            "value" : "更改评价函数波长"
           }
         }
       }
@@ -4877,7 +4877,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "更改位置"
+            "value" : "更改位姿"
           }
         }
       }
@@ -4947,7 +4947,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "更改记录的试验数"
+            "value" : "更改记录的试验"
           }
         }
       }
@@ -5027,7 +5027,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "更改检测波长"
+            "value" : "更改检验波长"
           }
         }
       }
@@ -5097,7 +5097,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "更改试验数"
+            "value" : "更改试验次数"
           }
         }
       }
@@ -5177,7 +5177,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "已更改"
+            "value" : "变更"
           }
         }
       }
@@ -5227,7 +5227,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "主光线（去除平移项）"
+            "value" : "主光线（去除平移）"
           }
         }
       }
@@ -5247,7 +5247,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "主光线角 (°)"
+            "value" : "主光线角（°）"
           }
         }
       }
@@ -5387,7 +5387,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "通光口径 %@ mm"
+            "value" : "通光孔径 %@ mm"
           }
         }
       }
@@ -5417,7 +5417,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "点按直方图中的柱条以查看其试验；眼睛按钮会在窗口中重建一次试验。"
+            "value" : "点击直方图的柱可查看其试验；眼睛按钮会在窗口中重建试验。"
           }
         }
       }
@@ -5427,7 +5427,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "点按柱条以列出其试验"
+            "value" : "点击柱可列出其试验"
           }
         }
       }
@@ -5437,7 +5437,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "点按玻璃以查看详情。"
+            "value" : "点击玻璃以查看详情。"
           }
         }
       }
@@ -5447,7 +5447,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "点按以查看详细信息。"
+            "value" : "点击查看详情。"
           }
         }
       }
@@ -5457,7 +5457,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "点按以设置区块中心；会吸附到光轴和视场点。"
+            "value" : "点击以设置区块中心；会吸附到光轴和视场点。"
           }
         }
       }
@@ -5477,7 +5477,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "耐候性 (CR)"
+            "value" : "耐气候性（CR）"
           }
         }
       }
@@ -5487,7 +5487,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "耐候性等级 (CR)"
+            "value" : "耐气候性等级（CR）"
           }
         }
       }
@@ -5497,7 +5497,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "通光形状"
+            "value" : "截光"
           }
         }
       }
@@ -5547,7 +5547,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "系数 (mm)"
+            "value" : "系数（mm）"
           }
         }
       }
@@ -5639,7 +5639,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "按图自身的数值范围着色（可显示细微差异），或按 0 至 1 着色（便于比较设计）"
+            "value" : "按图自身的范围着色（可显示细微差异），或按 0 至 1 着色（便于比较设计）"
           }
         }
       }
@@ -5719,7 +5719,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "注释"
+            "value" : "备注"
           }
         }
       }
@@ -5749,7 +5749,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "比较"
+            "value" : "对比"
           }
         }
       }
@@ -5976,7 +5976,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "圆锥加 r 的全部幂次项：β₁r + β₂r² + β₃r³ + … β₁ 非零时顶点处为锥形。"
+            "value" : "二次曲面加 r 的各次幂：β₁r + β₂r² + β₃r³ + …。β₁ 非零时顶点处为锥形。"
           }
         }
       }
@@ -5986,7 +5986,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "圆锥加偶次多项式项 A₄r⁴ + A₆r⁶ + …"
+            "value" : "二次曲面加偶次多项式项 A₄r⁴ + A₆r⁶ + …"
           }
         }
       }
@@ -6006,7 +6006,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "y 圆锥系数"
+            "value" : "圆锥系数 y"
           }
         }
       }
@@ -6056,7 +6056,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "转换为自定义"
+            "value" : "转为自定义"
           }
         }
       }
@@ -6266,7 +6266,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "自定"
+            "value" : "自定义"
           }
         }
       }
@@ -6346,7 +6346,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "衍射面光焦度，第 %lld 面"
+            "value" : "DOE 光焦度，第 %lld 面"
           }
         }
       }
@@ -6376,7 +6376,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "为每种玻璃组合重新优化面型的阻尼最小二乘迭代次数"
+            "value" : "为每种玻璃组合重新优化形状的阻尼最小二乘迭代次数"
           }
         }
       }
@@ -6466,7 +6466,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "使物面与像面之间的面偏心。"
+            "value" : "请对物面与像面之间的面设置偏心。"
           }
         }
       }
@@ -6496,7 +6496,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "先偏心后倾斜"
+            "value" : "先偏心，后倾斜"
           }
         }
       }
@@ -6566,7 +6566,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "默认：引擎根据少量选项生成评价函数。自定义：编辑每个操作数。"
+            "value" : "默认：引擎根据几个选项生成评价函数。自定义：编辑每个操作数。"
           }
         }
       }
@@ -6596,7 +6596,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "离焦 (mm)"
+            "value" : "离焦量（mm）"
           }
         }
       }
@@ -6806,7 +6806,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "密度 (g/cm³)"
+            "value" : "密度（g/cm³）"
           }
         }
       }
@@ -6856,7 +6856,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "设计未就绪"
+            "value" : "设计尚未就绪"
           }
         }
       }
@@ -6926,7 +6926,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "设计波长 λ₀。仅为元数据：不会重新缩放相位。"
+            "value" : "设计波长 λ₀。仅为元数据，不会缩放相位。"
           }
         }
       }
@@ -6966,7 +6966,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "使用其中玻璃的设计将找不到这些玻璃。"
+            "value" : "使用其中玻璃的设计将找不到它们。"
           }
         }
       }
@@ -7166,7 +7166,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "到下一顶点的距离。"
+            "value" : "到下一个顶点的距离。"
           }
         }
       }
@@ -7186,7 +7186,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "畸变 (%)"
+            "value" : "畸变（%）"
           }
         }
       }
@@ -7232,7 +7232,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "连按玻璃以将其用于所选面"
+            "value" : "双击玻璃以将其用于所选面"
           }
         }
       }
@@ -7252,7 +7252,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "拖移以移动窗格，拖出窗口可在独立窗口中打开。"
+            "value" : "拖动以移动窗格，拖出窗口可在独立窗口中打开。"
           }
         }
       }
@@ -7292,7 +7292,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "虚拟面"
+            "value" : "虚设面"
           }
         }
       }
@@ -7420,7 +7420,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "每种组合都会重新优化所有曲率和后焦。"
+            "value" : "每种组合都会重新优化所有曲率和后焦距。"
           }
         }
       }
@@ -7526,7 +7526,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "透镜"
+            "value" : "元件"
           }
         }
       }
@@ -7536,7 +7536,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "透镜偏心 x"
+            "value" : "元件偏心 x"
           }
         }
       }
@@ -7546,7 +7546,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "透镜偏心 y"
+            "value" : "元件偏心 y"
           }
         }
       }
@@ -7556,7 +7556,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "透镜倾斜 x"
+            "value" : "元件倾斜 x"
           }
         }
       }
@@ -7566,7 +7566,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "透镜倾斜 y"
+            "value" : "元件倾斜 y"
           }
         }
       }
@@ -7576,7 +7576,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "从 %@ 开始的透镜公差移动同一组：请为它们设置相同的末面和枢轴。"
+            "value" : "从 %@ 开始的元件公差作为同一组移动：请为它们设置相同的末面和枢轴。"
           }
         }
       }
@@ -7586,7 +7586,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "透镜"
+            "value" : "元件"
           }
         }
       }
@@ -7626,7 +7626,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "已启用"
+            "value" : "启用"
           }
         }
       }
@@ -7806,7 +7806,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "以 mm 为单位的曲率半径范围，或以优化器使用的曲率 c = 1/R 来输入和显示半径的范围"
+            "value" : "以 mm 为单位的半径区间输入和显示半径边界，或使用优化器所用的曲率 c = 1/R"
           }
         }
       }
@@ -7876,7 +7876,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "在 CPU f64 参考实现上评估。"
+            "value" : "在 CPU f64 参考上评估。"
           }
         }
       }
@@ -7906,7 +7906,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "所有曲率和后焦"
+            "value" : "所有曲率和后焦距"
           }
         }
       }
@@ -7936,7 +7936,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "镜头内的每个玻璃厚度和空气间隔；后焦为补偿器。"
+            "value" : "镜头内每个玻璃厚度和空气间隔；后焦距为补偿器。"
           }
         }
       }
@@ -7956,7 +7956,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "每个透镜面单独沿 x 和 y 方向；系统其余部分保持在光轴上。"
+            "value" : "每个透镜面单独在 x 和 y 方向偏心，其余系统保持在轴上。"
           }
         }
       }
@@ -7966,7 +7966,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "所有变量均已固定或由求解控制。请添加一个自由变量，或改为优化自动变量集。"
+            "value" : "所有变量都已固定或由求解控制。请添加一个自由变量，或改用自动变量。"
           }
         }
       }
@@ -7976,7 +7976,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "所有变量均已固定。请取消固定一个变量，或改为优化自动变量集。"
+            "value" : "所有变量都已固定。请取消固定其中一个，或改用自动变量。"
           }
         }
       }
@@ -8273,7 +8273,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "视场 (%@)"
+            "value" : "视场（%@）"
           }
         }
       }
@@ -8333,7 +8333,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "视场示意图"
+            "value" : "视场图"
           }
         }
       }
@@ -8343,7 +8343,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "视场"
+            "value" : "视场范围"
           }
         }
       }
@@ -8383,7 +8383,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "第一个"
+            "value" : "第一面"
           }
         }
       }
@@ -8393,7 +8393,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "一阶"
+            "value" : "一阶特性"
           }
         }
       }
@@ -8403,7 +8403,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "第一个面"
+            "value" : "首面"
           }
         }
       }
@@ -8413,7 +8413,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "第一个顶点（S%lld）"
+            "value" : "首顶点（S%lld）"
           }
         }
       }
@@ -8444,7 +8444,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "一阶数据"
+            "value" : "一阶特性"
           }
         }
       }
@@ -8524,7 +8524,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "请先修正标为红色的 %lld 项公差。"
+            "value" : "请先修正标红的 %lld 项公差。"
           }
         }
       }
@@ -8544,7 +8544,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "请先修正标为红色的公差。"
+            "value" : "请先修正标红的公差。"
           }
         }
       }
@@ -8574,7 +8574,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "固定。点按以设为变量。"
+            "value" : "固定。点击以设为变量。"
           }
         }
       }
@@ -8594,7 +8594,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "焦移"
+            "value" : "色焦移"
           }
         }
       }
@@ -8654,7 +8654,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "焦移 (µm)"
+            "value" : "焦移（µm）"
           }
         }
       }
@@ -8664,7 +8664,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "调焦 (mm)"
+            "value" : "焦点（mm）"
           }
         }
       }
@@ -8684,7 +8684,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "焦移 (mm)"
+            "value" : "焦移（mm）"
           }
         }
       }
@@ -8740,7 +8740,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Forbes 圆锥基非球面：圆锥加 u⁴ Σ aₘ Qₘᶜᵒⁿ(u²)，u = r/r_norm。保持顶点曲率。"
+            "value" : "Forbes 圆锥基非球面：二次曲面加 u⁴ Σ aₘ Qₘᶜᵒⁿ(u²)，u = r/r_norm。保持顶点曲率。"
           }
         }
       }
@@ -8750,7 +8750,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Forbes 斜率正交、相对最佳拟合球面的偏离：u²(1−u²) Σ aₘ Qₘᵇᶠˢ(u²) / √(1−c²r²)。"
+            "value" : "Forbes 相对最佳拟合球面的斜率正交偏离：u²(1−u²) Σ aₘ Qₘᵇᶠˢ(u²) / √(1−c²r²)。"
           }
         }
       }
@@ -8806,7 +8806,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "自由曲面最大偏离量"
+            "value" : "自由曲面最大偏离"
           }
         }
       }
@@ -8816,7 +8816,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "自由曲面：圆锥加 Σ C(xᵐyⁿ) Xᵐ Yⁿ，X = x/r_norm，Y = y/r_norm；阶数 1 至 10。"
+            "value" : "自由曲面：二次曲面加 Σ C(xᵐyⁿ) Xᵐ Yⁿ，其中 X = x/r_norm，Y = y/r_norm；阶数 1 至 10。"
           }
         }
       }
@@ -8826,7 +8826,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "自由曲面：圆锥加 Σ cⱼ Zⱼ(ρ, θ)，ρ = r/r_norm，θ 从 +x 起算。矢高系数单位为 mm，保留平移项和倾斜项。"
+            "value" : "自由曲面：二次曲面加 Σ cⱼ Zⱼ(ρ, θ)，ρ = r/r_norm，θ 从 +x 起算。矢高系数单位为 mm，保留平移和倾斜项。"
           }
         }
       }
@@ -8876,7 +8876,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Fringe 项未归一化；Standard (Noll) 项已归一化。"
+            "value" : "Fringe 项未归一化；Standard（Noll）项已归一化。"
           }
         }
       }
@@ -8886,7 +8886,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "光圈数需要第 %lld 面的通光口径；请运行布局图或设置半口径。"
+            "value" : "光圈数需要第 %lld 面的通光孔径；请运行布局图或设置半口径。"
           }
         }
       }
@@ -8896,7 +8896,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "从"
+            "value" : "起始面"
           }
         }
       }
@@ -9001,7 +9001,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "按预计时间选择 GPU"
+            "value" : "GPU（按预测耗时）"
           }
         }
       }
@@ -9081,7 +9081,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "根据制造等级为每个元件生成一组公差"
+            "value" : "按加工等级为每个元件生成一组公差"
           }
         }
       }
@@ -9142,7 +9142,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "鬼像/主光通量"
+            "value" : "鬼像/主像光通量"
           }
         }
       }
@@ -9152,7 +9152,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "鬼像/主峰值"
+            "value" : "鬼像/主像峰值"
           }
         }
       }
@@ -9192,7 +9192,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "鬼像相对主光路"
+            "value" : "鬼像相对主像"
           }
         }
       }
@@ -9222,7 +9222,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "鬼像/主光通量"
+            "value" : "鬼像/主像光通量"
           }
         }
       }
@@ -9253,7 +9253,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "为目录玻璃设置实测熔炼批次的 Δn_d 和 ΔV_d"
+            "value" : "为玻璃库玻璃设定实测熔炼批次的 Δn_d 和 ΔV_d"
           }
         }
       }
@@ -9521,7 +9521,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "%@ 中的玻璃"
+            "value" : "%@ 的玻璃"
           }
         }
       }
@@ -9591,7 +9591,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "网格畸变，最大为百分之 %@"
+            "value" : "网格畸变，最大 %@%"
           }
         }
       }
@@ -9601,7 +9601,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "x 半宽"
+            "value" : "半宽 x"
           }
         }
       }
@@ -9611,7 +9611,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "y 半宽"
+            "value" : "半宽 y"
           }
         }
       }
@@ -9791,7 +9791,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "将带符号的 EFL_y / EFL_x 保持为此值（变形设计）。"
+            "value" : "将带符号的 EFL_y / EFL_x 保持在此值（变形设计）。"
           }
         }
       }
@@ -9801,7 +9801,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "同时在玻璃与面型间跳跃以跳出局部极小值；较慢。"
+            "value" : "同时在玻璃和形状之间跳跃以跳出局部极小；较慢。"
           }
         }
       }
@@ -9821,7 +9821,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "蒙特卡罗试验在极限范围内抽取每个扰动的方式"
+            "value" : "蒙特卡罗试验如何在限值内抽取每个扰动"
           }
         }
       }
@@ -9860,7 +9860,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "理想 (mm)"
+            "value" : "理想（mm）"
           }
         }
       }
@@ -9880,7 +9880,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "理想：所有光子都进入追迹级次。连续闪耀：连续闪耀浮雕。多台阶：N 个刻蚀台阶构成的阶梯。"
+            "value" : "理想：所有光子都在追迹级次。连续闪耀：连续的闪耀浮雕。多台阶：N 个刻蚀台阶的阶梯。"
           }
         }
       }
@@ -9930,7 +9930,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "像高 x (mm)"
+            "value" : "像高 x（mm）"
           }
         }
       }
@@ -9940,7 +9940,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "像高 y (mm)"
+            "value" : "像高 y（mm）"
           }
         }
       }
@@ -9961,7 +9961,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "像面半径 (mm)"
+            "value" : "像面半径（mm）"
           }
         }
       }
@@ -9981,7 +9981,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "像方 F/#"
+            "value" : "像方 F 数"
           }
         }
       }
@@ -10069,7 +10069,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "已导入 %2$@ 中的 %1$lld 行"
+            "value" : "已导入 %1$lld 行，单位 %2$@"
           }
         }
       }
@@ -10085,7 +10085,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "已从 %2$@ 导入 %1$lld 行，已跳过表头"
+            "value" : "已导入 %1$lld 行，单位 %2$@，已跳过表头"
           }
         }
       }
@@ -10315,7 +10315,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "最短波长下透过透镜中心厚度的内透过率（0…1）"
+            "value" : "最短波长下透镜中心厚度的内透过率（0…1）"
           }
         }
       }
@@ -10385,7 +10385,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "已达到其极限：部分成品需要超出允许范围的调整。"
+            "value" : "已达到限值：部分成品需要的调整超出允许范围。"
           }
         }
       }
@@ -10478,7 +10478,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "种类"
+            "value" : "类型"
           }
         }
       }
@@ -10534,7 +10534,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "最后一个面"
+            "value" : "末面"
           }
         }
       }
@@ -10544,7 +10544,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "最后一个顶点（S%lld）"
+            "value" : "末顶点（S%lld）"
           }
         }
       }
@@ -10600,7 +10600,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "垂轴色差 (µm)"
+            "value" : "垂轴色差（µm）"
           }
         }
       }
@@ -10716,7 +10716,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "玻璃库"
+            "value" : "资料库"
           }
         }
       }
@@ -10736,7 +10736,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "玻璃库 · 载入所有设计"
+            "value" : "资料库 · 载入所有设计"
           }
         }
       }
@@ -10746,7 +10746,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "玻璃库 · 已记录在此设计中"
+            "value" : "资料库 · 已记录在此设计中"
           }
         }
       }
@@ -10756,7 +10756,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "库，已记录在设计中"
+            "value" : "资料库，已记录在设计中"
           }
         }
       }
@@ -10766,7 +10766,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "极限"
+            "value" : "限值"
           }
         }
       }
@@ -10776,7 +10776,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "极限"
+            "value" : "限制"
           }
         }
       }
@@ -10786,7 +10786,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "极限必须为零或正数。"
+            "value" : "限值必须为零或正数。"
           }
         }
       }
@@ -10832,7 +10832,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "线扩散 (%@)"
+            "value" : "线扩散（%@）"
           }
         }
       }
@@ -10842,7 +10842,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "列出最差的试验，而不是所选柱条的试验"
+            "value" : "列出最差试验，而非所选柱条的试验"
           }
         }
       }
@@ -10928,7 +10928,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "最长 λ (µm)"
+            "value" : "最长 λ（µm）"
           }
         }
       }
@@ -10948,7 +10948,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "纵向像差 (mm)"
+            "value" : "纵向像差（mm）"
           }
         }
       }
@@ -11026,7 +11026,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "设为光阑"
+            "value" : "设为孔径光阑"
           }
         }
       }
@@ -11086,7 +11086,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "将公差设为非对称"
+            "value" : "设为非对称公差"
           }
         }
       }
@@ -11096,7 +11096,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "将公差设为对称"
+            "value" : "设为对称公差"
           }
         }
       }
@@ -11147,7 +11147,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "图"
+            "value" : "分布图"
           }
         }
       }
@@ -11187,7 +11187,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "边缘光线角"
+            "value" : "边缘光线角度"
           }
         }
       }
@@ -11227,7 +11227,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "在镜头数据或检查器中用 V 标记数值以选择它们；每个变量都有合理的范围，可在此编辑。"
+            "value" : "在镜头数据或检查器中用 V 标记要优化的值；每个变量都有合理的边界，可在此编辑。"
           }
         }
       }
@@ -11307,7 +11307,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "最大角度 (°)"
+            "value" : "最大角度（°）"
           }
         }
       }
@@ -11397,7 +11397,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "最大耐候性等级"
+            "value" : "最大耐气候性等级"
           }
         }
       }
@@ -11407,7 +11407,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "最大相对价格"
+            "value" : "最大相对成本"
           }
         }
       }
@@ -11417,7 +11417,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "最大耐污性等级"
+            "value" : "最大耐污染性等级"
           }
         }
       }
@@ -11447,7 +11447,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "最大主光线入射角随像高半径的变化；点之间线性插值，两端之外保持不变。"
+            "value" : "主光线最大入射角随像高半径变化；点之间线性插值，两端之外保持不变。"
           }
         }
       }
@@ -11473,7 +11473,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "%2$@ 中 %1$@ 的最大值"
+            "value" : "%1$@ 的最大值（%2$@）"
           }
         }
       }
@@ -11563,7 +11563,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "相对玻璃库玻璃的熔炼偏差 Δn_d / ΔV_d；可在检查器中编辑"
+            "value" : "玻璃库玻璃的熔炼偏差 Δn_d / ΔV_d；在检查器中编辑"
           }
         }
       }
@@ -11709,7 +11709,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "最小 RI"
+            "value" : "最小相对照度"
           }
         }
       }
@@ -11775,7 +11775,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "%2$@ 中 %1$@ 的最小值"
+            "value" : "%1$@ 的最小值（%2$@）"
           }
         }
       }
@@ -12009,7 +12009,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "蒙特卡罗：每次试验随机抽取每个公差；相同的随机种子产生相同的试验。"
+            "value" : "蒙特卡罗：每次试验随机抽取每项公差；相同的随机种子给出相同的试验。"
           }
         }
       }
@@ -12285,7 +12285,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "新建窗口"
+            "value" : "新窗口"
           }
         }
       }
@@ -12515,7 +12515,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "无 nd、Vd（d 谱线超出范围）"
+            "value" : "无 nd、Vd（d 线超出范围）"
           }
         }
       }
@@ -12565,7 +12565,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "没有公差。请使用“默认公差”，或逐个添加。"
+            "value" : "没有公差。请使用“默认公差”，或逐项添加。"
           }
         }
       }
@@ -12585,7 +12585,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "无数值"
+            "value" : "无值"
           }
         }
       }
@@ -12675,7 +12675,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "正态（极限位于 ±%@ σ）"
+            "value" : "正态（限值取 ±%@ σ）"
           }
         }
       }
@@ -12755,7 +12755,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "非旋转对称。引擎的一阶数据仅针对 y 剖面。"
+            "value" : "非旋转对称。引擎的一阶数据仅针对 y 截面。"
           }
         }
       }
@@ -12775,7 +12775,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "当前 %@：超出范围"
+            "value" : "当前 %@：超出边界"
           }
         }
       }
@@ -12828,7 +12828,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "光程差曲线"
+            "value" : "OPD 曲线"
           }
         }
       }
@@ -12878,7 +12878,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "已停产"
+            "value" : "停产"
           }
         }
       }
@@ -12894,7 +12894,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "奇次 %1$@ · 面 %2$@"
+            "value" : "面 %2$@ 的奇次 %1$@"
           }
         }
       }
@@ -12984,7 +12984,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "所有波长共用一个质心，因此计入垂轴色差；否则每个波长各一个质心。"
+            "value" : "所有波长共用一个质心，因此计入垂轴色差；否则每个波长一个质心。"
           }
         }
       }
@@ -13130,7 +13130,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "优化器的评价函数"
+            "value" : "优化器评价函数"
           }
         }
       }
@@ -13200,7 +13200,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "衍射级次为离散值，不能作为优化变量。"
+            "value" : "级次是离散值，不能作为优化变量。"
           }
         }
       }
@@ -13290,7 +13290,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "超出该玻璃的数据范围：折射率为外推值"
+            "value" : "超出玻璃的数据范围：折射率为外推值"
           }
         }
       }
@@ -13350,7 +13350,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "PSF 采样间隔；留空则使用区块内最小 λ·F/# 除以 2.5。"
+            "value" : "PSF 采样间隔；留空则使用图块内最小 λ·F/# 除以 2.5。"
           }
         }
       }
@@ -13380,7 +13380,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "区块每边的 PSF 数；图像在它们之间映射。"
+            "value" : "图块每边的 PSF 数；图像在它们之间映射。"
           }
         }
       }
@@ -13390,7 +13390,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "P-V %@"
+            "value" : "PV %@"
           }
         }
       }
@@ -13423,7 +13423,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "抛物（多集中在极限附近）"
+            "value" : "抛物线（多数靠近限值）"
           }
         }
       }
@@ -13553,7 +13553,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "近轴工作 F/#"
+            "value" : "近轴工作 F 数"
           }
         }
       }
@@ -13563,7 +13563,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "部分区块位于设计视场之外。"
+            "value" : "图块有一部分位于设计视场之外。"
           }
         }
       }
@@ -13593,7 +13593,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "大于或等于时合格"
+            "value" : "合格下限"
           }
         }
       }
@@ -13603,7 +13603,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "小于或等于时合格"
+            "value" : "合格上限"
           }
         }
       }
@@ -13623,7 +13623,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "区块中心"
+            "value" : "图块中心"
           }
         }
       }
@@ -13633,7 +13633,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "区块中心"
+            "value" : "图块中心"
           }
         }
       }
@@ -13669,7 +13669,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "区块中心位于归一化视场 %@。"
+            "value" : "图块中心位于归一化视场 %@。"
           }
         }
       }
@@ -13745,7 +13745,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "扰动，按占其极限的比例从大到小排列"
+            "value" : "扰动，按占其限值比例从大到小排列"
           }
         }
       }
@@ -13755,7 +13755,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "佩茨伐半径 %@ mm"
+            "value" : "佩茨瓦尔半径 %@ mm"
           }
         }
       }
@@ -13794,7 +13794,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "相位 %1$@ · 面 %2$@"
+            "value" : "面 %2$@ 的相位 %1$@"
           }
         }
       }
@@ -13814,7 +13814,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "追迹级次的相位光焦度（不含基底折射光焦度）"
+            "value" : "追迹级次的相位光焦度（不含基底的折射光焦度）"
           }
         }
       }
@@ -13834,7 +13834,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "耐磷酸盐性 (PR)"
+            "value" : "耐磷酸盐性（PR）"
           }
         }
       }
@@ -13844,7 +13844,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "明视觉 (5)"
+            "value" : "明视觉（5）"
           }
         }
       }
@@ -13864,7 +13864,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "物理与目录数据"
+            "value" : "物理与玻璃库数据"
           }
         }
       }
@@ -14080,7 +14080,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "多色子午和弧矢 MTF，以与 1 之差的均方根换算为 MTF 显示。每次试验在每个补偿器步骤中的开销相当于一次 MTF 分析：建议先从几十次试验开始。"
+            "value" : "多色子午与弧矢 MTF，相对 1 的均方根差值以 MTF 显示。每次试验的开销相当于每个补偿器步骤做一次 MTF 分析：请先从几十次试验开始。"
           }
         }
       }
@@ -14110,7 +14110,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "位置 (%@)"
+            "value" : "位置（%@）"
           }
         }
       }
@@ -14120,7 +14120,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "位置 (mm)"
+            "value" : "位置（mm）"
           }
         }
       }
@@ -14140,7 +14140,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "通光口径内 %@ nm 下以检测光圈数计的光焦度误差：Δc = N λ / h²。"
+            "value" : "通光孔径上 %@ nm 检验光圈表示的光焦度误差：Δc = N λ / h²。"
           }
         }
       }
@@ -14200,7 +14200,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "首选"
+            "value" : "推荐"
           }
         }
       }
@@ -14210,7 +14210,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "仅首选"
+            "value" : "仅推荐"
           }
         }
       }
@@ -14326,7 +14326,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "在窗口中预览此成品：公差取较差的极限并经补偿；未应用"
+            "value" : "在窗口中预览此成品：公差取较差的限值并经补偿；未应用"
           }
         }
       }
@@ -14336,7 +14336,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "在窗口中预览此成品：公差取较差的极限；未应用"
+            "value" : "在窗口中预览此成品：公差取较差的限值；未应用"
           }
         }
       }
@@ -14516,7 +14516,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "每边光瞳网格采样数；0 表示根据波前斜率选择（64 至 1024）。"
+            "value" : "光瞳网格每边采样数；0 表示按波前斜率选择（64 到 1024）。"
           }
         }
       }
@@ -14556,7 +14556,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "光瞳环带"
+            "value" : "光瞳带"
           }
         }
       }
@@ -14596,7 +14596,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Q 型（圆锥）"
+            "value" : "Q 型（二次曲面）"
           }
         }
       }
@@ -14616,7 +14616,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Q 型最大偏离量"
+            "value" : "Q 型最大偏离"
           }
         }
       }
@@ -14626,7 +14626,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "量"
+            "value" : "物理量"
           }
         }
       }
@@ -14656,7 +14656,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "RI 图"
+            "value" : "照度图"
           }
         }
       }
@@ -14724,7 +14724,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "RMS 半径 (µm)"
+            "value" : "RMS 半径（µm）"
           }
         }
       }
@@ -14797,7 +14797,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "辐射度"
+            "value" : "辐射度学"
           }
         }
       }
@@ -14827,7 +14827,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "半径 (%@)"
+            "value" : "半径（%@）"
           }
         }
       }
@@ -14837,7 +14837,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "半径 (mm)"
+            "value" : "半径（mm）"
           }
         }
       }
@@ -14867,7 +14867,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "曲率半径；平面为 ∞。以曲率 c = 1/R 保存。"
+            "value" : "曲率半径；平面为 ∞。以曲率 c = 1/R 存储。"
           }
         }
       }
@@ -14877,7 +14877,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "半径公差单位为光圈数、mm 或 %。"
+            "value" : "曲率半径公差的单位为光圈、mm 或 %。"
           }
         }
       }
@@ -14897,7 +14897,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "半径 x 为顶点到旋转轴的距离；∞ 时为 y 柱面。"
+            "value" : "曲率半径 x 为顶点到旋转轴的距离；∞ 时为 y 柱面。"
           }
         }
       }
@@ -14907,7 +14907,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "半径 y"
+            "value" : "曲率半径 y"
           }
         }
       }
@@ -14927,7 +14927,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "在 CPU 上运行"
+            "value" : "已在 CPU 上运行"
           }
         }
       }
@@ -14937,7 +14937,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "在 CPU 上运行：%@"
+            "value" : "已在 CPU 上运行：%@"
           }
         }
       }
@@ -15113,7 +15113,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "重新优化所有曲率和后焦"
+            "value" : "重新优化所有曲率和后焦距"
           }
         }
       }
@@ -15215,7 +15215,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "实际 (mm)"
+            "value" : "实际（mm）"
           }
         }
       }
@@ -15356,7 +15356,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "d 线 (587.56 nm) 折射率"
+            "value" : "d 线（587.56 nm）折射率"
           }
         }
       }
@@ -15366,7 +15366,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "e 线 (546.07 nm) 折射率"
+            "value" : "e 线（546.07 nm）折射率"
           }
         }
       }
@@ -15606,7 +15606,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "从玻璃库移除"
+            "value" : "从资料库移除"
           }
         }
       }
@@ -15702,7 +15702,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "已从玻璃库移除 %@。"
+            "value" : "已从资料库移除 %@。"
           }
         }
       }
@@ -15712,7 +15712,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "已从玻璃库移除文件夹 %@。"
+            "value" : "已从资料库移除文件夹 %@。"
           }
         }
       }
@@ -15722,7 +15722,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "重新命名"
+            "value" : "重命名"
           }
         }
       }
@@ -15922,7 +15922,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "旋转"
+            "value" : "旋转对称"
           }
         }
       }
@@ -16115,7 +16115,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "S_IV 匹兹伐"
+            "value" : "S_IV 佩茨瓦尔"
           }
         }
       }
@@ -16145,7 +16145,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "矢高 (mm)"
+            "value" : "矢高（mm）"
           }
         }
       }
@@ -16195,7 +16195,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "采样数必须介于 1 和 4096 之间。"
+            "value" : "采样数必须在 1 到 4096 之间。"
           }
         }
       }
@@ -16327,7 +16327,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "在 %@ 上搜索；评价函数值以 CPU f64 参考实现报告。"
+            "value" : "在 %@ 上搜索；评价函数值在 CPU f64 参考上报告。"
           }
         }
       }
@@ -16337,7 +16337,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "剖面"
+            "value" : "截面"
           }
         }
       }
@@ -16347,7 +16347,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "剖面视图"
+            "value" : "截面视图"
           }
         }
       }
@@ -16467,7 +16467,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "选择面 %lld"
+            "value" : "选择第 %lld 面"
           }
         }
       }
@@ -16477,7 +16477,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "在镜头数据表中选择面 %lld"
+            "value" : "在镜头数据表中选择第 %lld 面"
           }
         }
       }
@@ -16567,7 +16567,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "灵敏度：每个公差单独取其 − 和 + 极限（%lld 次评估），排序并给出平方和根预测。"
+            "value" : "灵敏度：每项公差单独取 − 和 + 限值（%lld 次评估），排序，并给出方和根预测。"
           }
         }
       }
@@ -16613,7 +16613,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "传感器限制"
+            "value" : "传感器限值"
           }
         }
       }
@@ -16704,7 +16704,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "由求解（%@）设定，优化器无法改变它。移除求解即可将其设为变量。"
+            "value" : "由求解（%@）设定，优化器无法改变它。移除求解后才能将其设为变量。"
           }
         }
       }
@@ -16714,7 +16714,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "由求解（%@）设定：优化器不使用此变量。点按以移除。"
+            "value" : "由求解（%@）设定：优化器不使用此变量。点击以移除。"
           }
         }
       }
@@ -16764,7 +16764,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "面型变化（%lld）"
+            "value" : "形状变化（%lld）"
           }
         }
       }
@@ -16774,7 +16774,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "每组面型迭代次数"
+            "value" : "每组形状迭代次数"
           }
         }
       }
@@ -16804,7 +16804,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "最短 λ (µm)"
+            "value" : "最短 λ（µm）"
           }
         }
       }
@@ -16834,7 +16834,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "再显示 %lld 个"
+            "value" : "再显示 %lld 项"
           }
         }
       }
@@ -16914,7 +16914,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "显示全部 %lld 个"
+            "value" : "显示全部 %lld 项"
           }
         }
       }
@@ -17010,7 +17010,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "显示最大的 12 个"
+            "value" : "显示最大的 12 项"
           }
         }
       }
@@ -17020,7 +17020,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "显示最大的 6 个"
+            "value" : "显示最大的 6 项"
           }
         }
       }
@@ -17090,7 +17090,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "显示镜头数据或布局图，或添加分析。移到其他窗口的面板可以移回此处。"
+            "value" : "显示镜头数据或布局图，或添加分析。移到其他窗口的面板可以移回这里。"
           }
         }
       }
@@ -17226,7 +17226,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "自动设定图像网格大小（%lld → 自动）"
+            "value" : "自动确定图像网格大小（%lld → 自动）"
           }
         }
       }
@@ -17236,7 +17236,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "自动设定 PSF 窗口大小（%lld → 自动）"
+            "value" : "自动确定 PSF 窗口大小（%lld → 自动）"
           }
         }
       }
@@ -17276,7 +17276,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "将模型玻璃匹配到真实玻璃"
+            "value" : "将模型玻璃替换为实际玻璃"
           }
         }
       }
@@ -17406,7 +17406,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "空间频率 (%@)"
+            "value" : "空间频率（%@）"
           }
         }
       }
@@ -17506,7 +17506,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "球面或回转二次曲面。"
+            "value" : "球面或旋转二次曲面。"
           }
         }
       }
@@ -17626,7 +17626,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "耐污性 (FR)"
+            "value" : "耐污染性（FR）"
           }
         }
       }
@@ -17636,7 +17636,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "耐污性等级 (FR)"
+            "value" : "耐污染性等级（FR）"
           }
         }
       }
@@ -17676,7 +17676,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "以默认为此设计生成的操作数为起点创建自定义评价函数"
+            "value" : "以默认评价函数为此设计生成的操作数为起点，创建自定义评价函数"
           }
         }
       }
@@ -17766,7 +17766,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "“停止”会保留目前已完成的灵敏度和试验。“取消”会放弃此次运行。你可以关闭此面板；任务会继续运行。"
+            "value" : "“停止”会保留已完成的灵敏度和试验，“取消”会放弃本次运行。你可以关闭此面板，任务会继续运行。"
           }
         }
       }
@@ -17786,7 +17786,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "已提前停止：为已完成的 %lld 次试验的统计。"
+            "value" : "已提前停止：统计已完成的 %lld 次试验。"
           }
         }
       }
@@ -17796,7 +17796,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "已提前停止：为已完成评估的统计。"
+            "value" : "已提前停止：统计已完成的评估。"
           }
         }
       }
@@ -17816,7 +17816,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "已提前停止：显示目前已完成的灵敏度。"
+            "value" : "已提前停止：仅含已完成的灵敏度。"
           }
         }
       }
@@ -17866,7 +17866,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "杂散光占比"
+            "value" : "杂散光比例"
           }
         }
       }
@@ -17976,7 +17976,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "面 %lld"
+            "value" : "第 %lld 面"
           }
         }
       }
@@ -18022,7 +18022,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "第 %1$lld 面之后是 %2$@ (%3$@)。"
+            "value" : "第 %1$lld 面之后是 %2$@（%3$@）。"
           }
         }
       }
@@ -18038,7 +18038,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "第 %1$lld 面之后是 %2$@，不是带有 n_d 和 V_d 的玻璃。"
+            "value" : "第 %1$lld 面之后是 %2$@，不是具有 n_d 和 V_d 的玻璃。"
           }
         }
       }
@@ -18064,7 +18064,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "第 %lld 面，光阑"
+            "value" : "第 %lld 面，孔径光阑"
           }
         }
       }
@@ -18314,7 +18314,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "检验光圈数"
+            "value" : "检验光圈"
           }
         }
       }
@@ -18394,7 +18394,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "%@ 的阿贝数尚未知：请以 ΔV_d 给出极限，或等待玻璃数据。"
+            "value" : "%@ 的阿贝数尚未知：请以 ΔV_d 给出限值，或等待玻璃数据。"
           }
         }
       }
@@ -18474,7 +18474,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "目前最佳评价函数值（按搜索的评估方式）。"
+            "value" : "搜索评估到的目前最佳评价函数值。"
           }
         }
       }
@@ -18484,7 +18484,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "范围的单位为 %@"
+            "value" : "边界单位为 %@"
           }
         }
       }
@@ -18504,7 +18504,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "第 %lld 面的通光口径大于其球面。"
+            "value" : "第 %lld 面的通光孔径大于其球面。"
           }
         }
       }
@@ -18520,7 +18520,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "设计已将 S%1$lld–%2$@ 作为绕 S%3$@ 移动的透镜：请使用该范围和枢轴。"
+            "value" : "设计已将 S%1$lld–%2$@ 作为元件绕 S%3$@ 移动：请使用该范围和枢轴。"
           }
         }
       }
@@ -18600,7 +18600,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "透镜的末面已不存在。"
+            "value" : "元件的末面已不存在。"
           }
         }
       }
@@ -18620,7 +18620,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "引擎已检查设计，没有发现需要报告的问题。"
+            "value" : "引擎已检查设计，没有需要报告的内容。"
           }
         }
       }
@@ -18650,7 +18650,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "引擎无法重建此成品：没有光线到达像面。"
+            "value" : "引擎无法重建该成品：没有光线到达像面。"
           }
         }
       }
@@ -18750,7 +18750,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "眼睛按钮会在窗口中以只读方式重建一次试验。"
+            "value" : "眼睛按钮会在窗口中重建试验（只读）。"
           }
         }
       }
@@ -18760,7 +18760,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "文件中的玻璃与之前相同（%lld）。"
+            "value" : "文件中的玻璃与之前相同（%lld 种）。"
           }
         }
       }
@@ -18850,7 +18850,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "干涉仪波长：一个检测光圈对应该波长下半个波长的矢高。光焦度和不规则度公差以这些光圈计数。"
+            "value" : "干涉仪波长：一个检验光圈对应该波长下半个波长的矢高。光焦度和不规则度公差以这些光圈计数。"
           }
         }
       }
@@ -18860,7 +18860,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "布局图已过期。点按以更新。"
+            "value" : "布局图已过期。点击以更新。"
           }
         }
       }
@@ -18890,7 +18890,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "熔炼批次阿贝数相对目录 V_d 的偏差（±%@ 以内）。"
+            "value" : "熔炼批次阿贝数相对玻璃库 V_d 的偏差（±%@ 以内）。"
           }
         }
       }
@@ -18900,7 +18900,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "熔炼批次折射率相对目录 n_d 的偏差（±%@ 以内）；色散曲线形状不变。"
+            "value" : "熔炼批次折射率相对玻璃库 n_d 的偏差（±%@ 以内）；色散曲线形状不变。"
           }
         }
       }
@@ -18950,7 +18950,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "光线所沿的衍射级次；0 为普通折射或反射。"
+            "value" : "光线所走的级次；0 为普通折射或反射。"
           }
         }
       }
@@ -18960,7 +18960,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "结构的设计衍射级次（非零）。仅为元数据：不会重新缩放相位。"
+            "value" : "结构的设计级次（非零）。仅为元数据，不会缩放相位。"
           }
         }
       }
@@ -18990,7 +18990,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "结果中报告的成品百分位，例如 50, 90, 97.7"
+            "value" : "结果中报告的成品百分位，例如 50、90、97.7"
           }
         }
       }
@@ -19036,7 +19036,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "范围必须位于 %1$@ (%2$.3f–%3$.3f µm) 之内。"
+            "value" : "范围必须在 %1$@（%2$.3f–%3$.3f µm）之内。"
           }
         }
       }
@@ -19056,7 +19056,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "搜索使用的评价函数，包含保持焦距的惩罚项；结果报告的是评价函数本身。"
+            "value" : "搜索使用的评价函数，含保持焦距的惩罚项；结果报告的是评价函数本身。"
           }
         }
       }
@@ -19066,7 +19066,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "剖面按真实比例的 %lld 倍高度绘制。点按以更改或关闭。"
+            "value" : "截面按真实比例的 %lld 倍高度绘制。点击以更改或关闭。"
           }
         }
       }
@@ -19122,7 +19122,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "视场中被仿真的部分：以区块中心为中心的正方形，按视场比例计。区块越小像素越细，模糊越明显。"
+            "value" : "模拟的视场部分：围绕图块中心的正方形，以视场的比例表示。图块越小像素越细，模糊越明显。"
           }
         }
       }
@@ -19162,7 +19162,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "已达到时间限制，搜索结束。"
+            "value" : "搜索因时间限制而结束。"
           }
         }
       }
@@ -19172,7 +19172,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "元件倾斜所绕的顶点；所有从 S%lld 开始的元件公差都使用它"
+            "value" : "元件绕其倾斜的顶点；所有始于 S%lld 的元件公差都使用它"
           }
         }
       }
@@ -19202,7 +19202,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "y 截线（圆锥加偶次项）绕距离为 R_x、平行于 y 的轴旋转而成。"
+            "value" : "y 轮廓（二次曲面加偶次项）绕距离为 R_x、平行于 y 的轴旋转而成。"
           }
         }
       }
@@ -19252,7 +19252,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "热光 dn/dT 数据"
+            "value" : "热 dn/dT 数据"
           }
         }
       }
@@ -19272,7 +19272,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "热光数据 (dn/dT)"
+            "value" : "热光数据（dn/dT）"
           }
         }
       }
@@ -19302,7 +19302,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "厚度限制 (mm)"
+            "value" : "厚度限制（mm）"
           }
         }
       }
@@ -19558,7 +19558,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "使物面与像面之间的面倾斜。"
+            "value" : "请对物面与像面之间的面设置倾斜。"
           }
         }
       }
@@ -19588,7 +19588,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "先倾斜后偏心"
+            "value" : "先倾斜，后偏心"
           }
         }
       }
@@ -19808,7 +19808,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "三叶像差 x"
+            "value" : "三叶 x"
           }
         }
       }
@@ -19818,7 +19818,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "三叶像差 y"
+            "value" : "三叶 y"
           }
         }
       }
@@ -19864,7 +19864,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "尝试各种玻璃组合，每种均从当前面型重新优化。"
+            "value" : "尝试各种玻璃组合，每种均从当前形状重新优化。"
           }
         }
       }
@@ -19874,7 +19874,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "信赖域（狗腿法）"
+            "value" : "信赖域（dogleg）"
           }
         }
       }
@@ -19964,7 +19964,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "单位：%@。更改单位会换算极限值。"
+            "value" : "单位：%@。更改单位会换算限值。"
           }
         }
       }
@@ -20054,7 +20054,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "仅在请求时更新。点按以自动更新。"
+            "value" : "仅在请求时更新。点击以改为自动更新。"
           }
         }
       }
@@ -20064,7 +20064,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "设计更改时更新。点按以改为仅在请求时更新。"
+            "value" : "设计更改时更新。点击以改为仅在请求时更新。"
           }
         }
       }
@@ -20114,7 +20114,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "用于此面"
+            "value" : "用于面"
           }
         }
       }
@@ -20124,7 +20124,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "用于面 %lld"
+            "value" : "用于第 %lld 面"
           }
         }
       }
@@ -20154,7 +20154,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "使用所有透镜的候选。"
+            "value" : "使用所有透镜的候选玻璃。"
           }
         }
       }
@@ -20273,7 +20273,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "变量设在求解值上：优化器会忽略它。请移除变量或求解。"
+            "value" : "求解值上的变量：优化器会忽略它。请移除变量或求解。"
           }
         }
       }
@@ -20283,7 +20283,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "有范围的变量"
+            "value" : "带边界的变量"
           }
         }
       }
@@ -20293,7 +20293,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "变量，已固定（范围上下限相等）"
+            "value" : "变量，已固定（上下界相等）"
           }
         }
       }
@@ -20303,7 +20303,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "变量：优化器可以改变它。点按以固定。"
+            "value" : "变量：优化器可以改变它。点击以固定。"
           }
         }
       }
@@ -20336,7 +20336,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "聚散度 (mD)"
+            "value" : "聚散度（mD）"
           }
         }
       }
@@ -20356,7 +20356,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "垂直拉伸"
+            "value" : "纵向拉伸"
           }
         }
       }
@@ -20376,7 +20376,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "垂直拉伸"
+            "value" : "纵向拉伸"
           }
         }
       }
@@ -20492,7 +20492,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "波前 (λ)"
+            "value" : "波前（λ）"
           }
         }
       }
@@ -20568,7 +20568,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "波长 (µm)"
+            "value" : "波长（µm）"
           }
         }
       }
@@ -20678,7 +20678,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "区块中心的位置：光轴上、设计视场点处，或视场上任意选取的位置。"
+            "value" : "图块中心的位置：轴上、设计视场点，或在视场上任意选取的点。"
           }
         }
       }
@@ -20698,7 +20698,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "未勾选任何玻璃时，每种模型玻璃 (n_d, V_d) 都会匹配到最接近的真实玻璃。"
+            "value" : "未勾选任何玻璃时，每种模型玻璃（n_d、V_d）都替换为最接近的真实玻璃。"
           }
         }
       }
@@ -20714,7 +20714,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "加上熔炼偏差 (%1$@) 后，%2$@ 将超出 ±%3$@，即引擎的限值。"
+            "value" : "加上熔炼偏差（%1$@）后，%2$@ 将超出引擎的限值 ±%3$@。"
           }
         }
       }
@@ -20724,7 +20724,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "工作 F/#"
+            "value" : "工作 F 数"
           }
         }
       }
@@ -20827,7 +20827,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "X–Z 剖面"
+            "value" : "X–Z 截面"
           }
         }
       }
@@ -20840,7 +20840,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Y 截线"
+            "value" : "Y 轮廓"
           }
         }
       }
@@ -20886,7 +20886,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "你的玻璃 · 保存在 App 的库中"
+            "value" : "你的玻璃 · 保存在应用的资料库中"
           }
         }
       }
@@ -20906,7 +20906,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "你的设置适用于所有设计，不会保存在项目中。玻璃替换默认跳过停产、特殊和已排除的玻璃。"
+            "value" : "你的设置适用于所有设计，不保存在项目中。玻璃替换默认跳过停产、特殊和已排除的玻璃。"
           }
         }
       }
@@ -20929,7 +20929,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "泽尼克 (%@, λ)"
+            "value" : "泽尼克（%@，λ）"
           }
         }
       }
@@ -20959,7 +20959,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "零值项"
+            "value" : "零项"
           }
         }
       }
@@ -21232,7 +21232,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "约束未满足"
+            "value" : "未满足约束"
           }
         }
       }
@@ -21265,7 +21265,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "仅 d 线"
+            "value" : "仅 d"
           }
         }
       }
@@ -21335,7 +21335,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "仅 e 线"
+            "value" : "仅 e"
           }
         }
       }
@@ -21425,7 +21425,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "整个正方形"
+            "value" : "完整方形"
           }
         }
       }
@@ -21530,7 +21530,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "熔炼批次偏移"
+            "value" : "熔炼偏差"
           }
         }
       }
@@ -21540,7 +21540,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "子午剖面"
+            "value" : "子午截面"
           }
         }
       }
@@ -21659,7 +21659,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "近焦点"
+            "value" : "近焦"
           }
         }
       }
@@ -21782,7 +21782,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "/ %@"
+            "value" : "取自 %@"
           }
         }
       }
@@ -21868,7 +21868,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "第 %1$lld 级，%2$@ µm"
+            "value" : "%1$lld 级，%2$@ µm"
           }
         }
       }
@@ -22057,7 +22057,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "面型未变"
+            "value" : "形状未变"
           }
         }
       }
@@ -22067,7 +22067,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "带符号 EFL y / EFL x"
+            "value" : "带符号的 EFL y / EFL x"
           }
         }
       }
@@ -22097,7 +22097,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "面 %lld"
+            "value" : "第 %lld 面"
           }
         }
       }
@@ -22289,7 +22289,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "试验的扰动"
+            "value" : "次试验的扰动"
           }
         }
       }
@@ -22365,7 +22365,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "垂直 ×%lld"
+            "value" : "纵向 ×%lld"
           }
         }
       }
@@ -22434,7 +22434,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "x 剖面"
+            "value" : "x 截面"
           }
         }
       }
@@ -22454,7 +22454,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "x–z 剖面"
+            "value" : "x–z 截面"
           }
         }
       }
@@ -22467,7 +22467,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "y 剖面"
+            "value" : "y 截面"
           }
         }
       }
@@ -22685,7 +22685,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "…及另外 %lld 项"
+            "value" : "… 另有 %lld 项"
           }
         }
       }
@@ -22698,7 +22698,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "− / + 极限"
+            "value" : "− / + 限值"
           }
         }
       }
