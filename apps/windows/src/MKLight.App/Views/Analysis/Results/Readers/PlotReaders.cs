@@ -1,5 +1,7 @@
 using System.Globalization;
 using System.Text.Json.Nodes;
+using MKLight.App.Support;
+using MKLight.Model;
 
 namespace MKLight.App.Views.Analysis.Results.Readers;
 
@@ -111,13 +113,13 @@ public sealed class SensorMapsData
         var half = Json.NfArray(Json.At(j, "map", "half_size")) ?? [1, 1];
         if (half is not [var hx, var hy] || !(hx >= 0) || !(hy >= 0)) return null;
         var maps = new List<(string, MapGrid)>();
-        if (MapGrid.From(d.Buffer("total_ghost_map"), 0, -hx, hx, -hy, hy) is { } g) maps.Add(("All ghosts", g));
-        if (MapGrid.From(d.Buffer("primary_map"), 0, -hx, hx, -hy, hy) is { } p) maps.Add(("Primary image", p));
+        if (MapGrid.From(d.Buffer("total_ghost_map"), 0, -hx, hx, -hy, hy) is { } g) maps.Add((Loc.S("Results_Sensor_AllGhosts"), g));
+        if (MapGrid.From(d.Buffer("primary_map"), 0, -hx, hx, -hy, hy) is { } p) maps.Add((Loc.S("Results_Sensor_PrimaryImage"), p));
         if (maps.Count == 0) return null;
         var rows = new List<(string, string)>
         {
-            ("Ghost / primary flux", D(Defined(Json.At(j, "total_flux_ratio")))),
-            ("Ghost / primary peak", D(Defined(Json.At(j, "total_peak_ratio")))),
+            (Loc.S("Results_Sensor_GhostPrimaryFlux"), D(Defined(Json.At(j, "total_flux_ratio")))),
+            (Loc.S("Results_Sensor_GhostPrimaryPeak"), D(Defined(Json.At(j, "total_peak_ratio")))),
         };
         rows.AddRange((Json.Arr(Json.At(j, "ghosts")) ?? []).Take(6).Select(g => (Json.Str(Json.At(g, "label")) ?? "", D(Defined(Json.At(g, "peak_ratio"))))));
         return new SensorMapsData { Maps = maps, Unit = "mm⁻²", Rows = rows };
@@ -130,18 +132,18 @@ public sealed class SensorMapsData
         var hy = Json.Number(Json.At(j, "detector", "half_y")) ?? 1;
         if (!(hx >= 0) || !(hy >= 0)) return null;
         var maps = new List<(string, MapGrid)>();
-        if (MapGrid.From(d.Buffer("total_irradiance"), 0, -hx, hx, -hy, hy) is { } t) maps.Add(("Stray total", t));
+        if (MapGrid.From(d.Buffer("total_irradiance"), 0, -hx, hx, -hy, hy) is { } t) maps.Add((Loc.S("Results_Sensor_StrayTotal"), t));
         var classes = (Json.Arr(Json.At(j, "map_classes")) ?? []).Select(Json.Str).ToList();
         for (var k = 0; k < classes.Count; k++)
-            if (classes[k] is { } c && MapGrid.From(d.Buffer("class_irradiance"), k, -hx, hx, -hy, hy) is { } g) maps.Add((GenericData.Title(c), g));
+            if (classes[k] is { } c && MapGrid.From(d.Buffer("class_irradiance"), k, -hx, hx, -hy, hy) is { } g) maps.Add((EngineText.T(GenericData.Title(c)), g));
         if (maps.Count == 0) return null;
         var rows = new List<(string, string)>
         {
-            ("Stray flux", D(Defined(Json.At(j, "stray_flux")), "W")),
-            ("± standard error", D(Defined(Json.At(j, "stray_std_error")), "W")),
+            (Loc.S("Results_Sensor_StrayFlux"), D(Defined(Json.At(j, "stray_flux")), "W")),
+            (Loc.S("Results_Sensor_StandardError"), D(Defined(Json.At(j, "stray_std_error")), "W")),
         };
-        if (Defined(Json.At(j, "stray_fraction")) is double f) rows.Add(("Stray fraction", Fmt.Short(f)));
-        rows.AddRange((Json.Arr(Json.At(j, "totals")) ?? []).Select(t => (GenericData.Title(Json.Str(Json.At(t, "class")) ?? ""), D(Defined(Json.At(t, "flux")), "W"))));
+        if (Defined(Json.At(j, "stray_fraction")) is double f) rows.Add((Loc.S("Results_KeyNumbers_StrayFraction"), Fmt.Short(f)));
+        rows.AddRange((Json.Arr(Json.At(j, "totals")) ?? []).Select(t => (EngineText.T(GenericData.Title(Json.Str(Json.At(t, "class")) ?? "")), D(Defined(Json.At(t, "flux")), "W"))));
         return new SensorMapsData { Maps = maps, Unit = "W/mm²", Rows = rows };
     }
 }
@@ -150,6 +152,15 @@ public sealed class SensorMapsData
 public sealed class PolarizationData
 {
     public static readonly string[] Quantities = ["Intensity", "Diattenuation", "Retardance"];
+
+    /// <summary>The display name of a <see cref="Quantities"/> entry (the entry itself is a key).</summary>
+    public static string QuantityTitle(string quantity) => quantity switch
+    {
+        "Intensity" => Loc.S("Results_Polarization_Intensity"),
+        "Diattenuation" => Loc.S("Results_Polarization_Diattenuation"),
+        "Retardance" => Loc.S("Results_Polarization_Retardance"),
+        _ => quantity,
+    };
 
     public required (double X, double Y)[] Pupil { get; init; }
     public required bool[] Reached { get; init; }
@@ -176,10 +187,10 @@ public sealed class PolarizationData
             Grid = Json.Int(Json.At(j, "grid")) ?? 0,
             Stats =
             [
-                ("Mean intensity", Fmt.Short(Json.Nf(Json.At(j, "mean_intensity")))),
-                ("Max diattenuation", Fmt.Short(Json.Nf(Json.At(j, "max_diattenuation")))),
-                ("Max retardance", Fmt.Value(Json.Nf(Json.At(j, "max_retardance")), "rad")),
-                ("RMS retardance", Fmt.Value(Json.Nf(Json.At(j, "rms_retardance")), "rad")),
+                (Loc.S("Results_KeyNumbers_MeanIntensity"), Fmt.Short(Json.Nf(Json.At(j, "mean_intensity")))),
+                (Loc.S("Results_KeyNumbers_MaxDiattenuation"), Fmt.Short(Json.Nf(Json.At(j, "max_diattenuation")))),
+                (Loc.S("Results_Polarization_MaxRetardance"), Fmt.Value(Json.Nf(Json.At(j, "max_retardance")), "rad")),
+                (Loc.S("Results_Polarization_RmsRetardance"), Fmt.Value(Json.Nf(Json.At(j, "rms_retardance")), "rad")),
             ],
         };
     }

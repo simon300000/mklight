@@ -41,10 +41,10 @@ sealed partial class ImageSimulationFieldPicker : UserControl
         _canvas = new PlotCanvas(Draw) { Width = Side, Height = Side };
         _diagram = new Border { Child = _canvas, IsTabStop = true, UseSystemFocusVisuals = true, CornerRadius = new CornerRadius(4) };
         _title = Kit.Text("", "NumberText", 12);
-        _warning = Kit.Caption("Part of the patch lies outside the design's field.", wrap: true);
-        var hint = Kit.Caption("Click to center the patch; it snaps to the axis and the field points.", wrap: true);
+        _warning = Kit.Caption(Loc.S("Results_ImageSim_PickerOutside"), wrap: true);
+        var hint = Kit.Caption(Loc.S("Results_ImageSim_PickerHint"), wrap: true);
         var panel = new StackPanel { Spacing = 8, Width = Side };
-        panel.Children.Add(Kit.Text("Patch Center", "PanelTitleText", 13));
+        panel.Children.Add(Kit.Text(Loc.S("Results_ImageSim_PickerTitle"), "PanelTitleText", 13));
         panel.Children.Add(_diagram);
         panel.Children.Add(_title);
         panel.Children.Add(_warning);
@@ -79,7 +79,7 @@ sealed partial class ImageSimulationFieldPicker : UserControl
             Commit((Math.Round((_center.X + dx) * 100) / 100, Math.Round((_center.Y + dy) * 100) / 100));
             e.Handled = true;
         };
-        AutomationProperties.SetName(_diagram, "Field diagram");
+        AutomationProperties.SetName(_diagram, Loc.S("Results_ImageSim_PickerDiagram"));
         Update();
     }
 
@@ -111,8 +111,7 @@ sealed partial class ImageSimulationFieldPicker : UserControl
         _title.Text = char.ToUpperInvariant(title[0]) + title[1..];
         _warning.Foreground = ThemeLookup.Brush(this, "WarningBrush");
         _warning.Visibility = ImageSimulationSettings.OutsideField(c, _extent) ? Visibility.Visible : Visibility.Collapsed;
-        AutomationProperties.SetHelpText(_diagram, "Patch center " + title + ", patch " + ImageSimulationSettings.ExtentTitle(_extent)
-            + " of the field; " + (_points.Count - 1) + " design field points. Arrow keys move the center, Home returns to the axis.");
+        AutomationProperties.SetHelpText(_diagram, Loc.F("Results_ImageSim_PickerHelp", title, ImageSimulationSettings.ExtentTitle(_extent), _points.Count - 1));
         _canvas.Invalidate();
     }
 

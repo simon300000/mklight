@@ -1,5 +1,6 @@
 using System.Globalization;
 using System.Text.Json.Nodes;
+using MKLight.App.Support;
 
 namespace MKLight.App.Views.Analysis.Results.Readers;
 
@@ -85,7 +86,7 @@ public static class Fmt
     public static string FieldTitle(ResultData data, int index, JsonNode? fieldValue)
     {
         var value = index >= 0 && index < data.FieldLabels.Count ? data.FieldLabels[index] : Field(Json.NfArray(fieldValue));
-        return string.IsNullOrEmpty(value) ? $"Field {index + 1}" : $"Field {index + 1} · {value}";
+        return string.IsNullOrEmpty(value) ? Loc.F("Results_Chart_FieldNumber", index + 1) : Loc.F("Results_Chart_FieldNumberValue", index + 1, value);
     }
 
     /// <summary>A wavelength: "0.5876 µm".</summary>
@@ -105,7 +106,7 @@ public readonly record struct ImageUnits(bool Afocal)
     /// <summary>The unit of a *_mm value × 1000.</summary>
     public string Micro => Afocal ? "µrad" : "µm";
     public string Density => Afocal ? "mrad⁻¹" : "mm⁻¹";
-    public string FocusAxis => Afocal ? "Vergence (mD)" : "Focus shift (mm)";
+    public string FocusAxis => Loc.S(Afocal ? "Results_Axis_VergenceMd" : "Results_Axis_FocusShiftMm");
 
     public string Length(double v)
     {

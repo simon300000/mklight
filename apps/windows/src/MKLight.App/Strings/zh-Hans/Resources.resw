@@ -26,6 +26,440 @@
   <!-- area: Jobs -->
   <!-- end area: Jobs -->
   <!-- area: Results -->
+  <data name="Results_A11y_Selected" xml:space="preserve"><value>已选择</value></data>
+  <data name="Results_Axis_DefocusMm" xml:space="preserve"><value>离焦 (mm)</value></data>
+  <data name="Results_Axis_DistortionPercent" xml:space="preserve"><value>畸变 (%)</value></data>
+  <data name="Results_Axis_EncircledEnergy" xml:space="preserve"><value>包围能量</value></data>
+  <data name="Results_Axis_Field" xml:space="preserve"><value>视场</value></data>
+  <data name="Results_Axis_FieldUnit" xml:space="preserve"><value>视场 ({0})</value></data>
+  <data name="Results_Axis_FocalShiftUm" xml:space="preserve"><value>焦移 (µm)</value></data>
+  <data name="Results_Axis_FocusShiftMm" xml:space="preserve"><value>焦移 (mm)</value></data>
+  <data name="Results_Axis_Fraction" xml:space="preserve"><value>比例</value></data>
+  <data name="Results_Axis_LateralColorUm" xml:space="preserve"><value>垂轴色差 (µm)</value></data>
+  <data name="Results_Axis_LineSpread" xml:space="preserve"><value>线扩散 ({0})</value></data>
+  <data name="Results_Axis_LongitudinalAberrationMm" xml:space="preserve"><value>轴向像差 (mm)</value></data>
+  <data name="Results_Axis_Modulation" xml:space="preserve"><value>调制度</value></data>
+  <data name="Results_Axis_NormalizedField" xml:space="preserve"><value>归一化视场</value></data>
+  <data name="Results_Axis_Position" xml:space="preserve"><value>位置 ({0})</value></data>
+  <data name="Results_Axis_PupilZone" xml:space="preserve"><value>光瞳带</value></data>
+  <data name="Results_Axis_Radius" xml:space="preserve"><value>半径 ({0})</value></data>
+  <data name="Results_Axis_RmsRadiusUm" xml:space="preserve"><value>RMS 半径 (µm)</value></data>
+  <data name="Results_Axis_SpatialFrequency" xml:space="preserve"><value>空间频率 ({0})</value></data>
+  <data name="Results_Axis_VergenceMd" xml:space="preserve"><value>聚散度 (mD)</value></data>
+  <data name="Results_Axis_WavelengthUm" xml:space="preserve"><value>波长 (µm)</value></data>
+  <data name="Results_Chart_Distortion" xml:space="preserve"><value>畸变</value></data>
+  <data name="Results_Chart_FieldCurvature" xml:space="preserve"><value>场曲</value></data>
+  <data name="Results_Chart_FieldNumber" xml:space="preserve"><value>视场 {0}</value></data>
+  <data name="Results_Chart_FieldNumberValue" xml:space="preserve"><value>视场 {0} · {1}</value></data>
+  <data name="Results_Chart_Sagittal" xml:space="preserve"><value>弧矢</value></data>
+  <data name="Results_Chart_Tangential" xml:space="preserve"><value>子午</value></data>
+  <data name="Results_Compare_Candidate" xml:space="preserve"><value>候选设计</value></data>
+  <data name="Results_Compare_Design" xml:space="preserve"><value>设计</value></data>
+  <data name="Results_Compare_Name" xml:space="preserve"><value>显示设计或预览中的候选设计</value></data>
+  <data name="Results_Compare_ToolTip" xml:space="preserve"><value>显示设计的结果，或正在预览的候选设计的结果</value></data>
+  <data name="Results_Cra_AngleAxis" xml:space="preserve"><value>主光线角 (°)</value></data>
+  <data name="Results_Cra_ChartName" xml:space="preserve"><value>主光线角随像高变化。{0}</value></data>
+  <data name="Results_Cra_ChartNameLimit" xml:space="preserve"><value>主光线角随像高变化，含传感器限值。{0}</value></data>
+  <data name="Results_Cra_Curve" xml:space="preserve"><value>曲线</value></data>
+  <data name="Results_Cra_Display" xml:space="preserve"><value>显示</value></data>
+  <data name="Results_Cra_ExceedLimit" xml:space="preserve"><value>{0}，{1} 个采样点超出传感器限值</value></data>
+  <data name="Results_Cra_ImageHeightXMm" xml:space="preserve"><value>像高 x (mm)</value></data>
+  <data name="Results_Cra_ImageHeightYMm" xml:space="preserve"><value>像高 y (mm)</value></data>
+  <data name="Results_Cra_Incidence" xml:space="preserve"><value>主光线入射角</value></data>
+  <data name="Results_Cra_Largest" xml:space="preserve"><value>最大 {0} 度，位于 {1} 毫米处</value></data>
+  <data name="Results_Cra_Map" xml:space="preserve"><value>分布图</value></data>
+  <data name="Results_Cra_Margin" xml:space="preserve"><value>裕量</value></data>
+  <data name="Results_Cra_SensorLimit" xml:space="preserve"><value>传感器限值</value></data>
+  <data name="Results_Cra_Violation" xml:space="preserve"><value>超限</value></data>
+  <data name="Results_Cra_WithinLimit" xml:space="preserve"><value>{0}，在传感器限值之内</value></data>
+  <data name="Results_FieldMap_DataRange" xml:space="preserve"><value>数据范围</value></data>
+  <data name="Results_FieldMap_ImageRadiusMm" xml:space="preserve"><value>像面半径 (mm)</value></data>
+  <data name="Results_FieldMap_MapName" xml:space="preserve"><value>{0} 归一化视场分布图，{1} × {2} 个采样点，从 {3} 到 {4}</value></data>
+  <data name="Results_FieldMap_NoValues" xml:space="preserve"><value>无数值</value></data>
+  <data name="Results_FieldMap_Quantity" xml:space="preserve"><value>物理量</value></data>
+  <data name="Results_FieldMap_RadialName" xml:space="preserve"><value>{0} 随像面半径变化，{1} 个采样点</value></data>
+  <data name="Results_FieldMap_RadialTitle" xml:space="preserve"><value>{0} 随像面半径变化</value></data>
+  <data name="Results_FieldMap_RangeToolTip" xml:space="preserve"><value>按图自身的范围着色（可显示细微差异），或按 0 至 1 着色（便于比较设计）</value></data>
+  <data name="Results_FieldMap_SweepName" xml:space="preserve"><value>{0} 沿 {1}，从 {2} 到 {3}</value></data>
+  <data name="Results_FieldMap_Undefined" xml:space="preserve"><value>{0} 在所有采样点均无定义：{1}。</value></data>
+  <data name="Results_FieldMap_ZeroToOne" xml:space="preserve"><value>0 至 1</value></data>
+  <data name="Results_FirstOrderHelp_AiryRadius" xml:space="preserve"><value>艾里斑第一暗环的半径，1.22 λ × 工作 F 数。</value></data>
+  <data name="Results_FirstOrderHelp_Bfl" xml:space="preserve"><value>后焦距：从最后一面到近轴焦点。</value></data>
+  <data name="Results_FirstOrderHelp_Efl" xml:space="preserve"><value>有效焦距（y 截面）：物在无穷远时，从后主面到近轴焦点的距离。</value></data>
+  <data name="Results_FirstOrderHelp_EntrancePupilDiameter" xml:space="preserve"><value>从物方看到的光阑像的直径。</value></data>
+  <data name="Results_FirstOrderHelp_EntrancePupilPosition" xml:space="preserve"><value>入瞳的位置，从第一面量起。</value></data>
+  <data name="Results_FirstOrderHelp_ExitPupilDiameter" xml:space="preserve"><value>从像方看到的光阑像的直径。</value></data>
+  <data name="Results_FirstOrderHelp_ExitPupilPosition" xml:space="preserve"><value>出瞳的位置，从像面量起。</value></data>
+  <data name="Results_FirstOrderHelp_Ffl" xml:space="preserve"><value>前焦点的位置，从第一面量起。</value></data>
+  <data name="Results_FirstOrderHelp_ImageDistance" xml:space="preserve"><value>从最后一面到物体的近轴像。</value></data>
+  <data name="Results_FirstOrderHelp_ImageFNumber" xml:space="preserve"><value>像方 F 数：有效焦距除以入瞳直径。</value></data>
+  <data name="Results_FirstOrderHelp_ImageHeightPerTan" xml:space="preserve"><value>视场角正切每单位对应的近轴像高。</value></data>
+  <data name="Results_FirstOrderHelp_ImageNa" xml:space="preserve"><value>边缘光线的像方数值孔径 n′ sin θ′。</value></data>
+  <data name="Results_FirstOrderHelp_LagrangeInvariant" xml:space="preserve"><value>近轴边缘光线与主光线的光学不变量，衡量系统通过的光学扩展量。</value></data>
+  <data name="Results_FirstOrderHelp_Magnification" xml:space="preserve"><value>近轴垂轴放大率：像高除以物高（物在无穷远时为 0）。</value></data>
+  <data name="Results_FirstOrderHelp_MaxField" xml:space="preserve"><value>设计的最大视场，以其视场单位表示。</value></data>
+  <data name="Results_FirstOrderHelp_ObjectDistance" xml:space="preserve"><value>从物体到第一面。</value></data>
+  <data name="Results_FirstOrderHelp_ObjectNa" xml:space="preserve"><value>边缘光线的物方数值孔径 n sin θ（物在无穷远时为 0）。</value></data>
+  <data name="Results_FirstOrderHelp_ParaxialImageHeight" xml:space="preserve"><value>最大视场的近轴主光线在像处的高度。</value></data>
+  <data name="Results_FirstOrderHelp_PetzvalRadius" xml:space="preserve"><value>佩茨瓦尔面的半径，即无像散系统的场曲。</value></data>
+  <data name="Results_FirstOrderHelp_StopSemiDiameter" xml:space="preserve"><value>孔径光阑的半口径。</value></data>
+  <data name="Results_FirstOrderHelp_TotalTrack" xml:space="preserve"><value>从第一面到像面。</value></data>
+  <data name="Results_FirstOrderHelp_WorkingFNumber" xml:space="preserve"><value>近轴工作 F 数：按实际物距，像处近轴边缘光线的 1 / (2 n′ sin θ′)。</value></data>
+  <data name="Results_FirstOrder_Anamorphic" xml:space="preserve"><value>变形</value></data>
+  <data name="Results_FirstOrder_AtPrimary" xml:space="preserve"><value>λ = {0}（主波长）</value></data>
+  <data name="Results_FirstOrder_AtWavelength" xml:space="preserve"><value>λ = {0}</value></data>
+  <data name="Results_FirstOrder_Diffractive" xml:space="preserve"><value>衍射</value></data>
+  <data name="Results_FirstOrder_DoePower" xml:space="preserve"><value>DOE 光焦度，面 {0}</value></data>
+  <data name="Results_FirstOrder_DoePowerTip" xml:space="preserve"><value>追迹级次的相位光焦度（不含基底的折射光焦度）</value></data>
+  <data name="Results_FirstOrder_OtherWavelengths" xml:space="preserve"><value>其他波长（{0}）</value></data>
+  <data name="Results_FirstOrder_Squeeze" xml:space="preserve"><value>压缩比</value></data>
+  <data name="Results_FirstOrder_SqueezeDefault" xml:space="preserve"><value>带符号的 EFL y / EFL x</value></data>
+  <data name="Results_FirstOrder_SqueezeTip" xml:space="preserve"><value>压缩比：{0}</value></data>
+  <data name="Results_FirstOrder_Symmetry" xml:space="preserve"><value>对称性</value></data>
+  <data name="Results_FirstOrder_SymmetryMeridional" xml:space="preserve"><value>子午面对称</value></data>
+  <data name="Results_FirstOrder_SymmetryNone" xml:space="preserve"><value>无</value></data>
+  <data name="Results_FirstOrder_SymmetryRotational" xml:space="preserve"><value>旋转对称</value></data>
+  <data name="Results_FirstOrder_ValueName" xml:space="preserve"><value>{0}：{1}</value></data>
+  <data name="Results_Footprint_ClearAperture" xml:space="preserve"><value>通光孔径 {0}</value></data>
+  <data name="Results_Footprint_Clipped" xml:space="preserve"><value>{0} 条被遮挡</value></data>
+  <data name="Results_Footprint_Name" xml:space="preserve"><value>面 {0} 上的光斑足迹，{1} 条光线通过，{2} 条被遮挡</value></data>
+  <data name="Results_Generic_Data" xml:space="preserve"><value>数据</value></data>
+  <data name="Results_Generic_Index" xml:space="preserve"><value>索引</value></data>
+  <data name="Results_Generic_Missing" xml:space="preserve"><value> · {0} 个无值</value></data>
+  <data name="Results_Generic_MoreRows" xml:space="preserve"><value>另有 {0} 行</value></data>
+  <data name="Results_Generic_NoValues" xml:space="preserve"><value>{0} · 无数值</value></data>
+  <data name="Results_Generic_ReadError" xml:space="preserve"><value>无法读取此结果：{0}</value></data>
+  <data name="Results_Generic_Values" xml:space="preserve"><value>数值</value></data>
+  <data name="Results_Ghost_HeadBlur" xml:space="preserve"><value>弥散 ⌀ (mm)</value></data>
+  <data name="Results_Ghost_HeadFocus" xml:space="preserve"><value>焦点 (mm)</value></data>
+  <data name="Results_Ghost_HeadGhost" xml:space="preserve"><value>鬼像</value></data>
+  <data name="Results_Ghost_HeadIrradiance" xml:space="preserve"><value>相对辐照度</value></data>
+  <data name="Results_Ghost_NearFocus" xml:space="preserve"><value>近焦</value></data>
+  <data name="Results_Ghost_NearFocusTip" xml:space="preserve"><value>在传感器附近聚焦</value></data>
+  <data name="Results_Ghost_NoPaths" xml:space="preserve"><value>没有鬼像路径</value></data>
+  <data name="Results_Ghost_NoPathsNote" xml:space="preserve"><value>枚举未发现到达传感器的鬼像。</value></data>
+  <data name="Results_Ghost_TipBlur" xml:space="preserve"><value>传感器上的鬼像弥散直径</value></data>
+  <data name="Results_Ghost_TipFocus" xml:space="preserve"><value>鬼像焦点到传感器的有符号距离</value></data>
+  <data name="Results_Ghost_TipGhost" xml:space="preserve"><value>依次反射的面</value></data>
+  <data name="Results_Ghost_TipIrradiance" xml:space="preserve"><value>估计的鬼像辐照度（相对于信号）</value></data>
+  <data name="Results_Ghost_TipReflectance" xml:space="preserve"><value>各反射率的乘积</value></data>
+  <data name="Results_Ghost_Truncated" xml:space="preserve"><value>受路径预算限制，已舍弃高阶路径。</value></data>
+  <data name="Results_GlassData_Catalog" xml:space="preserve"><value>目录 n_d {0}，V_d {1}</value></data>
+  <data name="Results_GlassData_ChartName" xml:space="preserve"><value>折射率随波长变化</value></data>
+  <data name="Results_GlassData_Density" xml:space="preserve"><value>密度</value></data>
+  <data name="Results_GlassData_Dispersion" xml:space="preserve"><value>色散</value></data>
+  <data name="Results_GlassData_Extrapolated" xml:space="preserve"><value>超出玻璃的数据范围：折射率为外推值</value></data>
+  <data name="Results_GlassData_Formula" xml:space="preserve"><value>色散公式</value></data>
+  <data name="Results_GlassData_HeadCatalogIndex" xml:space="preserve"><value>n 目录</value></data>
+  <data name="Results_GlassData_Indices" xml:space="preserve"><value>折射率</value></data>
+  <data name="Results_GlassData_NdTip" xml:space="preserve"><value>d 谱线 (587.56 nm) 处的折射率</value></data>
+  <data name="Results_GlassData_NeTip" xml:space="preserve"><value>e 谱线 (546.07 nm) 处的折射率</value></data>
+  <data name="Results_GlassData_NoCurve" xml:space="preserve"><value>将曲线采样数设为大于零，即可绘制玻璃适用范围内的折射率。</value></data>
+  <data name="Results_GlassData_None" xml:space="preserve"><value>无</value></data>
+  <data name="Results_GlassData_Offset" xml:space="preserve"><value>偏移</value></data>
+  <data name="Results_GlassData_OffsetTip" xml:space="preserve"><value>相对目录值 Δnd {0}，ΔVd {1}</value></data>
+  <data name="Results_GlassData_PgfTip" xml:space="preserve"><value>相对部分色散 (ng − nF) / (nF − nC)</value></data>
+  <data name="Results_GlassData_Properties" xml:space="preserve"><value>属性</value></data>
+  <data name="Results_GlassData_RelativeCost" xml:space="preserve"><value>相对成本</value></data>
+  <data name="Results_GlassData_ThermalExpansion" xml:space="preserve"><value>热膨胀</value></data>
+  <data name="Results_GlassData_ThermoOptic" xml:space="preserve"><value>热光数据 (dn/dT)</value></data>
+  <data name="Results_GlassData_TipAbsorption" xml:space="preserve"><value>内部吸收系数</value></data>
+  <data name="Results_GlassData_TipCatalogIndex" xml:space="preserve"><value>目录参考条件下的折射率</value></data>
+  <data name="Results_GlassData_TipIndex" xml:space="preserve"><value>分析温度和压力下相对于空气的折射率</value></data>
+  <data name="Results_GlassData_Valid" xml:space="preserve"><value>有效 {0}</value></data>
+  <data name="Results_GlassData_ValidRange" xml:space="preserve"><value>有效范围</value></data>
+  <data name="Results_GlassData_VdTip" xml:space="preserve"><value>阿贝数 (nd − 1) / (nF − nC)</value></data>
+  <data name="Results_GlassData_Yes" xml:space="preserve"><value>有</value></data>
+  <data name="Results_GlassMap_AllCatalogs" xml:space="preserve"><value>所有玻璃库</value></data>
+  <data name="Results_GlassMap_AxisAbbe" xml:space="preserve"><value>阿贝数 V_d</value></data>
+  <data name="Results_GlassMap_AxisNd" xml:space="preserve"><value>折射率 n_d</value></data>
+  <data name="Results_GlassMap_AxisPgf" xml:space="preserve"><value>部分色散 P_g,F</value></data>
+  <data name="Results_GlassMap_Catalog" xml:space="preserve"><value>玻璃库</value></data>
+  <data name="Results_GlassMap_CatalogGlass" xml:space="preserve"><value>目录玻璃</value></data>
+  <data name="Results_GlassMap_ClickHint" xml:space="preserve"><value>单击玻璃以查看详情。</value></data>
+  <data name="Results_GlassMap_Excluded" xml:space="preserve"><value>已排除</value></data>
+  <data name="Results_GlassMap_InDesign" xml:space="preserve"><value>设计中</value></data>
+  <data name="Results_GlassMap_MeltOffset" xml:space="preserve"><value>熔炼偏移</value></data>
+  <data name="Results_GlassMap_MeltOffsetLower" xml:space="preserve"><value>熔炼偏移</value></data>
+  <data name="Results_GlassMap_ModelGlass" xml:space="preserve"><value>模型玻璃</value></data>
+  <data name="Results_GlassMap_ModelName" xml:space="preserve"><value>{0}（模型）</value></data>
+  <data name="Results_GlassMap_Name" xml:space="preserve"><value>玻璃图，{0} 种玻璃；设计中：{1}</value></data>
+  <data name="Results_GlassMap_NameOmitted" xml:space="preserve"><value>玻璃图，{0} 种玻璃；设计中：{1}；{2} 种玻璃未在图中</value></data>
+  <data name="Results_GlassMap_NotOnMap" xml:space="preserve"><value>未在图中（{0}）</value></data>
+  <data name="Results_GlassMap_OtherRowName" xml:space="preserve"><value>{0}，{1}，未在图中：{2}</value></data>
+  <data name="Results_GlassMap_Plane" xml:space="preserve"><value>平面</value></data>
+  <data name="Results_GlassMap_PlaneToolTip" xml:space="preserve"><value>折射率 nd 或部分色散 Pg,F 对阿贝数 Vd</value></data>
+  <data name="Results_GlassMap_RowName" xml:space="preserve"><value>{0}，面 {1}</value></data>
+  <data name="Results_GlassMap_RowNameOmitted" xml:space="preserve"><value>{0}，面 {1}，未在图中：{2}</value></data>
+  <data name="Results_GlassMap_RowNotOnMap" xml:space="preserve"><value>{0}   未在图中</value></data>
+  <data name="Results_GlassMap_ShowAll" xml:space="preserve"><value>显示全部 {0} 种</value></data>
+  <data name="Results_GlassMap_StatusMelt" xml:space="preserve"><value>按需熔炼</value></data>
+  <data name="Results_GlassMap_StatusObsolete" xml:space="preserve"><value>停产</value></data>
+  <data name="Results_GlassMap_StatusOther" xml:space="preserve"><value>状态 {0}</value></data>
+  <data name="Results_GlassMap_StatusPreferred" xml:space="preserve"><value>首选</value></data>
+  <data name="Results_GlassMap_StatusSpecial" xml:space="preserve"><value>特殊</value></data>
+  <data name="Results_GlassMap_StatusStandard" xml:space="preserve"><value>标准</value></data>
+  <data name="Results_GlassMap_StatusUnknown" xml:space="preserve"><value>未知</value></data>
+  <data name="Results_GlassMap_Substitution" xml:space="preserve"><value>替换</value></data>
+  <data name="Results_GlassMap_Surfaces" xml:space="preserve"><value>面</value></data>
+  <data name="Results_Glass_FormulaExtended" xml:space="preserve"><value>扩展</value></data>
+  <data name="Results_Glass_FormulaTabulated" xml:space="preserve"><value>列表</value></data>
+  <data name="Results_GridDistortion_ImageXMm" xml:space="preserve"><value>像面 x (mm)</value></data>
+  <data name="Results_GridDistortion_ImageYMm" xml:space="preserve"><value>像面 y (mm)</value></data>
+  <data name="Results_GridDistortion_Max" xml:space="preserve"><value>最大 {0} %</value></data>
+  <data name="Results_GridDistortion_Name" xml:space="preserve"><value>网格畸变，最大 {0}%</value></data>
+  <data name="Results_GridDistortion_ParaxialGrid" xml:space="preserve"><value>近轴网格</value></data>
+  <data name="Results_GridDistortion_RealChiefRays" xml:space="preserve"><value>实际主光线</value></data>
+  <data name="Results_ImageSim_AreaSampled" xml:space="preserve"><value>图案按面积采样</value></data>
+  <data name="Results_ImageSim_AreaSampledTip" xml:space="preserve"><value>引擎在每个像素的精确源点（经过畸变）处计算内置图案，并在像素内取平均，因此模糊完全来自镜头。显示的源图像使用相同的定义绘制。</value></data>
+  <data name="Results_ImageSim_At" xml:space="preserve"><value>位于 {0}</value></data>
+  <data name="Results_ImageSim_AtAxis" xml:space="preserve"><value>轴上</value></data>
+  <data name="Results_ImageSim_AtView" xml:space="preserve"><value>{0} · 视野 {1}</value></data>
+  <data name="Results_ImageSim_Blink" xml:space="preserve"><value>闪烁</value></data>
+  <data name="Results_ImageSim_ChooseImage" xml:space="preserve"><value>选择图像…</value></data>
+  <data name="Results_ImageSim_Clipped" xml:space="preserve"><value>{0}% 溢出</value></data>
+  <data name="Results_ImageSim_ClippedTip" xml:space="preserve"><value>在此曝光下超过满量程的采样点</value></data>
+  <data name="Results_ImageSim_Compare" xml:space="preserve"><value>对比</value></data>
+  <data name="Results_ImageSim_Exposure" xml:space="preserve"><value>曝光</value></data>
+  <data name="Results_ImageSim_ExposureToolTip" xml:space="preserve"><value>将模拟图像的线性光强乘以 2^EV；源图像以单位曝光显示</value></data>
+  <data name="Results_ImageSim_FieldMapping" xml:space="preserve"><value>视场映射</value></data>
+  <data name="Results_ImageSim_FieldMappingName" xml:space="preserve"><value>视场映射</value></data>
+  <data name="Results_ImageSim_FieldOfView" xml:space="preserve"><value>视野</value></data>
+  <data name="Results_ImageSim_FieldOfViewToolTip" xml:space="preserve"><value>模拟的视场部分：围绕图块中心的正方形，以视场的比例表示。图块越小像素越细，模糊越明显。</value></data>
+  <data name="Results_ImageSim_Fit" xml:space="preserve"><value>适应</value></data>
+  <data name="Results_ImageSim_FitToolTip" xml:space="preserve"><value>使图像适应视图并重置平移（或双击图像）</value></data>
+  <data name="Results_ImageSim_HeadField" xml:space="preserve"><value>视场 (Hx, Hy)</value></data>
+  <data name="Results_ImageSim_HeadIdeal" xml:space="preserve"><value>理想 (mm)</value></data>
+  <data name="Results_ImageSim_HeadReal" xml:space="preserve"><value>实际 (mm)</value></data>
+  <data name="Results_ImageSim_HeadRelIllum" xml:space="preserve"><value>相对照度</value></data>
+  <data name="Results_ImageSim_Help" xml:space="preserve"><value>显示：{0}，缩放 {1} %，曝光 {2}。滚动滚轮围绕指针缩放，拖动平移，双击适应；拖放图像文件可将其用作源图像。</value></data>
+  <data name="Results_ImageSim_Image" xml:space="preserve"><value>图像</value></data>
+  <data name="Results_ImageSim_ImageBuffer" xml:space="preserve"><value>图像缓冲区</value></data>
+  <data name="Results_ImageSim_ImportedImage" xml:space="preserve"><value>导入的图像</value></data>
+  <data name="Results_ImageSim_MappingNote" xml:space="preserve"><value>PSF 网格节点；节点之间的图像按双线性映射。</value></data>
+  <data name="Results_ImageSim_ModeAlone" xml:space="preserve"><value>仅模拟图像</value></data>
+  <data name="Results_ImageSim_ModeBlink" xml:space="preserve"><value>与源图像 {0} 交替闪烁</value></data>
+  <data name="Results_ImageSim_ModeSideBySide" xml:space="preserve"><value>与源图像 {0} 并排</value></data>
+  <data name="Results_ImageSim_ModeSplit" xml:space="preserve"><value>与源图像 {0} 分割显示（源图像占 {1} %）</value></data>
+  <data name="Results_ImageSim_Name" xml:space="preserve"><value>模拟图像，{0}×{1} px</value></data>
+  <data name="Results_ImageSim_NameCentre" xml:space="preserve"><value>{0}，中心 {1}</value></data>
+  <data name="Results_ImageSim_NameField" xml:space="preserve"><value>{0}，视场 {1}</value></data>
+  <data name="Results_ImageSim_OnAxis" xml:space="preserve"><value>轴上</value></data>
+  <data name="Results_ImageSim_PatchCenter" xml:space="preserve"><value>图块中心</value></data>
+  <data name="Results_ImageSim_PatchCenterToolTip" xml:space="preserve"><value>图块中心的位置：轴上、设计视场点，或在视场上任意选取的点。</value></data>
+  <data name="Results_ImageSim_PatchTip" xml:space="preserve"><value>图块中心位于归一化视场 {0}。</value></data>
+  <data name="Results_ImageSim_PatchTipImage" xml:space="preserve"><value>图块中心位于归一化视场 {0}，像点 ({1}, {2}) mm。</value></data>
+  <data name="Results_ImageSim_Pattern" xml:space="preserve"><value>图案</value></data>
+  <data name="Results_ImageSim_PatternGrid" xml:space="preserve"><value>网格图案</value></data>
+  <data name="Results_ImageSim_PatternSiemensStar" xml:space="preserve"><value>西门子星图案</value></data>
+  <data name="Results_ImageSim_PatternSlantedEdge" xml:space="preserve"><value>倾斜刃边图案</value></data>
+  <data name="Results_ImageSim_PatternTextChart" xml:space="preserve"><value>文字图卡图案</value></data>
+  <data name="Results_ImageSim_PickOnField" xml:space="preserve"><value>在视场上选取…</value></data>
+  <data name="Results_ImageSim_PickerDiagram" xml:space="preserve"><value>视场图</value></data>
+  <data name="Results_ImageSim_PickerHelp" xml:space="preserve"><value>图块中心 {0}，图块为视场的 {1}；{2} 个设计视场点。方向键移动中心，Home 键回到光轴。</value></data>
+  <data name="Results_ImageSim_PickerHint" xml:space="preserve"><value>单击以设定图块中心；会吸附到光轴和视场点。</value></data>
+  <data name="Results_ImageSim_PickerOutside" xml:space="preserve"><value>图块有一部分位于设计视场之外。</value></data>
+  <data name="Results_ImageSim_PickerTitle" xml:space="preserve"><value>图块中心</value></data>
+  <data name="Results_ImageSim_Pixel" xml:space="preserve"><value>像素 {0}</value></data>
+  <data name="Results_ImageSim_PixelXY" xml:space="preserve"><value>像素 {0} × {1}</value></data>
+  <data name="Results_ImageSim_Pixels" xml:space="preserve"><value>{0} 像素</value></data>
+  <data name="Results_ImageSim_Psf" xml:space="preserve"><value>PSF {0} × {1}</value></data>
+  <data name="Results_ImageSim_PsfTip" xml:space="preserve"><value>本次运行使用的 PSF 窗口和采样间隔</value></data>
+  <data name="Results_ImageSim_ReadFailed" xml:space="preserve"><value>无法读取 {0}</value></data>
+  <data name="Results_ImageSim_ReadFailedTip" xml:space="preserve"><value>请选择 Windows 能打开的图像文件（PNG、JPEG、TIFF、BMP、GIF、HEIC、WebP）</value></data>
+  <data name="Results_ImageSim_Resolution" xml:space="preserve"><value>分辨率</value></data>
+  <data name="Results_ImageSim_ResolutionToolTip" xml:space="preserve"><value>每边输出像素数</value></data>
+  <data name="Results_ImageSim_SideBySide" xml:space="preserve"><value>并排</value></data>
+  <data name="Results_ImageSim_Simulated" xml:space="preserve"><value>模拟</value></data>
+  <data name="Results_ImageSim_SizeButton" xml:space="preserve"><value>{0} px</value></data>
+  <data name="Results_ImageSim_SizeItem" xml:space="preserve"><value>{0} × {0} px</value></data>
+  <data name="Results_ImageSim_SizeMono" xml:space="preserve"><value>{0} × {1} px，单色</value></data>
+  <data name="Results_ImageSim_SizeRgb" xml:space="preserve"><value>{0} × {1} px，RGB</value></data>
+  <data name="Results_ImageSim_Source" xml:space="preserve"><value>源图像</value></data>
+  <data name="Results_ImageSim_SourceButton" xml:space="preserve"><value>源图像：{0}</value></data>
+  <data name="Results_ImageSim_SourceToolTip" xml:space="preserve"><value>场景：内置测试图案或图像文件（选择文件，或拖放到图像上）；裁剪到视场并在线性光下重采样，每边最多 512 px。</value></data>
+  <data name="Results_ImageSim_Split" xml:space="preserve"><value>分割</value></data>
+  <data name="Results_ImageSim_TheImage" xml:space="preserve"><value>图像</value></data>
+  <data name="Results_ImageSim_UseAsSource" xml:space="preserve"><value>用作源图像</value></data>
+  <data name="Results_ImageSim_ViewButton" xml:space="preserve"><value>视野 {0}</value></data>
+  <data name="Results_ImageSim_ZoomIn" xml:space="preserve"><value>放大</value></data>
+  <data name="Results_ImageSim_ZoomName" xml:space="preserve"><value>缩放 {0}</value></data>
+  <data name="Results_ImageSim_ZoomOut" xml:space="preserve"><value>缩小</value></data>
+  <data name="Results_ImageSim_ZoomToolTip" xml:space="preserve"><value>在图像上滚动滚轮以围绕指针缩放；拖动以平移</value></data>
+  <data name="Results_KeyNumbers_Airy" xml:space="preserve"><value>艾里斑</value></data>
+  <data name="Results_KeyNumbers_At" xml:space="preserve"><value>位于</value></data>
+  <data name="Results_KeyNumbers_BestDefocus" xml:space="preserve"><value>最佳离焦</value></data>
+  <data name="Results_KeyNumbers_Clear" xml:space="preserve"><value>通光</value></data>
+  <data name="Results_KeyNumbers_Compared" xml:space="preserve"><value>{0} {1}（设计 {2}）</value></data>
+  <data name="Results_KeyNumbers_Errors" xml:space="preserve"><value>错误</value></data>
+  <data name="Results_KeyNumbers_GhostPrimaryFlux" xml:space="preserve"><value>鬼像/主像通量比</value></data>
+  <data name="Results_KeyNumbers_Glasses" xml:space="preserve"><value>玻璃</value></data>
+  <data name="Results_KeyNumbers_InDesign" xml:space="preserve"><value>设计中</value></data>
+  <data name="Results_KeyNumbers_MaxCra" xml:space="preserve"><value>最大 CRA</value></data>
+  <data name="Results_KeyNumbers_MaxDiattenuation" xml:space="preserve"><value>最大二向衰减</value></data>
+  <data name="Results_KeyNumbers_MaxDistortion" xml:space="preserve"><value>最大畸变</value></data>
+  <data name="Results_KeyNumbers_MaxRadius" xml:space="preserve"><value>最大半径</value></data>
+  <data name="Results_KeyNumbers_MaxRms" xml:space="preserve"><value>最大 RMS</value></data>
+  <data name="Results_KeyNumbers_MaxStopError" xml:space="preserve"><value>最大光阑误差</value></data>
+  <data name="Results_KeyNumbers_MaxVariation" xml:space="preserve"><value>最大变化</value></data>
+  <data name="Results_KeyNumbers_MaxVignetting" xml:space="preserve"><value>最大渐晕</value></data>
+  <data name="Results_KeyNumbers_MeanIntensity" xml:space="preserve"><value>平均强度</value></data>
+  <data name="Results_KeyNumbers_MinMargin" xml:space="preserve"><value>最小裕量</value></data>
+  <data name="Results_KeyNumbers_MinRi" xml:space="preserve"><value>最小相对照度</value></data>
+  <data name="Results_KeyNumbers_MinTransmission" xml:space="preserve"><value>最小透过率</value></data>
+  <data name="Results_KeyNumbers_NotOnMap" xml:space="preserve"><value>未在图中</value></data>
+  <data name="Results_KeyNumbers_Pixel" xml:space="preserve"><value>像素</value></data>
+  <data name="Results_KeyNumbers_Range" xml:space="preserve"><value>范围</value></data>
+  <data name="Results_KeyNumbers_StrayFraction" xml:space="preserve"><value>杂散光比例</value></data>
+  <data name="Results_KeyNumbers_Strehl" xml:space="preserve"><value>斯特列尔比</value></data>
+  <data name="Results_KeyNumbers_Strongest" xml:space="preserve"><value>最强</value></data>
+  <data name="Results_KeyNumbers_Warnings" xml:space="preserve"><value>警告</value></data>
+  <data name="Results_Legend_AiryRadius" xml:space="preserve"><value>± 艾里半径</value></data>
+  <data name="Results_Legend_DiffractionLimit" xml:space="preserve"><value>衍射极限</value></data>
+  <data name="Results_Legend_FieldR80" xml:space="preserve"><value>{0} · r80 {1}</value></data>
+  <data name="Results_Legend_RelativeIllumination" xml:space="preserve"><value>相对照度</value></data>
+  <data name="Results_Legend_TSolidSDashed" xml:space="preserve"><value>T 实线，S 虚线</value></data>
+  <data name="Results_Legend_VignettedFraction" xml:space="preserve"><value>渐晕比例</value></data>
+  <data name="Results_Legend_XFan" xml:space="preserve"><value>x 扇面</value></data>
+  <data name="Results_Legend_XSolidYDashed" xml:space="preserve"><value>x 实线，y 虚线</value></data>
+  <data name="Results_Legend_YFan" xml:space="preserve"><value>y 扇面</value></data>
+  <data name="Results_Map_ColorScale" xml:space="preserve"><value>色标</value></data>
+  <data name="Results_Map_Linear" xml:space="preserve"><value>线性</value></data>
+  <data name="Results_Map_Log" xml:space="preserve"><value>对数</value></data>
+  <data name="Results_Map_NoValue" xml:space="preserve"><value>无值</value></data>
+  <data name="Results_Map_OutsideField" xml:space="preserve"><value>视场之外</value></data>
+  <data name="Results_Plot_Name" xml:space="preserve"><value>图：{0}</value></data>
+  <data name="Results_Plot_NameCandidate" xml:space="preserve"><value>图（候选设计）：{0}</value></data>
+  <data name="Results_Plot_NameDesign" xml:space="preserve"><value>图（设计）：{0}</value></data>
+  <data name="Results_Polarization_Diattenuation" xml:space="preserve"><value>二向衰减</value></data>
+  <data name="Results_Polarization_Intensity" xml:space="preserve"><value>强度</value></data>
+  <data name="Results_Polarization_MapName" xml:space="preserve"><value>偏振光瞳分布图</value></data>
+  <data name="Results_Polarization_MaxRetardance" xml:space="preserve"><value>最大相位延迟</value></data>
+  <data name="Results_Polarization_Name" xml:space="preserve"><value>光瞳上的{0}，从 {1} 到 {2}</value></data>
+  <data name="Results_Polarization_Retardance" xml:space="preserve"><value>相位延迟</value></data>
+  <data name="Results_Polarization_RmsRetardance" xml:space="preserve"><value>RMS 相位延迟</value></data>
+  <data name="Results_Psf_Extent" xml:space="preserve"><value>范围</value></data>
+  <data name="Results_Psf_ExtentCore" xml:space="preserve"><value>核心</value></data>
+  <data name="Results_Psf_ExtentFull" xml:space="preserve"><value>全部</value></data>
+  <data name="Results_Psf_ExtentToolTip" xml:space="preserve"><value>核心区域（峰值周围包含 95 % 能量的正方形，或峰值 0.1 % 以上的所有采样点，取较小者），或整个采样窗口</value></data>
+  <data name="Results_Psf_Help" xml:space="preserve"><value>斯特列尔比 {0}，{1}色标，{2}宽 {3}，峰值 {4}</value></data>
+  <data name="Results_Psf_HelpCore" xml:space="preserve"><value>核心区域</value></data>
+  <data name="Results_Psf_HelpLinear" xml:space="preserve"><value>线性</value></data>
+  <data name="Results_Psf_HelpLogarithmic" xml:space="preserve"><value>对数</value></data>
+  <data name="Results_Psf_HelpWholeWindow" xml:space="preserve"><value>整个窗口</value></data>
+  <data name="Results_Psf_MapName" xml:space="preserve"><value>点扩散函数</value></data>
+  <data name="Results_Psf_Name" xml:space="preserve"><value>点扩散函数，{0}</value></data>
+  <data name="Results_Psf_OfPeak" xml:space="preserve"><value>{0}  （峰值的 {1}）</value></data>
+  <data name="Results_Psf_Peak" xml:space="preserve"><value>峰值 {0}</value></data>
+  <data name="Results_Psf_Polychromatic" xml:space="preserve"><value>{0} · 复色</value></data>
+  <data name="Results_Psf_Samples" xml:space="preserve"><value>{0} × {0} 个采样点，间隔 {1}</value></data>
+  <data name="Results_Psf_ScaleToolTip" xml:space="preserve"><value>线性强度，或峰值以下五个数量级的对数色标（可显示光晕和旁瓣）。斯特列尔比低于 {0} 的 PSF 默认使用对数色标。</value></data>
+  <data name="Results_Psf_Strehl" xml:space="preserve"><value>斯特列尔比 {0}</value></data>
+  <data name="Results_Psf_StrehlAuto" xml:space="preserve"><value>对数色标：斯特列尔比 {0}</value></data>
+  <data name="Results_Psf_Window" xml:space="preserve"><value>窗口 {0}</value></data>
+  <data name="Results_RayGrid_Arrived" xml:space="preserve"><value>{0} / {1} 到达</value></data>
+  <data name="Results_RayGrid_Name" xml:space="preserve"><value>光线网格密度，{0} 个视场，{2} 条光线中 {1} 条到达</value></data>
+  <data name="Results_RayGrid_NoRays" xml:space="preserve"><value>没有光线到达</value></data>
+  <data name="Results_RayGrid_Note" xml:space="preserve"><value>像面上的光线密度，以各视场的质心为中心；越不透明，光线越多。</value></data>
+  <data name="Results_RayGrid_PupilRays" xml:space="preserve"><value>每个视场和波长 {0} 条光瞳光线</value></data>
+  <data name="Results_Rule_Best" xml:space="preserve"><value>最佳</value></data>
+  <data name="Results_Rule_Image" xml:space="preserve"><value>像面</value></data>
+  <data name="Results_Rule_Nyquist" xml:space="preserve"><value>奈奎斯特</value></data>
+  <data name="Results_Seidel_AxisCoefficient" xml:space="preserve"><value>系数 (mm)</value></data>
+  <data name="Results_Seidel_AxisSurface" xml:space="preserve"><value>面</value></data>
+  <data name="Results_Seidel_ChartName" xml:space="preserve"><value>各面的赛德尔系数及其总和</value></data>
+  <data name="Results_Seidel_ChoiceChromatic" xml:space="preserve"><value>色差</value></data>
+  <data name="Results_Seidel_ChoiceSeidel" xml:space="preserve"><value>赛德尔</value></data>
+  <data name="Results_Seidel_Cl" xml:space="preserve"><value>C_L 轴向色差</value></data>
+  <data name="Results_Seidel_Coefficients" xml:space="preserve"><value>系数</value></data>
+  <data name="Results_Seidel_Ct" xml:space="preserve"><value>C_T 垂轴色差</value></data>
+  <data name="Results_Seidel_NotApplicable" xml:space="preserve"><value>赛德尔系数不适用</value></data>
+  <data name="Results_Seidel_PetzvalRadius" xml:space="preserve"><value>佩茨瓦尔半径 {0}</value></data>
+  <data name="Results_Seidel_S1" xml:space="preserve"><value>S_I 球差</value></data>
+  <data name="Results_Seidel_S2" xml:space="preserve"><value>S_II 彗差</value></data>
+  <data name="Results_Seidel_S3" xml:space="preserve"><value>S_III 像散</value></data>
+  <data name="Results_Seidel_S4" xml:space="preserve"><value>S_IV 佩茨瓦尔</value></data>
+  <data name="Results_Seidel_S5" xml:space="preserve"><value>S_V 畸变</value></data>
+  <data name="Results_Seidel_Sum" xml:space="preserve"><value>总和 (Σ)</value></data>
+  <data name="Results_Seidel_SurfaceNumber" xml:space="preserve"><value>面 {0}</value></data>
+  <data name="Results_Seidel_WavefrontItemName" xml:space="preserve"><value>{0} {1} waves</value></data>
+  <data name="Results_Seidel_WavefrontWaves" xml:space="preserve"><value>波前 (waves)</value></data>
+  <data name="Results_Sensor_AllGhosts" xml:space="preserve"><value>全部鬼像</value></data>
+  <data name="Results_Sensor_Caption" xml:space="preserve"><value>传感器 {0} × {1} mm · 峰值 {2} {3}</value></data>
+  <data name="Results_Sensor_GhostPrimaryFlux" xml:space="preserve"><value>鬼像/主像通量比</value></data>
+  <data name="Results_Sensor_GhostPrimaryPeak" xml:space="preserve"><value>鬼像/主像峰值比</value></data>
+  <data name="Results_Sensor_Map" xml:space="preserve"><value>分布图</value></data>
+  <data name="Results_Sensor_MapName" xml:space="preserve"><value>传感器分布图</value></data>
+  <data name="Results_Sensor_Name" xml:space="preserve"><value>传感器上的{0}分布图</value></data>
+  <data name="Results_Sensor_NameLog" xml:space="preserve"><value>传感器上的{0}分布图，对数色标</value></data>
+  <data name="Results_Sensor_PrimaryImage" xml:space="preserve"><value>主像</value></data>
+  <data name="Results_Sensor_StandardError" xml:space="preserve"><value>± 标准误差</value></data>
+  <data name="Results_Sensor_StrayFlux" xml:space="preserve"><value>杂散光通量</value></data>
+  <data name="Results_Sensor_StrayTotal" xml:space="preserve"><value>杂散光总计</value></data>
+  <data name="Results_Sparkline_Extremes" xml:space="preserve"><value>{0}，最低 {1}，最高 {2}</value></data>
+  <data name="Results_Sparkline_NoValues" xml:space="preserve"><value>{0}，无数值</value></data>
+  <data name="Results_Sparkline_OneValue" xml:space="preserve"><value>{0}，1 个值 {1}</value></data>
+  <data name="Results_Sparkline_Values" xml:space="preserve"><value>{0}，{1} 个值，从 {2} 到 {3}</value></data>
+  <data name="Results_Spot_AboutCentroid" xml:space="preserve"><value>{0} · 相对质心</value></data>
+  <data name="Results_Spot_AboutChief" xml:space="preserve"><value>{0} · 相对主光线</value></data>
+  <data name="Results_Spot_AiryDisk" xml:space="preserve"><value>艾里斑 {0}</value></data>
+  <data name="Results_Spot_Defocus" xml:space="preserve"><value>离焦</value></data>
+  <data name="Results_Spot_Folded" xml:space="preserve"><value>{0} · 加宽窗格可显示所有焦面</value></data>
+  <data name="Results_Spot_HelpAiry" xml:space="preserve"><value>{0}，艾里半径 {1}</value></data>
+  <data name="Results_Spot_Name" xml:space="preserve"><value>点列图，{0} 个视场 × {1} 个焦面</value></data>
+  <data name="Results_Spot_NameCandidate" xml:space="preserve"><value>点列图（候选设计），{0} 个视场 × {1} 个焦面</value></data>
+  <data name="Results_Spot_NameDesign" xml:space="preserve"><value>点列图（设计），{0} 个视场 × {1} 个焦面</value></data>
+  <data name="Results_Spot_PlanesShown" xml:space="preserve"><value>{0} · 显示 {2} 个平面中的 {1} 个</value></data>
+  <data name="Results_Spot_ScaleButtonCommon" xml:space="preserve"><value>统一</value></data>
+  <data name="Results_Spot_ScaleButtonPerField" xml:space="preserve"><value>按视场</value></data>
+  <data name="Results_Spot_ScaleCommon" xml:space="preserve"><value>方框半宽 {0}，所有单元格相同</value></data>
+  <data name="Results_Spot_ScaleCommonCompared" xml:space="preserve"><value>方框半宽 {0}，所有单元格相同（设计与候选设计）</value></data>
+  <data name="Results_Spot_ScalePerField" xml:space="preserve"><value>方框半宽按视场，见各行</value></data>
+  <data name="Results_Spot_ScaleToolTip" xml:space="preserve"><value>方框比例：所有单元格统一，或按视场分别设定</value></data>
+  <data name="Results_Summary_At" xml:space="preserve"><value>{0}；在 {1} 处：{2}</value></data>
+  <data name="Results_Summary_Curves_Many" xml:space="preserve"><value>{0} 条曲线</value></data>
+  <data name="Results_Summary_Curves_One" xml:space="preserve"><value>1 条曲线</value></data>
+  <data name="Results_Summary_NoData" xml:space="preserve"><value>{0}：无数据</value></data>
+  <data name="Results_Summary_Range" xml:space="preserve"><value>{0} 至 {1}</value></data>
+  <data name="Results_Summary_Titled" xml:space="preserve"><value>{0}：{1}</value></data>
+  <data name="Results_Transmission_Axis" xml:space="preserve"><value>透过率</value></data>
+  <data name="Results_Transmission_Name" xml:space="preserve"><value>各视场的系统透过率</value></data>
+  <data name="Results_Transmission_NameSpectral" xml:space="preserve"><value>各视场的系统透过率随波长变化</value></data>
+  <data name="Results_Validation_Errors_Many" xml:space="preserve"><value>{0} 个错误</value></data>
+  <data name="Results_Validation_Errors_One" xml:space="preserve"><value>1 个错误</value></data>
+  <data name="Results_Validation_IssueName" xml:space="preserve"><value>{0}：{1}</value></data>
+  <data name="Results_Validation_IssueNameSurface" xml:space="preserve"><value>{0}：{1}，面 {2}</value></data>
+  <data name="Results_Validation_ListSeparator" xml:space="preserve"><value>，</value></data>
+  <data name="Results_Validation_Name" xml:space="preserve"><value>验证：{0}</value></data>
+  <data name="Results_Validation_NoIssues" xml:space="preserve"><value>没有问题</value></data>
+  <data name="Results_Validation_NoIssuesTitle" xml:space="preserve"><value>没有问题</value></data>
+  <data name="Results_Validation_Notes_Many" xml:space="preserve"><value>{0} 条提示</value></data>
+  <data name="Results_Validation_Notes_One" xml:space="preserve"><value>1 条提示</value></data>
+  <data name="Results_Validation_Passed" xml:space="preserve"><value>设计通过了所有检查。</value></data>
+  <data name="Results_Validation_PassedName" xml:space="preserve"><value>没有问题：设计通过了所有检查</value></data>
+  <data name="Results_Validation_SelectSurface" xml:space="preserve"><value>在镜头数据中选择面 {0}</value></data>
+  <data name="Results_Validation_SeverityError" xml:space="preserve"><value>错误</value></data>
+  <data name="Results_Validation_SeverityInfo" xml:space="preserve"><value>提示</value></data>
+  <data name="Results_Validation_SeverityWarning" xml:space="preserve"><value>警告</value></data>
+  <data name="Results_Validation_Surface" xml:space="preserve"><value>面 {0}</value></data>
+  <data name="Results_Validation_Warnings_Many" xml:space="preserve"><value>{0} 个警告</value></data>
+  <data name="Results_Validation_Warnings_One" xml:space="preserve"><value>1 个警告</value></data>
+  <data name="Results_Wavefront_Keys" xml:space="preserve"><value>RMS {0} λ   P-V {1} λ   斯特列尔比 {2}</value></data>
+  <data name="Results_Wavefront_MapName" xml:space="preserve"><value>波前图</value></data>
+  <data name="Results_Wavefront_Name" xml:space="preserve"><value>波前图，{0}，RMS {1} waves，峰谷值 {2} waves</value></data>
+  <data name="Results_Wavefront_OutsidePupil" xml:space="preserve"><value>光瞳之外</value></data>
+  <data name="Results_Zernike_Astig0" xml:space="preserve"><value>像散 0°</value></data>
+  <data name="Results_Zernike_Astig45" xml:space="preserve"><value>像散 45°</value></data>
+  <data name="Results_Zernike_ComaX" xml:space="preserve"><value>彗差 x</value></data>
+  <data name="Results_Zernike_ComaY" xml:space="preserve"><value>彗差 y</value></data>
+  <data name="Results_Zernike_Defocus" xml:space="preserve"><value>离焦</value></data>
+  <data name="Results_Zernike_Header" xml:space="preserve"><value>泽尼克 ({0}, waves)</value></data>
+  <data name="Results_Zernike_Piston" xml:space="preserve"><value>平移</value></data>
+  <data name="Results_Zernike_Spherical" xml:space="preserve"><value>球差</value></data>
+  <data name="Results_Zernike_TiltX" xml:space="preserve"><value>倾斜 x</value></data>
+  <data name="Results_Zernike_TiltY" xml:space="preserve"><value>倾斜 y</value></data>
+  <data name="Results_Zernike_TrefoilX" xml:space="preserve"><value>三叶 x</value></data>
+  <data name="Results_Zernike_TrefoilY" xml:space="preserve"><value>三叶 y</value></data>
   <!-- end area: Results -->
   <!-- area: Glass -->
   <!-- end area: Glass -->

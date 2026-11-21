@@ -38,14 +38,14 @@ public sealed partial class RayGridView : UserControl
         header.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
         header.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
         header.Children.Add(new Legend(entries) { VerticalAlignment = VerticalAlignment.Center });
-        var count = Kit.Text(Kit.Inv($"{d.Arrived:N0} / {d.Launched:N0} arrived"), "NumberText", 11);
+        var count = Kit.Text(Loc.F("Results_RayGrid_Arrived", Kit.Inv($"{d.Arrived:N0}"), Kit.Inv($"{d.Launched:N0}")), "NumberText", 11);
         count.VerticalAlignment = VerticalAlignment.Center;
         count.Opacity = 0.75;
-        ToolTipService.SetToolTip(count, Kit.Inv($"{d.PupilCount:N0} pupil rays per field and wavelength"));
+        ToolTipService.SetToolTip(count, Loc.F("Results_RayGrid_PupilRays", Kit.Inv($"{d.PupilCount:N0}")));
         Grid.SetColumn(count, 1);
         header.Children.Add(count);
 
-        var note = Kit.Caption("Ray density on the image surface, centred on each field's centroid; the more opaque, the more rays.", wrap: true);
+        var note = Kit.Caption(Loc.S("Results_RayGrid_Note"), wrap: true);
         var root = new Grid { Padding = new Thickness(8, 4, 8, 6), RowSpacing = 6 };
         root.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
         root.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
@@ -58,7 +58,7 @@ public sealed partial class RayGridView : UserControl
         Content = root;
 
         Microsoft.UI.Xaml.Automation.AutomationProperties.SetName(_canvas,
-            Kit.Inv($"Ray grid density, {d.Fields.Count} fields, {d.Arrived:N0} of {d.Launched:N0} rays arrived"));
+            Loc.F("Results_RayGrid_Name", d.Fields.Count, Kit.Inv($"{d.Arrived:N0}"), Kit.Inv($"{d.Launched:N0}")));
         Microsoft.UI.Xaml.Automation.AutomationProperties.SetHelpText(_canvas,
             string.Join(", ", d.Fields.Select(f => $"{f.Title} ±{d.Length(f.HalfWidth)}")));
         Unloaded += (_, _) => { foreach (var b in _bitmaps.Values) b.Bitmap.Dispose(); _bitmaps.Clear(); };
@@ -127,7 +127,7 @@ public sealed partial class RayGridView : UserControl
             ds.DrawLine((float)x, (float)(box.Top + cell / 2), (float)(x + cell), (float)(box.Top + cell / 2), style.Grid.WithAlpha(0.5), 1);
             if (field.Arrived == 0)
             {
-                PlotText.Draw(ds, "No rays arrived", x + cell / 2, box.Top + cell / 2, style.Label, 10);
+                PlotText.Draw(ds, Loc.S("Results_RayGrid_NoRays"), x + cell / 2, box.Top + cell / 2, style.Label, 10);
                 continue;
             }
             // About two device pixels per bin, so single rays show and dense cores do not saturate one pixel.

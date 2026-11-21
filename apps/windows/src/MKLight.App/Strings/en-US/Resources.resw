@@ -26,6 +26,440 @@
   <!-- area: Jobs -->
   <!-- end area: Jobs -->
   <!-- area: Results -->
+  <data name="Results_A11y_Selected" xml:space="preserve"><value>Selected</value></data>
+  <data name="Results_Axis_DefocusMm" xml:space="preserve"><value>Defocus (mm)</value></data>
+  <data name="Results_Axis_DistortionPercent" xml:space="preserve"><value>Distortion (%)</value></data>
+  <data name="Results_Axis_EncircledEnergy" xml:space="preserve"><value>Encircled energy</value></data>
+  <data name="Results_Axis_Field" xml:space="preserve"><value>Field</value></data>
+  <data name="Results_Axis_FieldUnit" xml:space="preserve"><value>Field ({0})</value></data>
+  <data name="Results_Axis_FocalShiftUm" xml:space="preserve"><value>Focal shift (µm)</value></data>
+  <data name="Results_Axis_FocusShiftMm" xml:space="preserve"><value>Focus shift (mm)</value></data>
+  <data name="Results_Axis_Fraction" xml:space="preserve"><value>Fraction</value></data>
+  <data name="Results_Axis_LateralColorUm" xml:space="preserve"><value>Lateral color (µm)</value></data>
+  <data name="Results_Axis_LineSpread" xml:space="preserve"><value>Line spread ({0})</value></data>
+  <data name="Results_Axis_LongitudinalAberrationMm" xml:space="preserve"><value>Longitudinal aberration (mm)</value></data>
+  <data name="Results_Axis_Modulation" xml:space="preserve"><value>Modulation</value></data>
+  <data name="Results_Axis_NormalizedField" xml:space="preserve"><value>Normalized field</value></data>
+  <data name="Results_Axis_Position" xml:space="preserve"><value>Position ({0})</value></data>
+  <data name="Results_Axis_PupilZone" xml:space="preserve"><value>Pupil zone</value></data>
+  <data name="Results_Axis_Radius" xml:space="preserve"><value>Radius ({0})</value></data>
+  <data name="Results_Axis_RmsRadiusUm" xml:space="preserve"><value>RMS radius (µm)</value></data>
+  <data name="Results_Axis_SpatialFrequency" xml:space="preserve"><value>Spatial frequency ({0})</value></data>
+  <data name="Results_Axis_VergenceMd" xml:space="preserve"><value>Vergence (mD)</value></data>
+  <data name="Results_Axis_WavelengthUm" xml:space="preserve"><value>Wavelength (µm)</value></data>
+  <data name="Results_Chart_Distortion" xml:space="preserve"><value>Distortion</value></data>
+  <data name="Results_Chart_FieldCurvature" xml:space="preserve"><value>Field Curvature</value></data>
+  <data name="Results_Chart_FieldNumber" xml:space="preserve"><value>Field {0}</value></data>
+  <data name="Results_Chart_FieldNumberValue" xml:space="preserve"><value>Field {0} · {1}</value></data>
+  <data name="Results_Chart_Sagittal" xml:space="preserve"><value>Sagittal</value></data>
+  <data name="Results_Chart_Tangential" xml:space="preserve"><value>Tangential</value></data>
+  <data name="Results_Compare_Candidate" xml:space="preserve"><value>Candidate</value></data>
+  <data name="Results_Compare_Design" xml:space="preserve"><value>Design</value></data>
+  <data name="Results_Compare_Name" xml:space="preserve"><value>Show the design or the previewed candidate</value></data>
+  <data name="Results_Compare_ToolTip" xml:space="preserve"><value>Show the result of the design, or of the candidate being previewed</value></data>
+  <data name="Results_Cra_AngleAxis" xml:space="preserve"><value>Chief ray angle (°)</value></data>
+  <data name="Results_Cra_ChartName" xml:space="preserve"><value>Chief ray angle versus image height. {0}</value></data>
+  <data name="Results_Cra_ChartNameLimit" xml:space="preserve"><value>Chief ray angle versus image height, with the sensor limit. {0}</value></data>
+  <data name="Results_Cra_Curve" xml:space="preserve"><value>Curve</value></data>
+  <data name="Results_Cra_Display" xml:space="preserve"><value>Display</value></data>
+  <data name="Results_Cra_ExceedLimit" xml:space="preserve"><value>{0}, {1} samples exceed the sensor limit</value></data>
+  <data name="Results_Cra_ImageHeightXMm" xml:space="preserve"><value>Image height x (mm)</value></data>
+  <data name="Results_Cra_ImageHeightYMm" xml:space="preserve"><value>Image height y (mm)</value></data>
+  <data name="Results_Cra_Incidence" xml:space="preserve"><value>Chief ray incidence</value></data>
+  <data name="Results_Cra_Largest" xml:space="preserve"><value>Largest {0} degrees at {1} millimeters</value></data>
+  <data name="Results_Cra_Map" xml:space="preserve"><value>Map</value></data>
+  <data name="Results_Cra_Margin" xml:space="preserve"><value>Margin</value></data>
+  <data name="Results_Cra_SensorLimit" xml:space="preserve"><value>Sensor limit</value></data>
+  <data name="Results_Cra_Violation" xml:space="preserve"><value>Violation</value></data>
+  <data name="Results_Cra_WithinLimit" xml:space="preserve"><value>{0}, within the sensor limit</value></data>
+  <data name="Results_FieldMap_DataRange" xml:space="preserve"><value>Data range</value></data>
+  <data name="Results_FieldMap_ImageRadiusMm" xml:space="preserve"><value>Image radius (mm)</value></data>
+  <data name="Results_FieldMap_MapName" xml:space="preserve"><value>{0} map over the normalized field, {1} by {2} samples, from {3} to {4}</value></data>
+  <data name="Results_FieldMap_NoValues" xml:space="preserve"><value>No values</value></data>
+  <data name="Results_FieldMap_Quantity" xml:space="preserve"><value>Quantity</value></data>
+  <data name="Results_FieldMap_RadialName" xml:space="preserve"><value>{0} versus image radius, {1} samples</value></data>
+  <data name="Results_FieldMap_RadialTitle" xml:space="preserve"><value>{0} vs image radius</value></data>
+  <data name="Results_FieldMap_RangeToolTip" xml:space="preserve"><value>Colors over the map's own range (small differences show), or over 0 to 1 (to compare designs)</value></data>
+  <data name="Results_FieldMap_SweepName" xml:space="preserve"><value>{0} along {1}, from {2} to {3}</value></data>
+  <data name="Results_FieldMap_Undefined" xml:space="preserve"><value>{0} is undefined at every sample: {1}.</value></data>
+  <data name="Results_FieldMap_ZeroToOne" xml:space="preserve"><value>0 to 1</value></data>
+  <data name="Results_FirstOrderHelp_AiryRadius" xml:space="preserve"><value>Radius of the first dark ring of the Airy pattern, 1.22 λ × working F-number.</value></data>
+  <data name="Results_FirstOrderHelp_Bfl" xml:space="preserve"><value>Back focal length: from the last surface to the paraxial focus.</value></data>
+  <data name="Results_FirstOrderHelp_Efl" xml:space="preserve"><value>Effective focal length (of the y section): the distance from the rear principal plane to the paraxial focus for an object at infinity.</value></data>
+  <data name="Results_FirstOrderHelp_EntrancePupilDiameter" xml:space="preserve"><value>Diameter of the image of the stop seen from object space.</value></data>
+  <data name="Results_FirstOrderHelp_EntrancePupilPosition" xml:space="preserve"><value>Where the entrance pupil lies, measured from the first surface.</value></data>
+  <data name="Results_FirstOrderHelp_ExitPupilDiameter" xml:space="preserve"><value>Diameter of the image of the stop seen from image space.</value></data>
+  <data name="Results_FirstOrderHelp_ExitPupilPosition" xml:space="preserve"><value>Where the exit pupil lies, measured from the image surface.</value></data>
+  <data name="Results_FirstOrderHelp_Ffl" xml:space="preserve"><value>Where the front focal point lies, measured from the first surface.</value></data>
+  <data name="Results_FirstOrderHelp_ImageDistance" xml:space="preserve"><value>From the last surface to the paraxial image of the object.</value></data>
+  <data name="Results_FirstOrderHelp_ImageFNumber" xml:space="preserve"><value>Image-space F-number: effective focal length over entrance pupil diameter.</value></data>
+  <data name="Results_FirstOrderHelp_ImageHeightPerTan" xml:space="preserve"><value>Paraxial image height per unit tangent of the field angle.</value></data>
+  <data name="Results_FirstOrderHelp_ImageNa" xml:space="preserve"><value>Image-space numerical aperture n′ sin θ′ of the marginal ray.</value></data>
+  <data name="Results_FirstOrderHelp_LagrangeInvariant" xml:space="preserve"><value>The optical invariant of the paraxial marginal and chief rays, a measure of the étendue the system passes.</value></data>
+  <data name="Results_FirstOrderHelp_Magnification" xml:space="preserve"><value>Paraxial lateral magnification: image height over object height (0 for an object at infinity).</value></data>
+  <data name="Results_FirstOrderHelp_MaxField" xml:space="preserve"><value>The largest field of the design, in its field unit.</value></data>
+  <data name="Results_FirstOrderHelp_ObjectDistance" xml:space="preserve"><value>From the object to the first surface.</value></data>
+  <data name="Results_FirstOrderHelp_ObjectNa" xml:space="preserve"><value>Object-space numerical aperture n sin θ of the marginal ray (0 for an object at infinity).</value></data>
+  <data name="Results_FirstOrderHelp_ParaxialImageHeight" xml:space="preserve"><value>Height of the paraxial chief ray of the largest field at the image.</value></data>
+  <data name="Results_FirstOrderHelp_PetzvalRadius" xml:space="preserve"><value>Radius of the Petzval surface, the field curvature of an astigmatism-free system.</value></data>
+  <data name="Results_FirstOrderHelp_StopSemiDiameter" xml:space="preserve"><value>Semi-diameter of the aperture stop.</value></data>
+  <data name="Results_FirstOrderHelp_TotalTrack" xml:space="preserve"><value>From the first surface to the image surface.</value></data>
+  <data name="Results_FirstOrderHelp_WorkingFNumber" xml:space="preserve"><value>Paraxial working F-number: 1 / (2 n′ sin θ′) of the paraxial marginal ray at the image, for the actual object distance.</value></data>
+  <data name="Results_FirstOrder_Anamorphic" xml:space="preserve"><value>Anamorphic</value></data>
+  <data name="Results_FirstOrder_AtPrimary" xml:space="preserve"><value>At λ = {0} (primary)</value></data>
+  <data name="Results_FirstOrder_AtWavelength" xml:space="preserve"><value>At λ = {0}</value></data>
+  <data name="Results_FirstOrder_Diffractive" xml:space="preserve"><value>Diffractive</value></data>
+  <data name="Results_FirstOrder_DoePower" xml:space="preserve"><value>DOE power, surface {0}</value></data>
+  <data name="Results_FirstOrder_DoePowerTip" xml:space="preserve"><value>Phase power of the trace order (base refractive power excluded)</value></data>
+  <data name="Results_FirstOrder_OtherWavelengths" xml:space="preserve"><value>Other wavelengths ({0})</value></data>
+  <data name="Results_FirstOrder_Squeeze" xml:space="preserve"><value>Squeeze</value></data>
+  <data name="Results_FirstOrder_SqueezeDefault" xml:space="preserve"><value>signed EFL y / EFL x</value></data>
+  <data name="Results_FirstOrder_SqueezeTip" xml:space="preserve"><value>Squeeze: {0}</value></data>
+  <data name="Results_FirstOrder_Symmetry" xml:space="preserve"><value>Symmetry</value></data>
+  <data name="Results_FirstOrder_SymmetryMeridional" xml:space="preserve"><value>Meridional plane</value></data>
+  <data name="Results_FirstOrder_SymmetryNone" xml:space="preserve"><value>None</value></data>
+  <data name="Results_FirstOrder_SymmetryRotational" xml:space="preserve"><value>Rotational</value></data>
+  <data name="Results_FirstOrder_ValueName" xml:space="preserve"><value>{0}: {1}</value></data>
+  <data name="Results_Footprint_ClearAperture" xml:space="preserve"><value>Clear aperture {0}</value></data>
+  <data name="Results_Footprint_Clipped" xml:space="preserve"><value>{0} clipped</value></data>
+  <data name="Results_Footprint_Name" xml:space="preserve"><value>Footprint on surface {0}, {1} rays pass, {2} clipped</value></data>
+  <data name="Results_Generic_Data" xml:space="preserve"><value>Data</value></data>
+  <data name="Results_Generic_Index" xml:space="preserve"><value>Index</value></data>
+  <data name="Results_Generic_Missing" xml:space="preserve"><value> · {0} without a value</value></data>
+  <data name="Results_Generic_MoreRows" xml:space="preserve"><value>{0} more rows</value></data>
+  <data name="Results_Generic_NoValues" xml:space="preserve"><value>{0} · no values</value></data>
+  <data name="Results_Generic_ReadError" xml:space="preserve"><value>This result could not be read: {0}</value></data>
+  <data name="Results_Generic_Values" xml:space="preserve"><value>Values</value></data>
+  <data name="Results_Ghost_HeadBlur" xml:space="preserve"><value>Blur ⌀ (mm)</value></data>
+  <data name="Results_Ghost_HeadFocus" xml:space="preserve"><value>Focus (mm)</value></data>
+  <data name="Results_Ghost_HeadGhost" xml:space="preserve"><value>Ghost</value></data>
+  <data name="Results_Ghost_HeadIrradiance" xml:space="preserve"><value>Rel. irradiance</value></data>
+  <data name="Results_Ghost_NearFocus" xml:space="preserve"><value>near focus</value></data>
+  <data name="Results_Ghost_NearFocusTip" xml:space="preserve"><value>Focused near the sensor</value></data>
+  <data name="Results_Ghost_NoPaths" xml:space="preserve"><value>No ghost paths</value></data>
+  <data name="Results_Ghost_NoPathsNote" xml:space="preserve"><value>The enumeration found no ghost reaching the sensor.</value></data>
+  <data name="Results_Ghost_TipBlur" xml:space="preserve"><value>Ghost blur diameter on the sensor</value></data>
+  <data name="Results_Ghost_TipFocus" xml:space="preserve"><value>Signed distance of the ghost focus from the sensor</value></data>
+  <data name="Results_Ghost_TipGhost" xml:space="preserve"><value>Surfaces reflecting, in order</value></data>
+  <data name="Results_Ghost_TipIrradiance" xml:space="preserve"><value>Estimated ghost irradiance relative to the signal</value></data>
+  <data name="Results_Ghost_TipReflectance" xml:space="preserve"><value>Product of the reflectances</value></data>
+  <data name="Results_Ghost_Truncated" xml:space="preserve"><value>Higher-order paths were dropped by the path budget.</value></data>
+  <data name="Results_GlassData_Catalog" xml:space="preserve"><value>Catalog n_d {0}, V_d {1}</value></data>
+  <data name="Results_GlassData_ChartName" xml:space="preserve"><value>Refractive index versus wavelength</value></data>
+  <data name="Results_GlassData_Density" xml:space="preserve"><value>Density</value></data>
+  <data name="Results_GlassData_Dispersion" xml:space="preserve"><value>Dispersion</value></data>
+  <data name="Results_GlassData_Extrapolated" xml:space="preserve"><value>Outside the glass's data range: the index is extrapolated</value></data>
+  <data name="Results_GlassData_Formula" xml:space="preserve"><value>Dispersion formula</value></data>
+  <data name="Results_GlassData_HeadCatalogIndex" xml:space="preserve"><value>n cat.</value></data>
+  <data name="Results_GlassData_Indices" xml:space="preserve"><value>Indices</value></data>
+  <data name="Results_GlassData_NdTip" xml:space="preserve"><value>Refractive index at the d line (587.56 nm)</value></data>
+  <data name="Results_GlassData_NeTip" xml:space="preserve"><value>Refractive index at the e line (546.07 nm)</value></data>
+  <data name="Results_GlassData_NoCurve" xml:space="preserve"><value>Set Curve Samples above zero to plot the index over the glass's range.</value></data>
+  <data name="Results_GlassData_None" xml:space="preserve"><value>None</value></data>
+  <data name="Results_GlassData_Offset" xml:space="preserve"><value>Offset</value></data>
+  <data name="Results_GlassData_OffsetTip" xml:space="preserve"><value>Δnd {0}, ΔVd {1} from the catalog values</value></data>
+  <data name="Results_GlassData_PgfTip" xml:space="preserve"><value>Relative partial dispersion (ng − nF) / (nF − nC)</value></data>
+  <data name="Results_GlassData_Properties" xml:space="preserve"><value>Properties</value></data>
+  <data name="Results_GlassData_RelativeCost" xml:space="preserve"><value>Relative cost</value></data>
+  <data name="Results_GlassData_ThermalExpansion" xml:space="preserve"><value>Thermal expansion</value></data>
+  <data name="Results_GlassData_ThermoOptic" xml:space="preserve"><value>Thermo-optic data (dn/dT)</value></data>
+  <data name="Results_GlassData_TipAbsorption" xml:space="preserve"><value>Internal absorption coefficient</value></data>
+  <data name="Results_GlassData_TipCatalogIndex" xml:space="preserve"><value>Index at the catalog's reference conditions</value></data>
+  <data name="Results_GlassData_TipIndex" xml:space="preserve"><value>Index relative to air at the analysis temperature and pressure</value></data>
+  <data name="Results_GlassData_Valid" xml:space="preserve"><value>valid {0}</value></data>
+  <data name="Results_GlassData_ValidRange" xml:space="preserve"><value>Valid range</value></data>
+  <data name="Results_GlassData_VdTip" xml:space="preserve"><value>Abbe number (nd − 1) / (nF − nC)</value></data>
+  <data name="Results_GlassData_Yes" xml:space="preserve"><value>Yes</value></data>
+  <data name="Results_GlassMap_AllCatalogs" xml:space="preserve"><value>All catalogs</value></data>
+  <data name="Results_GlassMap_AxisAbbe" xml:space="preserve"><value>Abbe number V_d</value></data>
+  <data name="Results_GlassMap_AxisNd" xml:space="preserve"><value>Refractive index n_d</value></data>
+  <data name="Results_GlassMap_AxisPgf" xml:space="preserve"><value>Partial dispersion P_g,F</value></data>
+  <data name="Results_GlassMap_Catalog" xml:space="preserve"><value>Catalog</value></data>
+  <data name="Results_GlassMap_CatalogGlass" xml:space="preserve"><value>Catalog glass</value></data>
+  <data name="Results_GlassMap_ClickHint" xml:space="preserve"><value>Click a glass to inspect it.</value></data>
+  <data name="Results_GlassMap_Excluded" xml:space="preserve"><value>Excluded</value></data>
+  <data name="Results_GlassMap_InDesign" xml:space="preserve"><value>In the design</value></data>
+  <data name="Results_GlassMap_MeltOffset" xml:space="preserve"><value>Melt offset</value></data>
+  <data name="Results_GlassMap_MeltOffsetLower" xml:space="preserve"><value>melt offset</value></data>
+  <data name="Results_GlassMap_ModelGlass" xml:space="preserve"><value>Model glass</value></data>
+  <data name="Results_GlassMap_ModelName" xml:space="preserve"><value>{0} (model)</value></data>
+  <data name="Results_GlassMap_Name" xml:space="preserve"><value>Glass map, {0} glasses; in the design: {1}</value></data>
+  <data name="Results_GlassMap_NameOmitted" xml:space="preserve"><value>Glass map, {0} glasses; in the design: {1}; {2} glasses not on the map</value></data>
+  <data name="Results_GlassMap_NotOnMap" xml:space="preserve"><value>Not on the map ({0})</value></data>
+  <data name="Results_GlassMap_OtherRowName" xml:space="preserve"><value>{0}, {1}, not on the map: {2}</value></data>
+  <data name="Results_GlassMap_Plane" xml:space="preserve"><value>Plane</value></data>
+  <data name="Results_GlassMap_PlaneToolTip" xml:space="preserve"><value>Refractive index nd or partial dispersion Pg,F against Abbe number Vd</value></data>
+  <data name="Results_GlassMap_RowName" xml:space="preserve"><value>{0}, surfaces {1}</value></data>
+  <data name="Results_GlassMap_RowNameOmitted" xml:space="preserve"><value>{0}, surfaces {1}, not on the map: {2}</value></data>
+  <data name="Results_GlassMap_RowNotOnMap" xml:space="preserve"><value>{0}   not on the map</value></data>
+  <data name="Results_GlassMap_ShowAll" xml:space="preserve"><value>Show all {0}</value></data>
+  <data name="Results_GlassMap_StatusMelt" xml:space="preserve"><value>Melt</value></data>
+  <data name="Results_GlassMap_StatusObsolete" xml:space="preserve"><value>Obsolete</value></data>
+  <data name="Results_GlassMap_StatusOther" xml:space="preserve"><value>Status {0}</value></data>
+  <data name="Results_GlassMap_StatusPreferred" xml:space="preserve"><value>Preferred</value></data>
+  <data name="Results_GlassMap_StatusSpecial" xml:space="preserve"><value>Special</value></data>
+  <data name="Results_GlassMap_StatusStandard" xml:space="preserve"><value>Standard</value></data>
+  <data name="Results_GlassMap_StatusUnknown" xml:space="preserve"><value>Unknown</value></data>
+  <data name="Results_GlassMap_Substitution" xml:space="preserve"><value>Substitution</value></data>
+  <data name="Results_GlassMap_Surfaces" xml:space="preserve"><value>Surfaces</value></data>
+  <data name="Results_Glass_FormulaExtended" xml:space="preserve"><value>Extended</value></data>
+  <data name="Results_Glass_FormulaTabulated" xml:space="preserve"><value>Tabulated</value></data>
+  <data name="Results_GridDistortion_ImageXMm" xml:space="preserve"><value>Image x (mm)</value></data>
+  <data name="Results_GridDistortion_ImageYMm" xml:space="preserve"><value>Image y (mm)</value></data>
+  <data name="Results_GridDistortion_Max" xml:space="preserve"><value>Max {0} %</value></data>
+  <data name="Results_GridDistortion_Name" xml:space="preserve"><value>Grid distortion, maximum {0} percent</value></data>
+  <data name="Results_GridDistortion_ParaxialGrid" xml:space="preserve"><value>Paraxial grid</value></data>
+  <data name="Results_GridDistortion_RealChiefRays" xml:space="preserve"><value>Real chief rays</value></data>
+  <data name="Results_ImageSim_AreaSampled" xml:space="preserve"><value>Pattern area-sampled</value></data>
+  <data name="Results_ImageSim_AreaSampledTip" xml:space="preserve"><value>The engine evaluates the built-in pattern at each pixel's exact source point (through the distortion), averaged over the pixel, so the blur is the lens's. The source shown is drawn with the same definition.</value></data>
+  <data name="Results_ImageSim_At" xml:space="preserve"><value>At {0}</value></data>
+  <data name="Results_ImageSim_AtAxis" xml:space="preserve"><value>At on axis</value></data>
+  <data name="Results_ImageSim_AtView" xml:space="preserve"><value>{0} · view {1}</value></data>
+  <data name="Results_ImageSim_Blink" xml:space="preserve"><value>Blink</value></data>
+  <data name="Results_ImageSim_ChooseImage" xml:space="preserve"><value>Choose Image…</value></data>
+  <data name="Results_ImageSim_Clipped" xml:space="preserve"><value>{0}% clipped</value></data>
+  <data name="Results_ImageSim_ClippedTip" xml:space="preserve"><value>Samples brighter than full scale at this exposure</value></data>
+  <data name="Results_ImageSim_Compare" xml:space="preserve"><value>Compare</value></data>
+  <data name="Results_ImageSim_Exposure" xml:space="preserve"><value>Exposure</value></data>
+  <data name="Results_ImageSim_ExposureToolTip" xml:space="preserve"><value>Scales the simulated image's linear light by 2^EV; the source is shown at unit exposure</value></data>
+  <data name="Results_ImageSim_FieldMapping" xml:space="preserve"><value>Field Mapping</value></data>
+  <data name="Results_ImageSim_FieldMappingName" xml:space="preserve"><value>Field mapping</value></data>
+  <data name="Results_ImageSim_FieldOfView" xml:space="preserve"><value>Field of view</value></data>
+  <data name="Results_ImageSim_FieldOfViewToolTip" xml:space="preserve"><value>The simulated part of the field: a square around the patch center, as a fraction of the field. A smaller patch has finer pixels, so the blur shows.</value></data>
+  <data name="Results_ImageSim_Fit" xml:space="preserve"><value>Fit</value></data>
+  <data name="Results_ImageSim_FitToolTip" xml:space="preserve"><value>Fit the image and reset the pan (or double-click the image)</value></data>
+  <data name="Results_ImageSim_HeadField" xml:space="preserve"><value>Field (Hx, Hy)</value></data>
+  <data name="Results_ImageSim_HeadIdeal" xml:space="preserve"><value>Ideal (mm)</value></data>
+  <data name="Results_ImageSim_HeadReal" xml:space="preserve"><value>Real (mm)</value></data>
+  <data name="Results_ImageSim_HeadRelIllum" xml:space="preserve"><value>Rel. illum.</value></data>
+  <data name="Results_ImageSim_Help" xml:space="preserve"><value>Shown {0}, zoom {1} %, exposure {2}. Wheel to zoom about the pointer, drag to pan, double-click to fit; drop an image file to use it as the source.</value></data>
+  <data name="Results_ImageSim_Image" xml:space="preserve"><value>Image</value></data>
+  <data name="Results_ImageSim_ImageBuffer" xml:space="preserve"><value>Image buffer</value></data>
+  <data name="Results_ImageSim_ImportedImage" xml:space="preserve"><value>Imported image</value></data>
+  <data name="Results_ImageSim_MappingNote" xml:space="preserve"><value>PSF grid nodes; the image is mapped bilinearly between them.</value></data>
+  <data name="Results_ImageSim_ModeAlone" xml:space="preserve"><value>the simulated image alone</value></data>
+  <data name="Results_ImageSim_ModeBlink" xml:space="preserve"><value>blinking with the source {0}</value></data>
+  <data name="Results_ImageSim_ModeSideBySide" xml:space="preserve"><value>side by side with the source {0}</value></data>
+  <data name="Results_ImageSim_ModeSplit" xml:space="preserve"><value>split with the source {0} ({1} % source)</value></data>
+  <data name="Results_ImageSim_Name" xml:space="preserve"><value>Simulated image, {0}×{1} px</value></data>
+  <data name="Results_ImageSim_NameCentre" xml:space="preserve"><value>{0}, centre {1}</value></data>
+  <data name="Results_ImageSim_NameField" xml:space="preserve"><value>{0}, field {1}</value></data>
+  <data name="Results_ImageSim_OnAxis" xml:space="preserve"><value>On axis</value></data>
+  <data name="Results_ImageSim_PatchCenter" xml:space="preserve"><value>Patch center</value></data>
+  <data name="Results_ImageSim_PatchCenterToolTip" xml:space="preserve"><value>Where the patch is centered: on the axis, at a design field point, or anywhere you pick on the field.</value></data>
+  <data name="Results_ImageSim_PatchTip" xml:space="preserve"><value>Patch centered at normalized field {0}.</value></data>
+  <data name="Results_ImageSim_PatchTipImage" xml:space="preserve"><value>Patch centered at normalized field {0}, image point ({1}, {2}) mm.</value></data>
+  <data name="Results_ImageSim_Pattern" xml:space="preserve"><value>Pattern pattern</value></data>
+  <data name="Results_ImageSim_PatternGrid" xml:space="preserve"><value>Grid pattern</value></data>
+  <data name="Results_ImageSim_PatternSiemensStar" xml:space="preserve"><value>Siemens star pattern</value></data>
+  <data name="Results_ImageSim_PatternSlantedEdge" xml:space="preserve"><value>Slanted edge pattern</value></data>
+  <data name="Results_ImageSim_PatternTextChart" xml:space="preserve"><value>Text chart pattern</value></data>
+  <data name="Results_ImageSim_PickOnField" xml:space="preserve"><value>Pick on the Field…</value></data>
+  <data name="Results_ImageSim_PickerDiagram" xml:space="preserve"><value>Field diagram</value></data>
+  <data name="Results_ImageSim_PickerHelp" xml:space="preserve"><value>Patch center {0}, patch {1} of the field; {2} design field points. Arrow keys move the center, Home returns to the axis.</value></data>
+  <data name="Results_ImageSim_PickerHint" xml:space="preserve"><value>Click to center the patch; it snaps to the axis and the field points.</value></data>
+  <data name="Results_ImageSim_PickerOutside" xml:space="preserve"><value>Part of the patch lies outside the design's field.</value></data>
+  <data name="Results_ImageSim_PickerTitle" xml:space="preserve"><value>Patch Center</value></data>
+  <data name="Results_ImageSim_Pixel" xml:space="preserve"><value>Pixel {0}</value></data>
+  <data name="Results_ImageSim_PixelXY" xml:space="preserve"><value>Pixel {0} × {1}</value></data>
+  <data name="Results_ImageSim_Pixels" xml:space="preserve"><value>{0} pixels</value></data>
+  <data name="Results_ImageSim_Psf" xml:space="preserve"><value>PSF {0} × {1}</value></data>
+  <data name="Results_ImageSim_PsfTip" xml:space="preserve"><value>The PSF window and sample spacing this run used</value></data>
+  <data name="Results_ImageSim_ReadFailed" xml:space="preserve"><value>{0} could not be read</value></data>
+  <data name="Results_ImageSim_ReadFailedTip" xml:space="preserve"><value>Choose an image file Windows can open (PNG, JPEG, TIFF, BMP, GIF, HEIC, WebP)</value></data>
+  <data name="Results_ImageSim_Resolution" xml:space="preserve"><value>Resolution</value></data>
+  <data name="Results_ImageSim_ResolutionToolTip" xml:space="preserve"><value>Output pixels per side</value></data>
+  <data name="Results_ImageSim_SideBySide" xml:space="preserve"><value>Side by Side</value></data>
+  <data name="Results_ImageSim_Simulated" xml:space="preserve"><value>Simulated</value></data>
+  <data name="Results_ImageSim_SizeButton" xml:space="preserve"><value>{0} px</value></data>
+  <data name="Results_ImageSim_SizeItem" xml:space="preserve"><value>{0} × {0} px</value></data>
+  <data name="Results_ImageSim_SizeMono" xml:space="preserve"><value>{0} × {1} px, monochrome</value></data>
+  <data name="Results_ImageSim_SizeRgb" xml:space="preserve"><value>{0} × {1} px, RGB</value></data>
+  <data name="Results_ImageSim_Source" xml:space="preserve"><value>Source</value></data>
+  <data name="Results_ImageSim_SourceButton" xml:space="preserve"><value>Source: {0}</value></data>
+  <data name="Results_ImageSim_SourceToolTip" xml:space="preserve"><value>The scene: a built-in test pattern, or an image file (choose one, or drop it on the images); it is cropped to the field and resampled in linear light, at most 512 px a side.</value></data>
+  <data name="Results_ImageSim_Split" xml:space="preserve"><value>Split</value></data>
+  <data name="Results_ImageSim_TheImage" xml:space="preserve"><value>The image</value></data>
+  <data name="Results_ImageSim_UseAsSource" xml:space="preserve"><value>Use as Source</value></data>
+  <data name="Results_ImageSim_ViewButton" xml:space="preserve"><value>View {0}</value></data>
+  <data name="Results_ImageSim_ZoomIn" xml:space="preserve"><value>Zoom in</value></data>
+  <data name="Results_ImageSim_ZoomName" xml:space="preserve"><value>Zoom {0}</value></data>
+  <data name="Results_ImageSim_ZoomOut" xml:space="preserve"><value>Zoom out</value></data>
+  <data name="Results_ImageSim_ZoomToolTip" xml:space="preserve"><value>Wheel over the images to zoom about the pointer; drag to pan</value></data>
+  <data name="Results_KeyNumbers_Airy" xml:space="preserve"><value>Airy</value></data>
+  <data name="Results_KeyNumbers_At" xml:space="preserve"><value>at</value></data>
+  <data name="Results_KeyNumbers_BestDefocus" xml:space="preserve"><value>Best defocus</value></data>
+  <data name="Results_KeyNumbers_Clear" xml:space="preserve"><value>Clear</value></data>
+  <data name="Results_KeyNumbers_Compared" xml:space="preserve"><value>{0} {1} (design {2})</value></data>
+  <data name="Results_KeyNumbers_Errors" xml:space="preserve"><value>Errors</value></data>
+  <data name="Results_KeyNumbers_GhostPrimaryFlux" xml:space="preserve"><value>Ghost/primary flux</value></data>
+  <data name="Results_KeyNumbers_Glasses" xml:space="preserve"><value>Glasses</value></data>
+  <data name="Results_KeyNumbers_InDesign" xml:space="preserve"><value>In design</value></data>
+  <data name="Results_KeyNumbers_MaxCra" xml:space="preserve"><value>Max CRA</value></data>
+  <data name="Results_KeyNumbers_MaxDiattenuation" xml:space="preserve"><value>Max diattenuation</value></data>
+  <data name="Results_KeyNumbers_MaxDistortion" xml:space="preserve"><value>Max distortion</value></data>
+  <data name="Results_KeyNumbers_MaxRadius" xml:space="preserve"><value>Max radius</value></data>
+  <data name="Results_KeyNumbers_MaxRms" xml:space="preserve"><value>Max RMS</value></data>
+  <data name="Results_KeyNumbers_MaxStopError" xml:space="preserve"><value>Max stop error</value></data>
+  <data name="Results_KeyNumbers_MaxVariation" xml:space="preserve"><value>Max variation</value></data>
+  <data name="Results_KeyNumbers_MaxVignetting" xml:space="preserve"><value>Max vignetting</value></data>
+  <data name="Results_KeyNumbers_MeanIntensity" xml:space="preserve"><value>Mean intensity</value></data>
+  <data name="Results_KeyNumbers_MinMargin" xml:space="preserve"><value>Min margin</value></data>
+  <data name="Results_KeyNumbers_MinRi" xml:space="preserve"><value>Min RI</value></data>
+  <data name="Results_KeyNumbers_MinTransmission" xml:space="preserve"><value>Min transmission</value></data>
+  <data name="Results_KeyNumbers_NotOnMap" xml:space="preserve"><value>Not on map</value></data>
+  <data name="Results_KeyNumbers_Pixel" xml:space="preserve"><value>Pixel</value></data>
+  <data name="Results_KeyNumbers_Range" xml:space="preserve"><value>Range</value></data>
+  <data name="Results_KeyNumbers_StrayFraction" xml:space="preserve"><value>Stray fraction</value></data>
+  <data name="Results_KeyNumbers_Strehl" xml:space="preserve"><value>Strehl</value></data>
+  <data name="Results_KeyNumbers_Strongest" xml:space="preserve"><value>Strongest</value></data>
+  <data name="Results_KeyNumbers_Warnings" xml:space="preserve"><value>Warnings</value></data>
+  <data name="Results_Legend_AiryRadius" xml:space="preserve"><value>± Airy radius</value></data>
+  <data name="Results_Legend_DiffractionLimit" xml:space="preserve"><value>Diffraction limit</value></data>
+  <data name="Results_Legend_FieldR80" xml:space="preserve"><value>{0} · r80 {1}</value></data>
+  <data name="Results_Legend_RelativeIllumination" xml:space="preserve"><value>Relative illumination</value></data>
+  <data name="Results_Legend_TSolidSDashed" xml:space="preserve"><value>T solid, S dashed</value></data>
+  <data name="Results_Legend_VignettedFraction" xml:space="preserve"><value>Vignetted fraction</value></data>
+  <data name="Results_Legend_XFan" xml:space="preserve"><value>x fan</value></data>
+  <data name="Results_Legend_XSolidYDashed" xml:space="preserve"><value>x solid, y dashed</value></data>
+  <data name="Results_Legend_YFan" xml:space="preserve"><value>y fan</value></data>
+  <data name="Results_Map_ColorScale" xml:space="preserve"><value>Color scale</value></data>
+  <data name="Results_Map_Linear" xml:space="preserve"><value>Linear</value></data>
+  <data name="Results_Map_Log" xml:space="preserve"><value>Log</value></data>
+  <data name="Results_Map_NoValue" xml:space="preserve"><value>No value</value></data>
+  <data name="Results_Map_OutsideField" xml:space="preserve"><value>Outside the field</value></data>
+  <data name="Results_Plot_Name" xml:space="preserve"><value>Plot: {0}</value></data>
+  <data name="Results_Plot_NameCandidate" xml:space="preserve"><value>Plot (the candidate): {0}</value></data>
+  <data name="Results_Plot_NameDesign" xml:space="preserve"><value>Plot (the design): {0}</value></data>
+  <data name="Results_Polarization_Diattenuation" xml:space="preserve"><value>Diattenuation</value></data>
+  <data name="Results_Polarization_Intensity" xml:space="preserve"><value>Intensity</value></data>
+  <data name="Results_Polarization_MapName" xml:space="preserve"><value>Polarization pupil map</value></data>
+  <data name="Results_Polarization_MaxRetardance" xml:space="preserve"><value>Max retardance</value></data>
+  <data name="Results_Polarization_Name" xml:space="preserve"><value>{0} over the pupil, from {1} to {2}</value></data>
+  <data name="Results_Polarization_Retardance" xml:space="preserve"><value>Retardance</value></data>
+  <data name="Results_Polarization_RmsRetardance" xml:space="preserve"><value>RMS retardance</value></data>
+  <data name="Results_Psf_Extent" xml:space="preserve"><value>Extent</value></data>
+  <data name="Results_Psf_ExtentCore" xml:space="preserve"><value>Core</value></data>
+  <data name="Results_Psf_ExtentFull" xml:space="preserve"><value>Full</value></data>
+  <data name="Results_Psf_ExtentToolTip" xml:space="preserve"><value>The core (the square about the peak holding 95 % of the energy, or every sample above 0.1 % of the peak if that is smaller) or the whole sampling window</value></data>
+  <data name="Results_Psf_Help" xml:space="preserve"><value>Strehl ratio {0}, {1} scale, {2} {3} wide, peak {4}</value></data>
+  <data name="Results_Psf_HelpCore" xml:space="preserve"><value>core</value></data>
+  <data name="Results_Psf_HelpLinear" xml:space="preserve"><value>linear</value></data>
+  <data name="Results_Psf_HelpLogarithmic" xml:space="preserve"><value>logarithmic</value></data>
+  <data name="Results_Psf_HelpWholeWindow" xml:space="preserve"><value>whole window</value></data>
+  <data name="Results_Psf_MapName" xml:space="preserve"><value>Point spread function</value></data>
+  <data name="Results_Psf_Name" xml:space="preserve"><value>Point spread function, {0}</value></data>
+  <data name="Results_Psf_OfPeak" xml:space="preserve"><value>{0}  ({1} of peak)</value></data>
+  <data name="Results_Psf_Peak" xml:space="preserve"><value>Peak {0}</value></data>
+  <data name="Results_Psf_Polychromatic" xml:space="preserve"><value>{0} · polychromatic</value></data>
+  <data name="Results_Psf_Samples" xml:space="preserve"><value>{0} × {0} samples {1} apart</value></data>
+  <data name="Results_Psf_ScaleToolTip" xml:space="preserve"><value>Linear intensity, or logarithmic over five decades below the peak (shows the halo and side lobes). A PSF with a Strehl ratio below {0} starts on the log scale.</value></data>
+  <data name="Results_Psf_Strehl" xml:space="preserve"><value>Strehl {0}</value></data>
+  <data name="Results_Psf_StrehlAuto" xml:space="preserve"><value>Log scale: Strehl {0}</value></data>
+  <data name="Results_Psf_Window" xml:space="preserve"><value>window {0}</value></data>
+  <data name="Results_RayGrid_Arrived" xml:space="preserve"><value>{0} / {1} arrived</value></data>
+  <data name="Results_RayGrid_Name" xml:space="preserve"><value>Ray grid density, {0} fields, {1} of {2} rays arrived</value></data>
+  <data name="Results_RayGrid_NoRays" xml:space="preserve"><value>No rays arrived</value></data>
+  <data name="Results_RayGrid_Note" xml:space="preserve"><value>Ray density on the image surface, centred on each field's centroid; the more opaque, the more rays.</value></data>
+  <data name="Results_RayGrid_PupilRays" xml:space="preserve"><value>{0} pupil rays per field and wavelength</value></data>
+  <data name="Results_Rule_Best" xml:space="preserve"><value>Best</value></data>
+  <data name="Results_Rule_Image" xml:space="preserve"><value>Image</value></data>
+  <data name="Results_Rule_Nyquist" xml:space="preserve"><value>Nyquist</value></data>
+  <data name="Results_Seidel_AxisCoefficient" xml:space="preserve"><value>Coefficient (mm)</value></data>
+  <data name="Results_Seidel_AxisSurface" xml:space="preserve"><value>Surface</value></data>
+  <data name="Results_Seidel_ChartName" xml:space="preserve"><value>Seidel coefficients per surface and their sum</value></data>
+  <data name="Results_Seidel_ChoiceChromatic" xml:space="preserve"><value>Chromatic</value></data>
+  <data name="Results_Seidel_ChoiceSeidel" xml:space="preserve"><value>Seidel</value></data>
+  <data name="Results_Seidel_Cl" xml:space="preserve"><value>C_L axial</value></data>
+  <data name="Results_Seidel_Coefficients" xml:space="preserve"><value>Coefficients</value></data>
+  <data name="Results_Seidel_Ct" xml:space="preserve"><value>C_T lateral</value></data>
+  <data name="Results_Seidel_NotApplicable" xml:space="preserve"><value>Seidel coefficients do not apply</value></data>
+  <data name="Results_Seidel_PetzvalRadius" xml:space="preserve"><value>Petzval radius {0}</value></data>
+  <data name="Results_Seidel_S1" xml:space="preserve"><value>S_I spherical</value></data>
+  <data name="Results_Seidel_S2" xml:space="preserve"><value>S_II coma</value></data>
+  <data name="Results_Seidel_S3" xml:space="preserve"><value>S_III astigmatism</value></data>
+  <data name="Results_Seidel_S4" xml:space="preserve"><value>S_IV Petzval</value></data>
+  <data name="Results_Seidel_S5" xml:space="preserve"><value>S_V distortion</value></data>
+  <data name="Results_Seidel_Sum" xml:space="preserve"><value>Sum (Σ)</value></data>
+  <data name="Results_Seidel_SurfaceNumber" xml:space="preserve"><value>Surface {0}</value></data>
+  <data name="Results_Seidel_WavefrontItemName" xml:space="preserve"><value>{0} {1} waves</value></data>
+  <data name="Results_Seidel_WavefrontWaves" xml:space="preserve"><value>Wavefront (waves)</value></data>
+  <data name="Results_Sensor_AllGhosts" xml:space="preserve"><value>All ghosts</value></data>
+  <data name="Results_Sensor_Caption" xml:space="preserve"><value>Sensor {0} × {1} mm · peak {2} {3}</value></data>
+  <data name="Results_Sensor_GhostPrimaryFlux" xml:space="preserve"><value>Ghost / primary flux</value></data>
+  <data name="Results_Sensor_GhostPrimaryPeak" xml:space="preserve"><value>Ghost / primary peak</value></data>
+  <data name="Results_Sensor_Map" xml:space="preserve"><value>Map</value></data>
+  <data name="Results_Sensor_MapName" xml:space="preserve"><value>Sensor map</value></data>
+  <data name="Results_Sensor_Name" xml:space="preserve"><value>{0} map over the sensor</value></data>
+  <data name="Results_Sensor_NameLog" xml:space="preserve"><value>{0} map over the sensor, logarithmic scale</value></data>
+  <data name="Results_Sensor_PrimaryImage" xml:space="preserve"><value>Primary image</value></data>
+  <data name="Results_Sensor_StandardError" xml:space="preserve"><value>± standard error</value></data>
+  <data name="Results_Sensor_StrayFlux" xml:space="preserve"><value>Stray flux</value></data>
+  <data name="Results_Sensor_StrayTotal" xml:space="preserve"><value>Stray total</value></data>
+  <data name="Results_Sparkline_Extremes" xml:space="preserve"><value>{0}, lowest {1}, highest {2}</value></data>
+  <data name="Results_Sparkline_NoValues" xml:space="preserve"><value>{0}, no values</value></data>
+  <data name="Results_Sparkline_OneValue" xml:space="preserve"><value>{0}, 1 value {1}</value></data>
+  <data name="Results_Sparkline_Values" xml:space="preserve"><value>{0}, {1} values from {2} to {3}</value></data>
+  <data name="Results_Spot_AboutCentroid" xml:space="preserve"><value>{0} · about the centroid</value></data>
+  <data name="Results_Spot_AboutChief" xml:space="preserve"><value>{0} · about the chief ray</value></data>
+  <data name="Results_Spot_AiryDisk" xml:space="preserve"><value>Airy disk {0}</value></data>
+  <data name="Results_Spot_Defocus" xml:space="preserve"><value>Defocus</value></data>
+  <data name="Results_Spot_Folded" xml:space="preserve"><value>{0} · widen the pane for every focus plane</value></data>
+  <data name="Results_Spot_HelpAiry" xml:space="preserve"><value>{0}, Airy radius {1}</value></data>
+  <data name="Results_Spot_Name" xml:space="preserve"><value>Spot diagram, {0} fields by {1} focus planes</value></data>
+  <data name="Results_Spot_NameCandidate" xml:space="preserve"><value>Spot diagram, the candidate, {0} fields by {1} focus planes</value></data>
+  <data name="Results_Spot_NameDesign" xml:space="preserve"><value>Spot diagram, the design, {0} fields by {1} focus planes</value></data>
+  <data name="Results_Spot_PlanesShown" xml:space="preserve"><value>{0} · {1} of {2} planes shown</value></data>
+  <data name="Results_Spot_ScaleButtonCommon" xml:space="preserve"><value>Common</value></data>
+  <data name="Results_Spot_ScaleButtonPerField" xml:space="preserve"><value>Per field</value></data>
+  <data name="Results_Spot_ScaleCommon" xml:space="preserve"><value>Box half-width {0}, common to all cells</value></data>
+  <data name="Results_Spot_ScaleCommonCompared" xml:space="preserve"><value>Box half-width {0}, common to all cells (design and candidate)</value></data>
+  <data name="Results_Spot_ScalePerField" xml:space="preserve"><value>Box half-width per field, shown by each row</value></data>
+  <data name="Results_Spot_ScaleToolTip" xml:space="preserve"><value>Box scale: one for all cells, or one per field</value></data>
+  <data name="Results_Summary_At" xml:space="preserve"><value>{0}; at {1}: {2}</value></data>
+  <data name="Results_Summary_Curves_Many" xml:space="preserve"><value>{0} curves</value></data>
+  <data name="Results_Summary_Curves_One" xml:space="preserve"><value>1 curve</value></data>
+  <data name="Results_Summary_NoData" xml:space="preserve"><value>{0}: no data</value></data>
+  <data name="Results_Summary_Range" xml:space="preserve"><value>{0} to {1}</value></data>
+  <data name="Results_Summary_Titled" xml:space="preserve"><value>{0}: {1}</value></data>
+  <data name="Results_Transmission_Axis" xml:space="preserve"><value>Transmission</value></data>
+  <data name="Results_Transmission_Name" xml:space="preserve"><value>System transmission per field</value></data>
+  <data name="Results_Transmission_NameSpectral" xml:space="preserve"><value>System transmission per field against wavelength</value></data>
+  <data name="Results_Validation_Errors_Many" xml:space="preserve"><value>{0} errors</value></data>
+  <data name="Results_Validation_Errors_One" xml:space="preserve"><value>1 error</value></data>
+  <data name="Results_Validation_IssueName" xml:space="preserve"><value>{0}: {1}</value></data>
+  <data name="Results_Validation_IssueNameSurface" xml:space="preserve"><value>{0}: {1}, surface {2}</value></data>
+  <data name="Results_Validation_ListSeparator" xml:space="preserve"><value>, </value></data>
+  <data name="Results_Validation_Name" xml:space="preserve"><value>Validation: {0}</value></data>
+  <data name="Results_Validation_NoIssues" xml:space="preserve"><value>No issues</value></data>
+  <data name="Results_Validation_NoIssuesTitle" xml:space="preserve"><value>No Issues</value></data>
+  <data name="Results_Validation_Notes_Many" xml:space="preserve"><value>{0} notes</value></data>
+  <data name="Results_Validation_Notes_One" xml:space="preserve"><value>1 note</value></data>
+  <data name="Results_Validation_Passed" xml:space="preserve"><value>The design passed every check.</value></data>
+  <data name="Results_Validation_PassedName" xml:space="preserve"><value>No issues: the design passed every check</value></data>
+  <data name="Results_Validation_SelectSurface" xml:space="preserve"><value>Select surface {0} in the lens data</value></data>
+  <data name="Results_Validation_SeverityError" xml:space="preserve"><value>error</value></data>
+  <data name="Results_Validation_SeverityInfo" xml:space="preserve"><value>info</value></data>
+  <data name="Results_Validation_SeverityWarning" xml:space="preserve"><value>warning</value></data>
+  <data name="Results_Validation_Surface" xml:space="preserve"><value>Surface {0}</value></data>
+  <data name="Results_Validation_Warnings_Many" xml:space="preserve"><value>{0} warnings</value></data>
+  <data name="Results_Validation_Warnings_One" xml:space="preserve"><value>1 warning</value></data>
+  <data name="Results_Wavefront_Keys" xml:space="preserve"><value>RMS {0} λ   P-V {1} λ   Strehl {2}</value></data>
+  <data name="Results_Wavefront_MapName" xml:space="preserve"><value>Wavefront map</value></data>
+  <data name="Results_Wavefront_Name" xml:space="preserve"><value>Wavefront map, {0}, RMS {1} waves, peak to valley {2} waves</value></data>
+  <data name="Results_Wavefront_OutsidePupil" xml:space="preserve"><value>Outside the pupil</value></data>
+  <data name="Results_Zernike_Astig0" xml:space="preserve"><value>Astig 0°</value></data>
+  <data name="Results_Zernike_Astig45" xml:space="preserve"><value>Astig 45°</value></data>
+  <data name="Results_Zernike_ComaX" xml:space="preserve"><value>Coma x</value></data>
+  <data name="Results_Zernike_ComaY" xml:space="preserve"><value>Coma y</value></data>
+  <data name="Results_Zernike_Defocus" xml:space="preserve"><value>Defocus</value></data>
+  <data name="Results_Zernike_Header" xml:space="preserve"><value>Zernike ({0}, waves)</value></data>
+  <data name="Results_Zernike_Piston" xml:space="preserve"><value>Piston</value></data>
+  <data name="Results_Zernike_Spherical" xml:space="preserve"><value>Spherical</value></data>
+  <data name="Results_Zernike_TiltX" xml:space="preserve"><value>Tilt x</value></data>
+  <data name="Results_Zernike_TiltY" xml:space="preserve"><value>Tilt y</value></data>
+  <data name="Results_Zernike_TrefoilX" xml:space="preserve"><value>Trefoil x</value></data>
+  <data name="Results_Zernike_TrefoilY" xml:space="preserve"><value>Trefoil y</value></data>
   <!-- end area: Results -->
   <!-- area: Glass -->
   <!-- end area: Glass -->

@@ -7,6 +7,7 @@ using Microsoft.UI.Xaml.Controls;
 using MKLight.App.Plotting;
 using MKLight.App.Support;
 using MKLight.App.Views.Analysis.Results.Readers;
+using MKLight.Model;
 using Windows.Foundation;
 using Windows.UI;
 
@@ -36,17 +37,17 @@ static class FieldMapViews
             ItemsSource = columns.Select(k => d.Columns[k].TitleWithUnit).ToList(), SelectedIndex = Math.Max(columns.ToList().IndexOf(selected), 0),
             FontSize = 12, MinWidth = 0, MinHeight = 26, Padding = new Thickness(8, 2, 6, 3),
         };
-        AutomationProperties.SetName(c, "Quantity");
-        var def = Kit.Caption(d.Columns[selected].Definition, wrap: true);
+        AutomationProperties.SetName(c, Loc.S("Results_FieldMap_Quantity"));
+        var def = Kit.Caption(EngineText.T(d.Columns[selected].Definition), wrap: true);
         def.VerticalAlignment = VerticalAlignment.Center;
         def.MaxWidth = 420;
-        ToolTipService.SetToolTip(c, d.Columns[selected].Definition);
+        ToolTipService.SetToolTip(c, EngineText.T(d.Columns[selected].Definition));
         c.SelectionChanged += (_, _) =>
         {
             if (c.SelectedIndex < 0) return;
             var k = columns[c.SelectedIndex];
-            def.Text = d.Columns[k].Definition;
-            ToolTipService.SetToolTip(c, d.Columns[k].Definition);
+            def.Text = EngineText.T(d.Columns[k].Definition);
+            ToolTipService.SetToolTip(c, def.Text);
             changed(k);
         };
         p.Children.Add(c);
@@ -59,7 +60,7 @@ static class FieldMapViews
     {
         var col = d.Columns[column];
         if (d.Range(column) is not var (lo, hi))
-            return SeidelView.Message("No values", $"{col.Title} is undefined at every sample: {col.Definition}.");
+            return SeidelView.Message(Loc.S("Results_FieldMap_NoValues"), Loc.F("Results_FieldMap_Undefined", col.Title, EngineText.T(col.Definition)));
         if (d.Layout == FieldMapData.Layouts.Map)
         {
             var grid = d.Grid(column);
@@ -75,7 +76,7 @@ static class FieldMapViews
                 Contours = (contours ?? []).Select(l => (l, Readers.Contours.MapSegments(grid, l))).ToList(),
                 HoverText = (f, p) => MapPlot.NodeHover(f, p, grid, col.Format),
             };
-            var canvas = new MapCanvas(() => plot, $"{col.Title} map over the normalized field, {d.Nx} by {d.Ny} samples, from {col.Format(lo)} to {col.Format(hi)}");
+            var canvas = new MapCanvas(() => plot, Loc.F("Results_FieldMap_MapName", col.Title, d.Nx, d.Ny, col.Format(lo), col.Format(hi)));
             return canvas;
         }
         var sweep = d.Sweep(column);
@@ -89,7 +90,7 @@ static class FieldMapViews
             Curves.Line(ds, f, sweep.Select(p => (p.H, p.V)).ToArray(), Palette.Field(0, style.Dark), 1.8f);
             Curves.Dots(ds, f, sweep.Select(p => (p.H, p.V)), Palette.Field(0, style.Dark), 2.2f);
         });
-        AutomationProperties.SetName(chart, $"{col.Title} along {(d.Layout == FieldMapData.Layouts.SweepX ? "Hx" : "Hy")}, from {col.Format(lo)} to {col.Format(hi)}");
+        AutomationProperties.SetName(chart, Loc.F("Results_FieldMap_SweepName", col.Title, d.Layout == FieldMapData.Layouts.SweepX ? "Hx" : "Hy", col.Format(lo), col.Format(hi)));
         return chart;
     }
 
@@ -171,8 +172,8 @@ public sealed partial class RelativeIlluminationMapView : UserControl, IViewOpti
         _d = d;
         IsTabStop = false;
         _column = d.ColumnIndex("relative_illumination") ?? 0;
-        _range = new Choice("Color scale", ["Data range", "0 to 1"], menuBelow: 0);
-        ToolTipService.SetToolTip(_range, "Colors over the map's own range (small differences show), or over 0 to 1 (to compare designs)");
+        _range = new Choice(Loc.S("Results_Map_ColorScale"), [Loc.S("Results_FieldMap_DataRange"), Loc.S("Results_FieldMap_ZeroToOne")], menuBelow: 0);
+        ToolTipService.SetToolTip(_range, Loc.S("Results_FieldMap_RangeToolTip"));
         _range.Changed += k => { _mode = k == 1 ? HeatRangeMode.Unit : HeatRangeMode.Data; Build(); };
         _opts["unit"] = () => _range.Select(1);
         var header = FieldMapViews.Header(d, Enumerable.Range(0, d.Columns.Count).ToList(), _column, k => { _column = k; Build(); });
@@ -202,10 +203,10 @@ public sealed partial class RelativeIlluminationMapView : UserControl, IViewOpti
         var g = new Grid { RowSpacing = 2 };
         g.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
         g.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
-        g.Children.Add(Kit.Text($"{col.Title} vs image radius", "PanelTitleText", 11));
+        g.Children.Add(Kit.Text(Loc.F("Results_FieldMap_RadialTitle", col.Title), "PanelTitleText", 11));
         var chart = new PlotCanvas((ds, size, style) =>
         {
-            var f = new Frame { XTitle = "Image radius (mm)", YTickSpacing = 34 };
+            var f = new Frame { XTitle = Loc.S("Results_FieldMap_ImageRadiusMm"), YTickSpacing = 34 };
             (f.XMin, f.XMax) = Ticks.Range(pts.Select(p => p.Item1).Append(0), 0.03);
             f.XMin = Math.Max(f.XMin, 0) == 0 ? 0 : f.XMin;
             (f.YMin, f.YMax) = unit ? (0, 1.02) : Ticks.Range(pts.Select(p => p.Item2), 0.08);
@@ -214,7 +215,7 @@ public sealed partial class RelativeIlluminationMapView : UserControl, IViewOpti
             if (line) Curves.Line(ds, f, pts, c, 1.6f);
             Curves.Dots(ds, f, pts, c, line ? 2f : 2.6f);
         });
-        AutomationProperties.SetName(chart, $"{col.Title} versus image radius, {pts.Length} samples");
+        AutomationProperties.SetName(chart, Loc.F("Results_FieldMap_RadialName", col.Title, pts.Length));
         Grid.SetRow(chart, 1);
         g.Children.Add(chart);
         return g;
@@ -248,7 +249,7 @@ public sealed partial class ChiefRayAngleView : UserControl, IViewOptions
         Choice? display = null;
         if (d.Layout == FieldMapData.Layouts.Map)
         {
-            display = new Choice("Display", ["Curve", "Map"], _map ? 1 : 0, menuBelow: 0);
+            display = new Choice(Loc.S("Results_Cra_Display"), [Loc.S("Results_Cra_Curve"), Loc.S("Results_Cra_Map")], _map ? 1 : 0, menuBelow: 0);
             display.Changed += k => { _map = k == 1; Build(); };
             _opts["map"] = () => display.Select(1);
             _opts["curve"] = () => display.Select(0);
@@ -281,21 +282,21 @@ public sealed partial class ChiefRayAngleView : UserControl, IViewOptions
         }
         _controls.Content = Legend();
         var chart = new PlotCanvas(DrawCurve);
-        AutomationProperties.SetName(chart, "Chief ray angle versus image height" + (_limit.Length == 0 ? "" : ", with the sensor limit") + ". " + Summary());
+        AutomationProperties.SetName(chart, Loc.F(_limit.Length == 0 ? "Results_Cra_ChartName" : "Results_Cra_ChartNameLimit", Summary()));
         _content.Content = chart;
     }
 
     FrameworkElement Legend()
     {
         var dark = ActualTheme == ElementTheme.Dark;
-        var p = new List<LegendEntry> { new("Chief ray incidence", SeriesColor.Field(0)) };
-        if (_limit.Length > 0) p.Add(new LegendEntry("Sensor limit", SeriesColor.Neutral, LegendMark.Dashed));
+        var p = new List<LegendEntry> { new(Loc.S("Results_Cra_Incidence"), SeriesColor.Field(0)) };
+        if (_limit.Length > 0) p.Add(new LegendEntry(Loc.S("Results_Cra_SensorLimit"), SeriesColor.Neutral, LegendMark.Dashed));
         var row = new FlowPanel { Spacing = 12, LineSpacing = 3 };
         row.Children.Add(new Legend(p));
         if (_limit.Length > 0)
         {
-            row.Children.Add(Kit.LegendItem(Kit.Swatch(Palette.Field(5, dark), opacity: 0.3), "Margin"));
-            row.Children.Add(Kit.LegendItem(Kit.Swatch(Palette.Field(7, dark), opacity: 0.5), "Violation"));
+            row.Children.Add(Kit.LegendItem(Kit.Swatch(Palette.Field(5, dark), opacity: 0.3), Loc.S("Results_Cra_Margin")));
+            row.Children.Add(Kit.LegendItem(Kit.Swatch(Palette.Field(7, dark), opacity: 0.5), Loc.S("Results_Cra_Violation")));
         }
         return row;
     }
@@ -330,13 +331,13 @@ public sealed partial class ChiefRayAngleView : UserControl, IViewOptions
     string Summary()
     {
         var s = Samples();
-        if (s.Count == 0) return "No values";
+        if (s.Count == 0) return Loc.S("Results_FieldMap_NoValues");
         var worst = s.MaxBy(p => p.Cra);
-        var t = $"Largest {Fmt.Fixed(worst.Cra, 2)} degrees at {Fmt.G3(worst.H)} millimeters";
+        var t = Loc.F("Results_Cra_Largest", Fmt.Fixed(worst.Cra, 2), Fmt.G3(worst.H));
         if (_limit.Length > 0)
         {
             var bad = s.Count(p => p.Margin < 0);
-            t += bad == 0 ? ", within the sensor limit" : Kit.Inv($", {bad} samples exceed the sensor limit");
+            t = bad == 0 ? Loc.F("Results_Cra_WithinLimit", t) : Loc.F("Results_Cra_ExceedLimit", t, bad);
         }
         return t;
     }
@@ -356,8 +357,8 @@ public sealed partial class ChiefRayAngleView : UserControl, IViewOptions
         var ymax = s.Select(p => p.Cra).Concat(limit.Select(p => p.Item2)).Where(double.IsFinite).DefaultIfEmpty(1).Max();
         var f = new Frame
         {
-            XTitle = map ? "Image radius (mm)" : _d.Layout == FieldMapData.Layouts.SweepX ? "Image height x (mm)" : "Image height y (mm)",
-            YTitle = "Chief ray angle (°)", XMin = x0, XMax = x1, YMin = 0, YMax = Math.Max(ymax * 1.08, 1e-3), YTickSpacing = 56,
+            XTitle = map ? Loc.S("Results_FieldMap_ImageRadiusMm") : _d.Layout == FieldMapData.Layouts.SweepX ? Loc.S("Results_Cra_ImageHeightXMm") : Loc.S("Results_Cra_ImageHeightYMm"),
+            YTitle = Loc.S("Results_Cra_AngleAxis"), XMin = x0, XMax = x1, YMin = 0, YMax = Math.Max(ymax * 1.08, 1e-3), YTickSpacing = 56,
         };
         if (f.Draw(ds, f.Inside(ds, new Rect(0, 0, size.Width, size.Height)), style).IsEmpty) return;
         var margin = Palette.Field(5, style.Dark);

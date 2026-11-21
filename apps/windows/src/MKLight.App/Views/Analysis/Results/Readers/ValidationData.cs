@@ -1,4 +1,5 @@
 using System.Text.Json.Nodes;
+using MKLight.App.Support;
 
 namespace MKLight.App.Views.Analysis.Results.Readers;
 
@@ -52,11 +53,11 @@ public sealed class ValidationData
     /// <summary>"2 errors, 1 warning" (or "No issues").</summary>
     public string Summary()
     {
-        static string N(int n, string one) => n == 1 ? "1 " + one : $"{n} {one}s";
+        static string N(int n, string one, string many) => n == 1 ? Loc.S(one) : Loc.F(many, n);
         var parts = new List<string>();
-        if (Count(Severity.Error) is > 0 and var e) parts.Add(N(e, "error"));
-        if (Count(Severity.Warning) is > 0 and var w) parts.Add(N(w, "warning"));
-        if (Count(Severity.Info) is > 0 and var i) parts.Add(N(i, "note"));
-        return parts.Count == 0 ? "No issues" : string.Join(", ", parts);
+        if (Count(Severity.Error) is > 0 and var e) parts.Add(N(e, "Results_Validation_Errors_One", "Results_Validation_Errors_Many"));
+        if (Count(Severity.Warning) is > 0 and var w) parts.Add(N(w, "Results_Validation_Warnings_One", "Results_Validation_Warnings_Many"));
+        if (Count(Severity.Info) is > 0 and var i) parts.Add(N(i, "Results_Validation_Notes_One", "Results_Validation_Notes_Many"));
+        return parts.Count == 0 ? Loc.S("Results_Validation_NoIssues") : string.Join(Loc.S("Results_Validation_ListSeparator"), parts);
     }
 }

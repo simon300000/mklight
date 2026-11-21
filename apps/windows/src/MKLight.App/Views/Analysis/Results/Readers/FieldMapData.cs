@@ -1,4 +1,5 @@
 using System.Text.Json.Nodes;
+using MKLight.Model;
 
 namespace MKLight.App.Views.Analysis.Results.Readers;
 
@@ -12,8 +13,8 @@ public sealed class FieldMapData
 {
     public sealed record Column(string Name, string Unit, string Definition)
     {
-        /// <summary>"Stop error x".</summary>
-        public string Title => Name.Length == 0 ? "" : char.ToUpperInvariant(Name[0]) + Name[1..].Replace('_', ' ');
+        /// <summary>"Stop error x" (engine text, in the UI language).</summary>
+        public string Title => Name.Length == 0 ? "" : EngineText.T(char.ToUpperInvariant(Name[0]) + Name[1..].Replace('_', ' '));
         public string UnitLabel => Unit switch { "" or "1" => "", "deg" => "°", _ => Unit };
         public string TitleWithUnit => UnitLabel.Length == 0 ? Title : $"{Title} ({UnitLabel})";
 
