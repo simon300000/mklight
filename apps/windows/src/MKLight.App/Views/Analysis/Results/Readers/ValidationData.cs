@@ -9,7 +9,13 @@ public sealed class ValidationData
 
     /// <param name="Surface">The surface the issue concerns, if any.</param>
     /// <param name="Field">The field (0-based) a field or chief-ray issue names in its message, if any.</param>
-    public sealed record Issue(Severity Severity, string Code, string Message, int? Surface, int? Field);
+    /// <param name="Args">The message's values by placeholder name, when the engine gives them (<c>args</c>).</param>
+    public sealed record Issue(Severity Severity, string Code, string Message, int? Surface, int? Field,
+        IReadOnlyDictionary<string, string>? Args = null)
+    {
+        /// <summary>The message in the UI language: the engine text catalog's template for the code, else the English.</summary>
+        public string Text => MKLight.Model.EngineText.Diagnostic(Code, Message, Args);
+    }
 
     public required IReadOnlyList<Issue> Issues { get; init; }
 
@@ -22,7 +28,10 @@ public sealed class ValidationData
         {
             var message = Json.Str(Json.At(i, "message")) ?? "";
             var severity = Json.Str(Json.At(i, "severity")) switch { "error" => Severity.Error, "info" => Severity.Info, _ => Severity.Warning };
-            return new Issue(severity, Json.Str(Json.At(i, "code")) ?? "", message, Json.Int(Json.At(i, "surface")), FieldIndex(message));
+            var args = Json.At(i, "args") is JsonObject a
+                ? a.Where(p => p.Value is JsonValue).ToDictionary(p => p.Key, p => p.Value!.ToString(), StringComparer.Ordinal)
+                : null;
+            return new Issue(severity, Json.Str(Json.At(i, "code")) ?? "", message, Json.Int(Json.At(i, "surface")), FieldIndex(message), args);
         });
         return new ValidationData { Issues = issues.OrderBy(i => i.Severity).ToList() };
     }

@@ -30,4 +30,9 @@
     <Compile Include="..\..\src\MKLight.App\Views\Analysis\Settings\Model\*.cs;..\..\src\MKLight.App\Views\Analysis\RunDetails\Model\*.cs" Link="Linked\SettingsModel\%(Filename)%(Extension)" />
   </ItemGroup>
   <ItemGroup><Compile Include="..\..\src\MKLight.App\Views\Analysis\Results\ImageSimulationImport.cs;..\..\src\MKLight.App\Plotting\SparklineGeometry.cs" Link="Linked\%(Filename)%(Extension)" /></ItemGroup>
+  <ItemGroup>
+    <!-- UI text lookup and language choice (Support/Loc.cs reads the English resw beside the tests). -->
+    <Compile Include="..\..\src\MKLight.App\Support\Loc.cs;..\..\src\MKLight.App\Support\Languages.cs;..\..\src\MKLight.Model\EngineText.cs" Link="Localization\App\%(Filename)%(Extension)" />
+    <None Include="..\..\src\MKLight.App\Strings\**\*.resw" Link="Strings\%(RecursiveDir)%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
 </Project>

@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- The app's UI text (en-US). Keys are grouped by area, one block per area (Common, Shell, Lens, Analysis,
+     Jobs, Glass), sorted within a block; see docs/WINDOWS.md "Languages". -->
+<root>
+  <resheader name="resmimetype"><value>text/microsoft-resx</value></resheader>
+  <resheader name="version"><value>2.0</value></resheader>
+  <resheader name="reader"><value>System.Resources.ResXResourceReader, System.Windows.Forms, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089</value></resheader>
+  <resheader name="writer"><value>System.Resources.ResXResourceWriter, System.Windows.Forms, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089</value></resheader>
+  <!-- area: Common -->
+  <data name="Common_Cancel" xml:space="preserve"><value>Cancel</value></data>
+  <data name="Common_Close" xml:space="preserve"><value>Close</value></data>
+  <data name="Common_OK" xml:space="preserve"><value>OK</value></data>
+  <!-- end area: Common -->
+  <!-- area: Shell -->
+  <data name="Shell_Language_Chinese" xml:space="preserve"><value>简体中文</value></data>
+  <data name="Shell_Language_English" xml:space="preserve"><value>English</value></data>
+  <data name="Shell_Language_Menu" xml:space="preserve"><value>Language…</value></data>
+  <data name="Shell_Language_Note" xml:space="preserve"><value>MKLight shows the new language the next time it starts.</value></data>
+  <data name="Shell_Language_System" xml:space="preserve"><value>System ({0})</value></data>
+  <data name="Shell_Language_Title" xml:space="preserve"><value>Language</value></data>
+  <!-- end area: Shell -->
+  <!-- area: Lens -->
+  <!-- end area: Lens -->
+  <!-- area: Analysis -->
+  <!-- end area: Analysis -->
+  <!-- area: Jobs -->
+  <!-- end area: Jobs -->
+  <!-- area: Results -->
+  <!-- end area: Results -->
+  <!-- area: Glass -->
+  <!-- end area: Glass -->
+</root>

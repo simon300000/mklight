@@ -8,6 +8,7 @@ namespace MKLight.App.Support;
 ///   --sample &lt;id&gt;          open a built-in sample (e.g. double_gauss), no welcome window
 ///   --analysis &lt;name&gt;      open these analyses as panes (repeat or comma-separate)
 ///   --theme light|dark      override the system theme
+///   --language en-US|zh-Hans|system  the UI language for this run (default: the saved choice, else the system's)
 ///   --select &lt;i&gt;           select surface i in the lens data
 ///   --edit &lt;path&gt;=&lt;value&gt;  apply a lens edit after loading (e.g. 1.radius=30), as one undoable step
 ///   --undo                  undo it again (checks undo end to end)
@@ -40,6 +41,7 @@ public sealed class LaunchOptions
     public string? Sample;
     public List<string> Analyses = [];
     public string? Theme;
+    public string? Language;
     public int? Select;
     public List<string> Edits = [];
     public bool Undo;
@@ -74,6 +76,7 @@ public sealed class LaunchOptions
                 case "--sample": o.Sample = Next(); break;
                 case "--analysis": o.Analyses.AddRange(Next().Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)); break;
                 case "--theme": o.Theme = Next(); break;
+                case "--language": o.Language = Languages.Normalize(Next()) ?? Languages.System; break;
                 case "--select": o.Select = int.Parse(Next(), System.Globalization.CultureInfo.InvariantCulture); break;
                 case "--edit": o.Edits.Add(Next()); break;
                 case "--undo": o.Undo = true; break;

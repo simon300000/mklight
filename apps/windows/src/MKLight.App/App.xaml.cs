@@ -30,6 +30,7 @@ public partial class App : Application
         var i = Array.IndexOf(args, "--theme");
         var theme = i >= 0 && i + 1 < args.Length ? (args[i + 1] == "dark" ? ElementTheme.Dark : ElementTheme.Light) : AppSettings.Theme;
         if (theme != ElementTheme.Default) RequestedTheme = theme == ElementTheme.Dark ? ApplicationTheme.Dark : ApplicationTheme.Light;
+        UiLanguage.Apply(args);
         InitializeComponent();
         UnhandledException += (_, e) =>
         {
