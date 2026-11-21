@@ -280,7 +280,7 @@ public sealed partial class TolerancePanel : UserControl
         };
         b.Click += (_, _) => _s.ToggleGroup(group.Key);
         var n = group.Rows.Count.ToString(C);
-        ToolTipService.SetToolTip(b, closed ? Loc.F("Jobs_Tolerance_Panel_Group_Show", n, group.Key) : Loc.F("Jobs_Tolerance_Panel_Group_Hide", group.Key));
+        ToolTipService.SetToolTip(b, closed ? Loc.F("Jobs_Tolerance_Panel_Group_Show", n, group.Name) : Loc.F("Jobs_Tolerance_Panel_Group_Hide", group.Name));
         AutomationProperties.SetName(b, group.Title);
         AutomationProperties.SetItemStatus(b, closed ? (problems > 0 ? Loc.F("Jobs_Tolerance_Panel_Group_CollapsedProblems", n, problems.ToString(C)) : Loc.F("Jobs_Tolerance_Panel_Group_Collapsed", n)) : Loc.S("Jobs_Tolerance_Panel_Group_Expanded"));
         AutomationProperties.SetHeadingLevel(b, Microsoft.UI.Xaml.Automation.Peers.AutomationHeadingLevel.Level3);
@@ -421,7 +421,7 @@ public sealed partial class TolerancePanel : UserControl
                 row.Kind.IsElement() ? Loc.S("Jobs_Tolerance_Panel_SurfaceColumnElementHelp") : Loc.S("Jobs_Tolerance_Panel_SurfaceColumnSurfaceHelp"));
         var name = JobUI.Row(2, kind, surface);
         name.VerticalAlignment = VerticalAlignment.Center;
-        ToolTipService.SetToolTip(name, row.Label(sys) + " · " + row.Distribution.Title);
+        ToolTipService.SetToolTip(name, row.DisplayLabel(sys) + " · " + row.Distribution.Title);
         g.Children.Add(name);
         void SetLimit(bool plus, double? v)
         {
@@ -434,9 +434,9 @@ public sealed partial class TolerancePanel : UserControl
             });
         }
         FrameworkElement limits = row.Minus == row.Plus
-            ? JobUI.Row(2, JobUI.Text("±", "SecondaryText"), new NumberField($"lim-{id}", () => row.Plus, v => SetLimit(true, v), 62, "0", name: Loc.F("Jobs_Tolerance_Panel_LimitName", row.Label(sys))))
-            : JobUI.Row(2, new NumberField($"lim-{id}-m", () => -row.Minus, v => SetLimit(false, v), 58, "0", name: Loc.F("Jobs_Tolerance_Panel_LimitMinusName", row.Label(sys))),
-                new NumberField($"lim-{id}-p", () => row.Plus, v => SetLimit(true, v), 58, "0", name: Loc.F("Jobs_Tolerance_Panel_LimitPlusName", row.Label(sys))));
+            ? JobUI.Row(2, JobUI.Text("±", "SecondaryText"), new NumberField($"lim-{id}", () => row.Plus, v => SetLimit(true, v), 62, "0", name: Loc.F("Jobs_Tolerance_Panel_LimitName", row.DisplayLabel(sys))))
+            : JobUI.Row(2, new NumberField($"lim-{id}-m", () => -row.Minus, v => SetLimit(false, v), 58, "0", name: Loc.F("Jobs_Tolerance_Panel_LimitMinusName", row.DisplayLabel(sys))),
+                new NumberField($"lim-{id}-p", () => row.Plus, v => SetLimit(true, v), 58, "0", name: Loc.F("Jobs_Tolerance_Panel_LimitPlusName", row.DisplayLabel(sys))));
         Grid.SetColumn(limits, 1);
         g.Children.Add(limits);
         var units = row.Kind.Units();
@@ -490,7 +490,7 @@ public sealed partial class TolerancePanel : UserControl
             Queue();
         };
         border.ContextFlyout = RowMenu(row);
-        AutomationProperties.SetName(border, Loc.F("Jobs_Tolerance_Panel_RowName", row.Label(sys), row.LimitsText));
+        AutomationProperties.SetName(border, Loc.F("Jobs_Tolerance_Panel_RowName", row.DisplayLabel(sys), row.LimitsText));
         return border;
     }
 
@@ -914,7 +914,7 @@ public sealed partial class TolerancePanel : UserControl
             g.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
             g.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(70) });
             g.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
-            var label = s.Id >= 0 && s.Id < _s.ResultRows.Count ? _s.ResultRows[s.Id].Label(sys) : EngineText.T(s.Label);
+            var label = s.Id >= 0 && s.Id < _s.ResultRows.Count ? _s.ResultRows[s.Id].DisplayLabel(sys) : EngineText.T(s.Label);
             var limits = s.Id >= 0 && s.Id < _s.ResultRows.Count ? _s.ResultRows[s.Id].LimitText(s.WorsePlus) : "";
             var name = JobUI.Text(label);
             if (worst.Contains(s.Id)) JobUI.Bind(name, "WarningBrush", b => name.Foreground = b);

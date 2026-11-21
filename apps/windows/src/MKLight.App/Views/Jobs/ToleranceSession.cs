@@ -330,7 +330,7 @@ public sealed class ToleranceSession
         Previewed = null;
         Preview = null;
         PreviewError = null;
-        if (was || _s.Workspace.PreviewTitle?.StartsWith("Tolerance", StringComparison.Ordinal) == true) _s.Workspace.Preview(null);
+        if (was || TolerancePreviewCase.IsTitle(_s.Workspace.PreviewTitle)) _s.Workspace.Preview(null);
         Changed?.Invoke();
     }
 }

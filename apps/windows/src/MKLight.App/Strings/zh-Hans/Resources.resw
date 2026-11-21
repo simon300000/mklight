@@ -24,6 +24,80 @@
   <!-- area: Analysis -->
   <!-- end area: Analysis -->
   <!-- area: Jobs -->
+  <data name="Jobs_Tolerance_Model_BackFocus" xml:space="preserve"><value>后焦距</value></data>
+  <data name="Jobs_Tolerance_Model_Candidates_AirSpaces" xml:space="preserve"><value>空气间隔</value></data>
+  <data name="Jobs_Tolerance_Model_Candidates_BackFocus" xml:space="preserve"><value>后焦距</value></data>
+  <data name="Jobs_Tolerance_Model_Candidates_DesignVariables" xml:space="preserve"><value>设计变量</value></data>
+  <data name="Jobs_Tolerance_Model_Candidates_Surfaces" xml:space="preserve"><value>面</value></data>
+  <data name="Jobs_Tolerance_Model_Criterion_OptimizerMerit" xml:space="preserve"><value>优化器评价函数</value></data>
+  <data name="Jobs_Tolerance_Model_Criterion_RmsSpotRadius" xml:space="preserve"><value>RMS 弥散斑半径</value></data>
+  <data name="Jobs_Tolerance_Model_Criterion_RmsWavefront" xml:space="preserve"><value>RMS 波前</value></data>
+  <data name="Jobs_Tolerance_Model_Display_Merit" xml:space="preserve"><value>评价函数值</value></data>
+  <data name="Jobs_Tolerance_Model_Display_RmsSpot" xml:space="preserve"><value>RMS 弥散斑</value></data>
+  <data name="Jobs_Tolerance_Model_Display_RmsWavefront" xml:space="preserve"><value>RMS 波前</value></data>
+  <data name="Jobs_Tolerance_Model_Distribution_EndPoints" xml:space="preserve"><value>端点</value></data>
+  <data name="Jobs_Tolerance_Model_Distribution_Normal" xml:space="preserve"><value>正态（限值位于 ±{0} σ）</value></data>
+  <data name="Jobs_Tolerance_Model_Distribution_Parabolic" xml:space="preserve"><value>抛物线（多数靠近限值）</value></data>
+  <data name="Jobs_Tolerance_Model_Distribution_Uniform" xml:space="preserve"><value>均匀</value></data>
+  <data name="Jobs_Tolerance_Model_Group_AirAfter" xml:space="preserve"><value>{0} 后的空气间隔</value></data>
+  <data name="Jobs_Tolerance_Model_Group_Other" xml:space="preserve"><value>其他</value></data>
+  <data name="Jobs_Tolerance_Model_Group_Stop" xml:space="preserve"><value>光阑 S{0}</value></data>
+  <data name="Jobs_Tolerance_Model_Issue_AbbeUnknown" xml:space="preserve"><value>{0} 的阿贝数尚未知：请以 ΔV_d 给出限值，或等待玻璃数据。</value></data>
+  <data name="Jobs_Tolerance_Model_Issue_Air" xml:space="preserve"><value>空气</value></data>
+  <data name="Jobs_Tolerance_Model_Issue_ApertureWiderThanSphere" xml:space="preserve"><value>面 {0} 的通光口径超出其球面。</value></data>
+  <data name="Jobs_Tolerance_Model_Issue_BothZero" xml:space="preserve"><value>两个限值均为零。</value></data>
+  <data name="Jobs_Tolerance_Model_Issue_DecenterRange" xml:space="preserve"><value>只能对物面与像面之间的面设置偏心。</value></data>
+  <data name="Jobs_Tolerance_Model_Issue_DeltaRTooLarge" xml:space="preserve"><value>ΔR 必须小于 |R| = {0} mm。</value></data>
+  <data name="Jobs_Tolerance_Model_Issue_ElementGroupDisagrees" xml:space="preserve"><value>始于 {0} 的元件公差作为同一组移动：请为它们设置相同的末面和枢轴点。</value></data>
+  <data name="Jobs_Tolerance_Model_Issue_ElementInDesign" xml:space="preserve"><value>设计已将 S{0}–{1} 作为绕 S{2} 移动的元件：请使用该范围和枢轴点。</value></data>
+  <data name="Jobs_Tolerance_Model_Issue_ElementLastGone" xml:space="preserve"><value>元件的末面已不存在。</value></data>
+  <data name="Jobs_Tolerance_Model_Issue_ElementRange" xml:space="preserve"><value>元件移动的是物面与像面之间、从首面到末面的各面。</value></data>
+  <data name="Jobs_Tolerance_Model_Issue_FlatSurface" xml:space="preserve"><value>面 {0} 为平面：请以光圈数给出其光焦度公差。</value></data>
+  <data name="Jobs_Tolerance_Model_Issue_FringesNeedAperture" xml:space="preserve"><value>光圈数需要面 {0} 的通光口径；请运行布局或设置半口径。</value></data>
+  <data name="Jobs_Tolerance_Model_Issue_ImageThickness" xml:space="preserve"><value>像面没有厚度。</value></data>
+  <data name="Jobs_Tolerance_Model_Issue_LimitsNotPositive" xml:space="preserve"><value>限值必须为零或正数。</value></data>
+  <data name="Jobs_Tolerance_Model_Issue_MeltOffsetLimit" xml:space="preserve"><value>加上熔炼偏差（{0}）后，{1} 将超出引擎的限值 ±{2}。</value></data>
+  <data name="Jobs_Tolerance_Model_Issue_NoFormForIrregularity" xml:space="preserve"><value>面 {0} 没有可施加不规则度的面形。</value></data>
+  <data name="Jobs_Tolerance_Model_Issue_NoRadius" xml:space="preserve"><value>面 {0} 没有曲率半径。</value></data>
+  <data name="Jobs_Tolerance_Model_Issue_NotAGlass" xml:space="preserve"><value>面 {0} 之后是{1}，不是具有 n_d 和 V_d 的玻璃。</value></data>
+  <data name="Jobs_Tolerance_Model_Issue_OneSurface" xml:space="preserve"><value>同一面</value></data>
+  <data name="Jobs_Tolerance_Model_Issue_ParameterGone" xml:space="preserve"><value>该参数已不存在。</value></data>
+  <data name="Jobs_Tolerance_Model_Issue_PivotGone" xml:space="preserve"><value>枢轴面已不存在。</value></data>
+  <data name="Jobs_Tolerance_Model_Issue_RadiusUnits" xml:space="preserve"><value>曲率半径公差的单位为光圈、mm 或 %。</value></data>
+  <data name="Jobs_Tolerance_Model_Issue_SurfaceGone" xml:space="preserve"><value>该面已不存在。</value></data>
+  <data name="Jobs_Tolerance_Model_Issue_TiltRange" xml:space="preserve"><value>只能对物面与像面之间的面设置倾斜。</value></data>
+  <data name="Jobs_Tolerance_Model_KindShort_DecenterX" xml:space="preserve"><value>偏心 x</value></data>
+  <data name="Jobs_Tolerance_Model_KindShort_DecenterY" xml:space="preserve"><value>偏心 y</value></data>
+  <data name="Jobs_Tolerance_Model_KindShort_IrregularityAstigmatism" xml:space="preserve"><value>像散不规则</value></data>
+  <data name="Jobs_Tolerance_Model_KindShort_IrregularitySpherical" xml:space="preserve"><value>球面不规则</value></data>
+  <data name="Jobs_Tolerance_Model_KindShort_TiltX" xml:space="preserve"><value>倾斜 x</value></data>
+  <data name="Jobs_Tolerance_Model_KindShort_TiltY" xml:space="preserve"><value>倾斜 y</value></data>
+  <data name="Jobs_Tolerance_Model_Kind_Abbe" xml:space="preserve"><value>阿贝数</value></data>
+  <data name="Jobs_Tolerance_Model_Kind_DecenterX" xml:space="preserve"><value>面偏心 x</value></data>
+  <data name="Jobs_Tolerance_Model_Kind_DecenterY" xml:space="preserve"><value>面偏心 y</value></data>
+  <data name="Jobs_Tolerance_Model_Kind_ElementDecenterX" xml:space="preserve"><value>元件偏心 x</value></data>
+  <data name="Jobs_Tolerance_Model_Kind_ElementDecenterY" xml:space="preserve"><value>元件偏心 y</value></data>
+  <data name="Jobs_Tolerance_Model_Kind_ElementTiltX" xml:space="preserve"><value>元件倾斜 x</value></data>
+  <data name="Jobs_Tolerance_Model_Kind_ElementTiltY" xml:space="preserve"><value>元件倾斜 y</value></data>
+  <data name="Jobs_Tolerance_Model_Kind_Index" xml:space="preserve"><value>折射率</value></data>
+  <data name="Jobs_Tolerance_Model_Kind_IrregularityAstigmatism" xml:space="preserve"><value>像散不规则度</value></data>
+  <data name="Jobs_Tolerance_Model_Kind_IrregularitySpherical" xml:space="preserve"><value>球面不规则度</value></data>
+  <data name="Jobs_Tolerance_Model_Kind_Parameter" xml:space="preserve"><value>参数</value></data>
+  <data name="Jobs_Tolerance_Model_Kind_Radius" xml:space="preserve"><value>曲率半径</value></data>
+  <data name="Jobs_Tolerance_Model_Kind_Thickness" xml:space="preserve"><value>厚度</value></data>
+  <data name="Jobs_Tolerance_Model_Kind_TiltX" xml:space="preserve"><value>面倾斜 x</value></data>
+  <data name="Jobs_Tolerance_Model_Kind_TiltY" xml:space="preserve"><value>面倾斜 y</value></data>
+  <data name="Jobs_Tolerance_Model_Mode_Both" xml:space="preserve"><value>两者</value></data>
+  <data name="Jobs_Tolerance_Model_Mode_MonteCarlo" xml:space="preserve"><value>蒙特卡罗</value></data>
+  <data name="Jobs_Tolerance_Model_Mode_Sensitivity" xml:space="preserve"><value>敏感度</value></data>
+  <data name="Jobs_Tolerance_Model_Preset_Commercial" xml:space="preserve"><value>商用级</value></data>
+  <data name="Jobs_Tolerance_Model_Preset_HighPrecision" xml:space="preserve"><value>高精密级</value></data>
+  <data name="Jobs_Tolerance_Model_Preset_Precision" xml:space="preserve"><value>精密级</value></data>
+  <data name="Jobs_Tolerance_Model_Unit_ArcMinutes" xml:space="preserve"><value>角分</value></data>
+  <data name="Jobs_Tolerance_Model_Unit_Degrees" xml:space="preserve"><value>度</value></data>
+  <data name="Jobs_Tolerance_Model_Unit_ParameterUnits" xml:space="preserve"><value>参数单位</value></data>
+  <data name="Jobs_Tolerance_Model_Unit_Percent" xml:space="preserve"><value>百分比</value></data>
+  <data name="Jobs_Tolerance_Model_Unit_TestFringes" xml:space="preserve"><value>检测光圈</value></data>
   <data name="Jobs_Tolerance_Panel_AddCompensator" xml:space="preserve"><value>添加补偿器</value></data>
   <data name="Jobs_Tolerance_Panel_AddSurface" xml:space="preserve"><value>面 {0}</value></data>
   <data name="Jobs_Tolerance_Panel_AddSurfaceLabeled" xml:space="preserve"><value>面 {0} · {1}</value></data>
@@ -210,6 +284,12 @@
   <data name="Jobs_Tolerance_Panel_WorstTrialsHelp" xml:space="preserve"><value>列出最差试验，而非所选柱条的试验</value></data>
   <data name="Jobs_Tolerance_Panel_WorstTrialsTitle" xml:space="preserve"><value>最差试验</value></data>
   <data name="Jobs_Tolerance_Panel_Yield" xml:space="preserve"><value>良率（合格限 {0}）</value></data>
+  <data name="Jobs_Tolerance_Result_PreviewAtLimit" xml:space="preserve"><value>{0}（{1}）</value></data>
+  <data name="Jobs_Tolerance_Result_PreviewCase" xml:space="preserve"><value>公差：{0}</value></data>
+  <data name="Jobs_Tolerance_Result_PreviewCaseCompensated" xml:space="preserve"><value>公差：{0}，已补偿</value></data>
+  <data name="Jobs_Tolerance_Result_PreviewOperand" xml:space="preserve"><value>操作数 {0}</value></data>
+  <data name="Jobs_Tolerance_Result_PreviewTrial" xml:space="preserve"><value>公差：试验 {0}</value></data>
+  <data name="Jobs_Tolerance_Result_PreviewTrialCompensated" xml:space="preserve"><value>公差：试验 {0}，已补偿</value></data>
   <data name="Jobs_Tolerance_Session_Activity" xml:space="preserve"><value>公差分析 · {0}</value></data>
   <data name="Jobs_Tolerance_Session_AddToleranceFirst" xml:space="preserve"><value>请先添加公差。</value></data>
   <data name="Jobs_Tolerance_Session_FixDesignErrors" xml:space="preserve"><value>请先修正设计中的错误。</value></data>
@@ -218,6 +298,12 @@
   <data name="Jobs_Tolerance_Session_MinTrials" xml:space="preserve"><value>请至少运行 2 次蒙特卡罗试验。</value></data>
   <data name="Jobs_Tolerance_Session_PreviewNoRay" xml:space="preserve"><value>引擎无法重建该样件：没有光线到达像面。</value></data>
   <data name="Jobs_Tolerance_Session_Queued" xml:space="preserve"><value>排队中</value></data>
+  <data name="Jobs_Tolerance_Views_BinTitle_Many" xml:space="preserve"><value>{1}–{2}{3} 中的 {0} 次试验</value></data>
+  <data name="Jobs_Tolerance_Views_BinTitle_One" xml:space="preserve"><value>{1}–{2}{3} 中的 {0} 次试验</value></data>
+  <data name="Jobs_Tolerance_Views_MoveTogether" xml:space="preserve"><value>{0} 一起移动</value></data>
+  <data name="Jobs_Tolerance_Views_Moves" xml:space="preserve"><value>{0} 移动</value></data>
+  <data name="Jobs_Tolerance_Views_PivotFirstVertex" xml:space="preserve"><value>{0}，首顶点</value></data>
+  <data name="Jobs_Tolerance_Views_PivotLastVertex" xml:space="preserve"><value>{0}，末顶点</value></data>
   <!-- end area: Jobs -->
   <!-- area: Results -->
   <!-- end area: Results -->

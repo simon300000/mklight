@@ -24,6 +24,80 @@
   <!-- area: Analysis -->
   <!-- end area: Analysis -->
   <!-- area: Jobs -->
+  <data name="Jobs_Tolerance_Model_BackFocus" xml:space="preserve"><value>Back focus</value></data>
+  <data name="Jobs_Tolerance_Model_Candidates_AirSpaces" xml:space="preserve"><value>Air spaces</value></data>
+  <data name="Jobs_Tolerance_Model_Candidates_BackFocus" xml:space="preserve"><value>Back focus</value></data>
+  <data name="Jobs_Tolerance_Model_Candidates_DesignVariables" xml:space="preserve"><value>Design variables</value></data>
+  <data name="Jobs_Tolerance_Model_Candidates_Surfaces" xml:space="preserve"><value>Surfaces</value></data>
+  <data name="Jobs_Tolerance_Model_Criterion_OptimizerMerit" xml:space="preserve"><value>Optimizer's merit</value></data>
+  <data name="Jobs_Tolerance_Model_Criterion_RmsSpotRadius" xml:space="preserve"><value>RMS spot radius</value></data>
+  <data name="Jobs_Tolerance_Model_Criterion_RmsWavefront" xml:space="preserve"><value>RMS wavefront</value></data>
+  <data name="Jobs_Tolerance_Model_Display_Merit" xml:space="preserve"><value>Merit</value></data>
+  <data name="Jobs_Tolerance_Model_Display_RmsSpot" xml:space="preserve"><value>RMS spot</value></data>
+  <data name="Jobs_Tolerance_Model_Display_RmsWavefront" xml:space="preserve"><value>RMS wavefront</value></data>
+  <data name="Jobs_Tolerance_Model_Distribution_EndPoints" xml:space="preserve"><value>End points</value></data>
+  <data name="Jobs_Tolerance_Model_Distribution_Normal" xml:space="preserve"><value>Normal (limits at ±{0} σ)</value></data>
+  <data name="Jobs_Tolerance_Model_Distribution_Parabolic" xml:space="preserve"><value>Parabolic (mostly near the limits)</value></data>
+  <data name="Jobs_Tolerance_Model_Distribution_Uniform" xml:space="preserve"><value>Uniform</value></data>
+  <data name="Jobs_Tolerance_Model_Group_AirAfter" xml:space="preserve"><value>Air after {0}</value></data>
+  <data name="Jobs_Tolerance_Model_Group_Other" xml:space="preserve"><value>Other</value></data>
+  <data name="Jobs_Tolerance_Model_Group_Stop" xml:space="preserve"><value>Stop S{0}</value></data>
+  <data name="Jobs_Tolerance_Model_Issue_AbbeUnknown" xml:space="preserve"><value>The Abbe number of {0} is not known yet: give the limit as ΔV_d, or wait for the glass data.</value></data>
+  <data name="Jobs_Tolerance_Model_Issue_Air" xml:space="preserve"><value>air</value></data>
+  <data name="Jobs_Tolerance_Model_Issue_ApertureWiderThanSphere" xml:space="preserve"><value>The clear aperture of surface {0} is wider than its sphere.</value></data>
+  <data name="Jobs_Tolerance_Model_Issue_BothZero" xml:space="preserve"><value>Both limits are zero.</value></data>
+  <data name="Jobs_Tolerance_Model_Issue_DecenterRange" xml:space="preserve"><value>Decenter a surface between the object and the image.</value></data>
+  <data name="Jobs_Tolerance_Model_Issue_DeltaRTooLarge" xml:space="preserve"><value>ΔR must stay below |R| = {0} mm.</value></data>
+  <data name="Jobs_Tolerance_Model_Issue_ElementGroupDisagrees" xml:space="preserve"><value>Element tolerances starting at {0} move one group: give them the same last surface and pivot.</value></data>
+  <data name="Jobs_Tolerance_Model_Issue_ElementInDesign" xml:space="preserve"><value>The design already moves S{0}–{1} as an element about S{2}: use that range and pivot.</value></data>
+  <data name="Jobs_Tolerance_Model_Issue_ElementLastGone" xml:space="preserve"><value>The element's last surface no longer exists.</value></data>
+  <data name="Jobs_Tolerance_Model_Issue_ElementRange" xml:space="preserve"><value>An element moves surfaces between the object and the image, first to last.</value></data>
+  <data name="Jobs_Tolerance_Model_Issue_FlatSurface" xml:space="preserve"><value>Surface {0} is flat: give its power in fringes.</value></data>
+  <data name="Jobs_Tolerance_Model_Issue_FringesNeedAperture" xml:space="preserve"><value>Fringes need the clear aperture of surface {0}; run the layout or set a semi-diameter.</value></data>
+  <data name="Jobs_Tolerance_Model_Issue_ImageThickness" xml:space="preserve"><value>The image surface has no thickness.</value></data>
+  <data name="Jobs_Tolerance_Model_Issue_LimitsNotPositive" xml:space="preserve"><value>Limits must be zero or positive numbers.</value></data>
+  <data name="Jobs_Tolerance_Model_Issue_MeltOffsetLimit" xml:space="preserve"><value>With the melt offset ({0}), {1} would pass ±{2}, the engine's limit.</value></data>
+  <data name="Jobs_Tolerance_Model_Issue_NoFormForIrregularity" xml:space="preserve"><value>Surface {0} has no form to make irregular.</value></data>
+  <data name="Jobs_Tolerance_Model_Issue_NoRadius" xml:space="preserve"><value>Surface {0} has no radius.</value></data>
+  <data name="Jobs_Tolerance_Model_Issue_NotAGlass" xml:space="preserve"><value>Surface {0} is followed by {1}, not a glass with n_d and V_d.</value></data>
+  <data name="Jobs_Tolerance_Model_Issue_OneSurface" xml:space="preserve"><value>one surface</value></data>
+  <data name="Jobs_Tolerance_Model_Issue_ParameterGone" xml:space="preserve"><value>The parameter no longer exists.</value></data>
+  <data name="Jobs_Tolerance_Model_Issue_PivotGone" xml:space="preserve"><value>The pivot surface no longer exists.</value></data>
+  <data name="Jobs_Tolerance_Model_Issue_RadiusUnits" xml:space="preserve"><value>Radius tolerances are in fringes, mm or %.</value></data>
+  <data name="Jobs_Tolerance_Model_Issue_SurfaceGone" xml:space="preserve"><value>The surface no longer exists.</value></data>
+  <data name="Jobs_Tolerance_Model_Issue_TiltRange" xml:space="preserve"><value>Tilt a surface between the object and the image.</value></data>
+  <data name="Jobs_Tolerance_Model_KindShort_DecenterX" xml:space="preserve"><value>Decenter x</value></data>
+  <data name="Jobs_Tolerance_Model_KindShort_DecenterY" xml:space="preserve"><value>Decenter y</value></data>
+  <data name="Jobs_Tolerance_Model_KindShort_IrregularityAstigmatism" xml:space="preserve"><value>Irreg. astig.</value></data>
+  <data name="Jobs_Tolerance_Model_KindShort_IrregularitySpherical" xml:space="preserve"><value>Irreg. sph.</value></data>
+  <data name="Jobs_Tolerance_Model_KindShort_TiltX" xml:space="preserve"><value>Tilt x</value></data>
+  <data name="Jobs_Tolerance_Model_KindShort_TiltY" xml:space="preserve"><value>Tilt y</value></data>
+  <data name="Jobs_Tolerance_Model_Kind_Abbe" xml:space="preserve"><value>Abbe</value></data>
+  <data name="Jobs_Tolerance_Model_Kind_DecenterX" xml:space="preserve"><value>Surface decenter x</value></data>
+  <data name="Jobs_Tolerance_Model_Kind_DecenterY" xml:space="preserve"><value>Surface decenter y</value></data>
+  <data name="Jobs_Tolerance_Model_Kind_ElementDecenterX" xml:space="preserve"><value>Element decenter x</value></data>
+  <data name="Jobs_Tolerance_Model_Kind_ElementDecenterY" xml:space="preserve"><value>Element decenter y</value></data>
+  <data name="Jobs_Tolerance_Model_Kind_ElementTiltX" xml:space="preserve"><value>Element tilt x</value></data>
+  <data name="Jobs_Tolerance_Model_Kind_ElementTiltY" xml:space="preserve"><value>Element tilt y</value></data>
+  <data name="Jobs_Tolerance_Model_Kind_Index" xml:space="preserve"><value>Index</value></data>
+  <data name="Jobs_Tolerance_Model_Kind_IrregularityAstigmatism" xml:space="preserve"><value>Astig. irregularity</value></data>
+  <data name="Jobs_Tolerance_Model_Kind_IrregularitySpherical" xml:space="preserve"><value>Sph. irregularity</value></data>
+  <data name="Jobs_Tolerance_Model_Kind_Parameter" xml:space="preserve"><value>Parameter</value></data>
+  <data name="Jobs_Tolerance_Model_Kind_Radius" xml:space="preserve"><value>Radius</value></data>
+  <data name="Jobs_Tolerance_Model_Kind_Thickness" xml:space="preserve"><value>Thickness</value></data>
+  <data name="Jobs_Tolerance_Model_Kind_TiltX" xml:space="preserve"><value>Surface tilt x</value></data>
+  <data name="Jobs_Tolerance_Model_Kind_TiltY" xml:space="preserve"><value>Surface tilt y</value></data>
+  <data name="Jobs_Tolerance_Model_Mode_Both" xml:space="preserve"><value>Both</value></data>
+  <data name="Jobs_Tolerance_Model_Mode_MonteCarlo" xml:space="preserve"><value>Monte Carlo</value></data>
+  <data name="Jobs_Tolerance_Model_Mode_Sensitivity" xml:space="preserve"><value>Sensitivity</value></data>
+  <data name="Jobs_Tolerance_Model_Preset_Commercial" xml:space="preserve"><value>Commercial</value></data>
+  <data name="Jobs_Tolerance_Model_Preset_HighPrecision" xml:space="preserve"><value>High precision</value></data>
+  <data name="Jobs_Tolerance_Model_Preset_Precision" xml:space="preserve"><value>Precision</value></data>
+  <data name="Jobs_Tolerance_Model_Unit_ArcMinutes" xml:space="preserve"><value>Arc minutes</value></data>
+  <data name="Jobs_Tolerance_Model_Unit_Degrees" xml:space="preserve"><value>Degrees</value></data>
+  <data name="Jobs_Tolerance_Model_Unit_ParameterUnits" xml:space="preserve"><value>Parameter units</value></data>
+  <data name="Jobs_Tolerance_Model_Unit_Percent" xml:space="preserve"><value>Percent</value></data>
+  <data name="Jobs_Tolerance_Model_Unit_TestFringes" xml:space="preserve"><value>Test fringes</value></data>
   <data name="Jobs_Tolerance_Panel_AddCompensator" xml:space="preserve"><value>Add Compensator</value></data>
   <data name="Jobs_Tolerance_Panel_AddSurface" xml:space="preserve"><value>Surface {0}</value></data>
   <data name="Jobs_Tolerance_Panel_AddSurfaceLabeled" xml:space="preserve"><value>Surface {0} · {1}</value></data>
@@ -210,6 +284,12 @@
   <data name="Jobs_Tolerance_Panel_WorstTrialsHelp" xml:space="preserve"><value>List the worst trials instead of the selected bar's</value></data>
   <data name="Jobs_Tolerance_Panel_WorstTrialsTitle" xml:space="preserve"><value>Worst trials</value></data>
   <data name="Jobs_Tolerance_Panel_Yield" xml:space="preserve"><value>Yield (pass limit {0})</value></data>
+  <data name="Jobs_Tolerance_Result_PreviewAtLimit" xml:space="preserve"><value>{0} at {1}</value></data>
+  <data name="Jobs_Tolerance_Result_PreviewCase" xml:space="preserve"><value>Tolerance: {0}</value></data>
+  <data name="Jobs_Tolerance_Result_PreviewCaseCompensated" xml:space="preserve"><value>Tolerance: {0}, compensated</value></data>
+  <data name="Jobs_Tolerance_Result_PreviewOperand" xml:space="preserve"><value>operand {0}</value></data>
+  <data name="Jobs_Tolerance_Result_PreviewTrial" xml:space="preserve"><value>Tolerance: trial {0}</value></data>
+  <data name="Jobs_Tolerance_Result_PreviewTrialCompensated" xml:space="preserve"><value>Tolerance: trial {0}, compensated</value></data>
   <data name="Jobs_Tolerance_Session_Activity" xml:space="preserve"><value>Tolerancing · {0}</value></data>
   <data name="Jobs_Tolerance_Session_AddToleranceFirst" xml:space="preserve"><value>Add a tolerance first.</value></data>
   <data name="Jobs_Tolerance_Session_FixDesignErrors" xml:space="preserve"><value>Fix the design's errors first.</value></data>
@@ -218,6 +298,12 @@
   <data name="Jobs_Tolerance_Session_MinTrials" xml:space="preserve"><value>Run at least 2 Monte Carlo trials.</value></data>
   <data name="Jobs_Tolerance_Session_PreviewNoRay" xml:space="preserve"><value>The engine could not rebuild this build: no ray reached the image.</value></data>
   <data name="Jobs_Tolerance_Session_Queued" xml:space="preserve"><value>Queued</value></data>
+  <data name="Jobs_Tolerance_Views_BinTitle_Many" xml:space="preserve"><value>{0} trials at {1}–{2}{3}</value></data>
+  <data name="Jobs_Tolerance_Views_BinTitle_One" xml:space="preserve"><value>{0} trial at {1}–{2}{3}</value></data>
+  <data name="Jobs_Tolerance_Views_MoveTogether" xml:space="preserve"><value>{0} move together</value></data>
+  <data name="Jobs_Tolerance_Views_Moves" xml:space="preserve"><value>{0} moves</value></data>
+  <data name="Jobs_Tolerance_Views_PivotFirstVertex" xml:space="preserve"><value>{0}, first vertex</value></data>
+  <data name="Jobs_Tolerance_Views_PivotLastVertex" xml:space="preserve"><value>{0}, last vertex</value></data>
   <!-- end area: Jobs -->
   <!-- area: Results -->
   <!-- end area: Results -->
