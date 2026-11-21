@@ -43,6 +43,9 @@ public static partial class Loc
 
     public static string S(string key) => Provider?.Invoke(key) is { Length: > 0 } s ? s : English(key) ?? key;
 
+    /// <summary>The text of a key built at run time, or null when no language has it (the caller falls back).</summary>
+    public static string? Find(string key) => Provider?.Invoke(key) is { Length: > 0 } s ? s : English(key);
+
     public static string F(string key, params object?[] args) => string.Format(CultureInfo.InvariantCulture, S(key), args);
 
     /// <summary>The English text of a key (the source language), from the resw beside the assembly.</summary>

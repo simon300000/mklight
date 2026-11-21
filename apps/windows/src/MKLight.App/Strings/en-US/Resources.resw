@@ -747,6 +747,16 @@
   <data name="Lens_Zernike_Trefoil2" xml:space="preserve"><value>2nd trefoil</value></data>
   <!-- end area: Lens -->
   <!-- area: Analysis -->
+  <data name="Analysis_Category_diagnostic" xml:space="preserve"><value>Diagnostics</value></data>
+  <data name="Analysis_Category_geometric" xml:space="preserve"><value>Geometric</value></data>
+  <data name="Analysis_Category_ghost" xml:space="preserve"><value>Ghosts</value></data>
+  <data name="Analysis_Category_materials" xml:space="preserve"><value>Materials</value></data>
+  <data name="Analysis_Category_model" xml:space="preserve"><value>System</value></data>
+  <data name="Analysis_Category_optimization" xml:space="preserve"><value>Design</value></data>
+  <data name="Analysis_Category_polarization" xml:space="preserve"><value>Polarization</value></data>
+  <data name="Analysis_Category_radiometry" xml:space="preserve"><value>Radiometry</value></data>
+  <data name="Analysis_Category_stray" xml:space="preserve"><value>Stray Light</value></data>
+  <data name="Analysis_Category_wave" xml:space="preserve"><value>Wave Optics</value></data>
   <data name="Analysis_Csv_CannotRead" xml:space="preserve"><value>cannot be read</value></data>
   <data name="Analysis_Csv_NotNumber" xml:space="preserve"><value>not a number</value></data>
   <data name="Analysis_Csv_RepeatsWavelength" xml:space="preserve"><value>repeats a wavelength</value></data>
@@ -884,6 +894,117 @@
   <data name="Analysis_RunDetails_WarningSummary" xml:space="preserve"><value>{0} (and {1} more)</value></data>
   <data name="Analysis_RunDetails_Warnings_Many" xml:space="preserve"><value>{0} Warnings</value></data>
   <data name="Analysis_RunDetails_Warnings_One" xml:space="preserve"><value>Warning</value></data>
+  <data name="Analysis_SettingName_aperture" xml:space="preserve"><value>Aperture</value></data>
+  <data name="Analysis_SettingName_axes" xml:space="preserve"><value>Axes</value></data>
+  <data name="Analysis_SettingName_azimuth_samples" xml:space="preserve"><value>Azimuth Samples</value></data>
+  <data name="Analysis_SettingName_catalog" xml:space="preserve"><value>Catalog</value></data>
+  <data name="Analysis_SettingName_center" xml:space="preserve"><value>Center</value></data>
+  <data name="Analysis_SettingName_chunk" xml:space="preserve"><value>Chunk</value></data>
+  <data name="Analysis_SettingName_classes" xml:space="preserve"><value>Classes</value></data>
+  <data name="Analysis_SettingName_clip" xml:space="preserve"><value>Clip</value></data>
+  <data name="Analysis_SettingName_close_ray_step" xml:space="preserve"><value>Close Ray Step</value></data>
+  <data name="Analysis_SettingName_closed_form" xml:space="preserve"><value>Closed Form</value></data>
+  <data name="Analysis_SettingName_configuration" xml:space="preserve"><value>Configuration</value></data>
+  <data name="Analysis_SettingName_count" xml:space="preserve"><value>Count</value></data>
+  <data name="Analysis_SettingName_curve_samples" xml:space="preserve"><value>Curve Samples</value></data>
+  <data name="Analysis_SettingName_defocus" xml:space="preserve"><value>Defocus</value></data>
+  <data name="Analysis_SettingName_delay_ms" xml:space="preserve"><value>Delay Ms</value></data>
+  <data name="Analysis_SettingName_detector" xml:space="preserve"><value>Detector</value></data>
+  <data name="Analysis_SettingName_detector_aperture" xml:space="preserve"><value>Detector Aperture</value></data>
+  <data name="Analysis_SettingName_detector_margin" xml:space="preserve"><value>Detector Margin</value></data>
+  <data name="Analysis_SettingName_detector_pixels" xml:space="preserve"><value>Detector Pixels</value></data>
+  <data name="Analysis_SettingName_direction" xml:space="preserve"><value>Direction</value></data>
+  <data name="Analysis_SettingName_edge_margin" xml:space="preserve"><value>Edge Margin</value></data>
+  <data name="Analysis_SettingName_enumeration" xml:space="preserve"><value>Enumeration</value></data>
+  <data name="Analysis_SettingName_exclude_ghost_class" xml:space="preserve"><value>Exclude Ghost Class</value></data>
+  <data name="Analysis_SettingName_extent" xml:space="preserve"><value>Extent</value></data>
+  <data name="Analysis_SettingName_field" xml:space="preserve"><value>Field</value></data>
+  <data name="Analysis_SettingName_field_axes" xml:space="preserve"><value>Field Axes</value></data>
+  <data name="Analysis_SettingName_field_center" xml:space="preserve"><value>Field Center</value></data>
+  <data name="Analysis_SettingName_field_kind" xml:space="preserve"><value>Field Kind</value></data>
+  <data name="Analysis_SettingName_field_samples" xml:space="preserve"><value>Field Samples</value></data>
+  <data name="Analysis_SettingName_fields" xml:space="preserve"><value>Fields</value></data>
+  <data name="Analysis_SettingName_focus_range" xml:space="preserve"><value>Focus Range</value></data>
+  <data name="Analysis_SettingName_focus_samples" xml:space="preserve"><value>Focus Samples</value></data>
+  <data name="Analysis_SettingName_frequencies" xml:space="preserve"><value>Frequencies</value></data>
+  <data name="Analysis_SettingName_frequency_samples" xml:space="preserve"><value>Frequency Samples</value></data>
+  <data name="Analysis_SettingName_full_well_electrons" xml:space="preserve"><value>Full Well Electrons</value></data>
+  <data name="Analysis_SettingName_ghost_partition" xml:space="preserve"><value>Ghost Partition</value></data>
+  <data name="Analysis_SettingName_grid" xml:space="preserve"><value>Grid</value></data>
+  <data name="Analysis_SettingName_grid_size" xml:space="preserve"><value>Grid Size</value></data>
+  <data name="Analysis_SettingName_half_width" xml:space="preserve"><value>Half Width</value></data>
+  <data name="Analysis_SettingName_huygens" xml:space="preserve"><value>Huygens</value></data>
+  <data name="Analysis_SettingName_include_3d" xml:space="preserve"><value>Include 3d</value></data>
+  <data name="Analysis_SettingName_include_points" xml:space="preserve"><value>Include Points</value></data>
+  <data name="Analysis_SettingName_keep_path_maps" xml:space="preserve"><value>Keep Path Maps</value></data>
+  <data name="Analysis_SettingName_lead_in" xml:space="preserve"><value>Lead In</value></data>
+  <data name="Analysis_SettingName_long_wavelength" xml:space="preserve"><value>Long Wavelength</value></data>
+  <data name="Analysis_SettingName_map_bins" xml:space="preserve"><value>Map Bins</value></data>
+  <data name="Analysis_SettingName_map_half_size" xml:space="preserve"><value>Map Half Size</value></data>
+  <data name="Analysis_SettingName_max" xml:space="preserve"><value>Max</value></data>
+  <data name="Analysis_SettingName_max_evaluations" xml:space="preserve"><value>Max Evaluations</value></data>
+  <data name="Analysis_SettingName_max_frequency" xml:space="preserve"><value>Max Frequency</value></data>
+  <data name="Analysis_SettingName_max_iterations" xml:space="preserve"><value>Max Iterations</value></data>
+  <data name="Analysis_SettingName_max_radius" xml:space="preserve"><value>Max Radius</value></data>
+  <data name="Analysis_SettingName_max_sweeps" xml:space="preserve"><value>Max Sweeps</value></data>
+  <data name="Analysis_SettingName_mesh_rings" xml:space="preserve"><value>Mesh Rings</value></data>
+  <data name="Analysis_SettingName_metadata" xml:space="preserve"><value>Metadata</value></data>
+  <data name="Analysis_SettingName_method" xml:space="preserve"><value>Method</value></data>
+  <data name="Analysis_SettingName_min" xml:space="preserve"><value>Min</value></data>
+  <data name="Analysis_SettingName_mode" xml:space="preserve"><value>Mode</value></data>
+  <data name="Analysis_SettingName_model" xml:space="preserve"><value>Model</value></data>
+  <data name="Analysis_SettingName_monochrome" xml:space="preserve"><value>Monochrome</value></data>
+  <data name="Analysis_SettingName_near_focus_factor" xml:space="preserve"><value>Near Focus Factor</value></data>
+  <data name="Analysis_SettingName_normalization" xml:space="preserve"><value>Normalization</value></data>
+  <data name="Analysis_SettingName_offset" xml:space="preserve"><value>Offset</value></data>
+  <data name="Analysis_SettingName_optics" xml:space="preserve"><value>Optics</value></data>
+  <data name="Analysis_SettingName_overfill" xml:space="preserve"><value>Overfill</value></data>
+  <data name="Analysis_SettingName_padding" xml:space="preserve"><value>Padding</value></data>
+  <data name="Analysis_SettingName_paths" xml:space="preserve"><value>Paths</value></data>
+  <data name="Analysis_SettingName_pattern" xml:space="preserve"><value>Pattern</value></data>
+  <data name="Analysis_SettingName_point" xml:space="preserve"><value>Point</value></data>
+  <data name="Analysis_SettingName_points" xml:space="preserve"><value>Points</value></data>
+  <data name="Analysis_SettingName_polychromatic" xml:space="preserve"><value>Polychromatic</value></data>
+  <data name="Analysis_SettingName_pressure_atm" xml:space="preserve"><value>Pressure Atm</value></data>
+  <data name="Analysis_SettingName_profile_samples" xml:space="preserve"><value>Profile Samples</value></data>
+  <data name="Analysis_SettingName_pupil" xml:space="preserve"><value>Pupil</value></data>
+  <data name="Analysis_SettingName_pupil_samples" xml:space="preserve"><value>Pupil Samples</value></data>
+  <data name="Analysis_SettingName_radial_samples" xml:space="preserve"><value>Radial Samples</value></data>
+  <data name="Analysis_SettingName_range" xml:space="preserve"><value>Range</value></data>
+  <data name="Analysis_SettingName_rays" xml:space="preserve"><value>Rays</value></data>
+  <data name="Analysis_SettingName_rays_per_field" xml:space="preserve"><value>Rays Per Field</value></data>
+  <data name="Analysis_SettingName_read_noise_sigma" xml:space="preserve"><value>Read Noise Sigma</value></data>
+  <data name="Analysis_SettingName_reference" xml:space="preserve"><value>Reference</value></data>
+  <data name="Analysis_SettingName_reject_virtual" xml:space="preserve"><value>Reject Virtual</value></data>
+  <data name="Analysis_SettingName_ring_samples" xml:space="preserve"><value>Ring Samples</value></data>
+  <data name="Analysis_SettingName_rings" xml:space="preserve"><value>Rings</value></data>
+  <data name="Analysis_SettingName_samples" xml:space="preserve"><value>Samples</value></data>
+  <data name="Analysis_SettingName_scene" xml:space="preserve"><value>Scene</value></data>
+  <data name="Analysis_SettingName_section" xml:space="preserve"><value>Section</value></data>
+  <data name="Analysis_SettingName_seed" xml:space="preserve"><value>Seed</value></data>
+  <data name="Analysis_SettingName_semi_diameters" xml:space="preserve"><value>Semi Diameters</value></data>
+  <data name="Analysis_SettingName_sensor_limit" xml:space="preserve"><value>Sensor Limit</value></data>
+  <data name="Analysis_SettingName_sensor_reflectance" xml:space="preserve"><value>Sensor Reflectance</value></data>
+  <data name="Analysis_SettingName_short_wavelength" xml:space="preserve"><value>Short Wavelength</value></data>
+  <data name="Analysis_SettingName_signal_diameter" xml:space="preserve"><value>Signal Diameter</value></data>
+  <data name="Analysis_SettingName_size" xml:space="preserve"><value>Size</value></data>
+  <data name="Analysis_SettingName_source" xml:space="preserve"><value>Source</value></data>
+  <data name="Analysis_SettingName_spacing" xml:space="preserve"><value>Spacing</value></data>
+  <data name="Analysis_SettingName_spectrum" xml:space="preserve"><value>Spectrum</value></data>
+  <data name="Analysis_SettingName_state" xml:space="preserve"><value>State</value></data>
+  <data name="Analysis_SettingName_stream" xml:space="preserve"><value>Stream</value></data>
+  <data name="Analysis_SettingName_surface" xml:space="preserve"><value>Surface</value></data>
+  <data name="Analysis_SettingName_temperature_c" xml:space="preserve"><value>Temperature C</value></data>
+  <data name="Analysis_SettingName_through_focus" xml:space="preserve"><value>Through Focus</value></data>
+  <data name="Analysis_SettingName_through_focus_samples" xml:space="preserve"><value>Through Focus Samples</value></data>
+  <data name="Analysis_SettingName_tile_size" xml:space="preserve"><value>Tile Size</value></data>
+  <data name="Analysis_SettingName_tolerance" xml:space="preserve"><value>Tolerance</value></data>
+  <data name="Analysis_SettingName_top_signatures" xml:space="preserve"><value>Top Signatures</value></data>
+  <data name="Analysis_SettingName_transport" xml:space="preserve"><value>Transport</value></data>
+  <data name="Analysis_SettingName_wavelength" xml:space="preserve"><value>Wavelength</value></data>
+  <data name="Analysis_SettingName_wavelengths" xml:space="preserve"><value>Wavelengths</value></data>
+  <data name="Analysis_SettingName_zernike_ordering" xml:space="preserve"><value>Zernike Ordering</value></data>
+  <data name="Analysis_SettingName_zernike_terms" xml:space="preserve"><value>Zernike Terms</value></data>
   <data name="Analysis_Settings_AddPoint" xml:space="preserve"><value>Add Point</value></data>
   <data name="Analysis_Settings_AddRow" xml:space="preserve"><value>Add Row</value></data>
   <data name="Analysis_Settings_All" xml:space="preserve"><value>All</value></data>

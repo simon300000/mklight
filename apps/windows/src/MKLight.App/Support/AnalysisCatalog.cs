@@ -101,7 +101,8 @@ public static class AnalysisCatalog
     }
 
     public static string Glyph(string name) => Glyphs.TryGetValue(name, out var g) ? g : "\uE9D2";
-    public static string CategoryTitle(string c) => EngineText.T(EnglishCategoryTitle(c));
+    /// <summary>The category's title: the app's own (resources), else the English title through the engine text catalog.</summary>
+    public static string CategoryTitle(string c) => Loc.Find("Analysis_Category_" + c) ?? EngineText.T(EnglishCategoryTitle(c));
 
     /// <summary>The category's title in English (menu tags for <c>--do menu=…</c>).</summary>
     public static string EnglishCategoryTitle(string c) => CategoryTitles.TryGetValue(c, out var t) ? t : TitleCase(c);

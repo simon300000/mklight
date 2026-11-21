@@ -67,6 +67,29 @@ public sealed partial class LocalizationTests
         Assert.Empty(found.Where(f => !en.TryGetValue(f.Item1, out var v) || v != f.Item2).Select(f => f.Item1));
     }
 
+    /// <summary>
+    /// Settings without an engine title are labelled from their names by the app, in its own resources: every
+    /// such name the engine has today has a key (Analysis_SettingName_*), and every category a title.
+    /// </summary>
+    [Fact]
+    public async Task EveryUntitledSettingAndCategoryHasAKey()
+    {
+        var en = Resw("en-US");
+        var missing = new SortedSet<string>(StringComparer.Ordinal);
+        foreach (var d in await SharedEngine().AnalysisDescriptorsAsync())
+        {
+            if (!en.ContainsKey("Analysis_Category_" + d.Category)) missing.Add("Analysis_Category_" + d.Category);
+            if (d.SettingsSchema["properties"] is not System.Text.Json.Nodes.JsonObject props) continue;
+            foreach (var (name, schema) in props)
+            {
+                if (schema?["title"] is not null) continue;
+                var stripped = new[] { "_mm", "_um", "_deg" }.FirstOrDefault(name.EndsWith) is { } suffix ? name[..^suffix.Length] : name;
+                if (!en.ContainsKey("Analysis_SettingName_" + stripped)) missing.Add("Analysis_SettingName_" + stripped);
+            }
+        }
+        Assert.Empty(missing);
+    }
+
     [Fact]
     public void FormatsWithInvariantNumbers()
     {

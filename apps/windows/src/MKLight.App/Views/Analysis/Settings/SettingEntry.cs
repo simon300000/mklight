@@ -69,7 +69,8 @@ public static class SettingEntry
         var name = f.Name;
         foreach (var suffix in new[] { "_mm", "_um", "_deg" })
             if (name.EndsWith(suffix, StringComparison.Ordinal)) { name = name[..^suffix.Length]; break; }
-        var t = EngineText.T(f.Title == f.Name ? Words(name) : f.Title);
+        // A setting without an engine title is labelled from its name by the app: its own text (resources).
+        var t = f.Title == f.Name ? Loc.Find("Analysis_SettingName_" + name) ?? Words(name) : EngineText.T(f.Title);
         return t.Length > 22 ? t[..20] + "…" : t;
     }
 
