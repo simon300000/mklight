@@ -6,11 +6,12 @@
 
 <p align="center">
   Optical design for imaging systems.<br>
-  GPU-accelerated, and native on the Mac.
+  GPU-accelerated, native on the Mac and on Windows, and in the browser.
 </p>
 
 <p align="center">
   <a href="#features">Features</a> ·
+  <a href="#the-apps">The apps</a> ·
   <a href="#a-closer-look">A closer look</a> ·
   <a href="#command-line-and-python">Scripting</a> ·
   <a href="#documentation">Documentation</a> ·
@@ -54,16 +55,30 @@ irregularity and element motions.
 
 **Import and scripting**<br>
 Opens `.zmx` and `.seq` prescriptions and AGF glass catalogues. A command
-line and Python bindings run on the same engine as the app.
+line and Python bindings run on the same engine as the apps.
 
-## The app
+## The apps
 
-A native Mac app in SwiftUI, with Liquid Glass and a Metal viewport. Lens
-data, the layout and every analysis are panels: drag one onto another to
-make a tab, near an edge to split it, or out of the window to give it a
+Three front ends share one Rust engine and the same project files, so a
+design opens unchanged on every platform.
+
+**macOS.** A native app in SwiftUI, with Liquid Glass and a Metal viewport.
+Lens data, the layout and every analysis are panels: drag one onto another
+to make a tab, near an edge to split it, or out of the window to give it a
 window of its own. Candidate designs from optimisation, glass substitution
 or tolerancing are previewed in every panel before you apply them, and
-every edit can be undone.
+every edit can be undone. It is the reference: features land here first.
+[App](docs/APP.md)
+
+**Windows.** A native WinUI 3 app with Fluent design and Mica, a Direct3D
+3-D view, and CUDA on NVIDIA GPUs. It follows the Mac app feature for
+feature (panels and separate windows, the inspector, design jobs with
+previews, the glass library) and is close to parity.
+[Windows](docs/WINDOWS.md)
+
+**Web.** The same engine compiled to WebAssembly and run in a Web Worker,
+with WebGPU where the browser offers it, so nothing has to be installed.
+[Web](docs/WEB.md)
 
 <p align="center">
   <img src="docs/images/separate-windows.png" alt="A Cooke triplet in the main window, with through-focus MTF and a relative illumination map in a separate window">
@@ -92,9 +107,10 @@ every edit can be undone.
   coatings. The sequential, ghost and stray-light solvers each own a class
   of light paths, so their results add up without counting any light twice.
 - **A reference behind every result.** A CPU double-precision tracer is the
-  reference. The Metal backend switches to double-float arithmetic where
-  single precision would miss the accuracy budget, and it is checked against
-  the reference on every sample design.
+  reference. The GPU backends (Metal on the Mac, CUDA on NVIDIA, WebGPU in
+  the browser) share one kernel specification and switch to double-float
+  arithmetic where single precision would miss the accuracy budget; each is
+  checked against the reference on every sample design.
 - **The GPU where it pays.** A calibrated cost model sends a job to the GPU
   only when it will finish sooner there. Small, latency-bound work stays on
   the CPU, and a content-hashed cache rebuilds only what an edit changed.
@@ -134,18 +150,19 @@ print(r.run_info["snapshot_hash"])
   [Stray light](docs/STRAY.md)
 - **Optimisation and tolerancing:** [Optimisation](docs/OPTIMIZATION.md)
 - **GPU and results:** [GPU](docs/GPU.md) · [Results](docs/RESULTS.md)
-- **Front ends:** [App](docs/APP.md) · [CLI](docs/CLI.md) ·
-  [Python](docs/PYTHON.md) · [FFI](docs/FFI.md)
+- **Front ends:** [macOS app](docs/APP.md) · [Windows app](docs/WINDOWS.md) ·
+  [Web](docs/WEB.md) · [CLI](docs/CLI.md) · [Python](docs/PYTHON.md) ·
+  [FFI](docs/FFI.md)
 - **Working on MKLight:** [Development](docs/DEVELOPMENT.md)
 
 ## Status
 
 MKLight is in active development and has not been released yet; for now it
 builds from source, as [Development](docs/DEVELOPMENT.md) describes. The
-macOS app and the Metal backend are the current focus. A native Windows app
-(WinUI 3, `apps/windows`, docs/WINDOWS.md) is being built in rounds. iPad and
-iPhone versions of the app, a Linux front end, and Vulkan and CUDA backends
-are planned.
+macOS app leads; the Windows app is close to parity, and the web version
+follows. GPU backends: Metal on the Mac, CUDA on NVIDIA (Windows; Linux
+untested), and WebGPU in the browser. iPad and iPhone versions of the app, a
+Linux front end, and a Vulkan backend for other GPUs are planned.
 
 ## License
 
