@@ -69,7 +69,7 @@
   <data name="Shell_Gpu_NoGpu" xml:space="preserve"><value>无 GPU：{0}</value></data>
   <data name="Shell_Gpu_Preparing" xml:space="preserve"><value>正在准备</value></data>
   <data name="Shell_Gpu_PreparingCount" xml:space="preserve"><value>正在准备（{0}/{1}）</value></data>
-  <data name="Shell_Gpu_ReadyFromCache" xml:space="preserve"><value>已就绪（{0} 个，从缓存加载）</value></data>
+  <data name="Shell_Gpu_ReadyFromCache" xml:space="preserve"><value>已就绪（{0} 个，从缓存载入）</value></data>
   <data name="Shell_Gpu_ReadyPrepared" xml:space="preserve"><value>已就绪（{0} 个，用时 {1:0.0} s）</value></data>
   <data name="Shell_Help_About" xml:space="preserve"><value>关于 MKLight</value></data>
   <data name="Shell_Help_Shortcuts" xml:space="preserve"><value>键盘快捷键</value></data>
@@ -81,7 +81,7 @@
   <data name="Shell_Import_HeadlineMany" xml:space="preserve"><value>有 {0} 项未能精确导入。请先逐项检查，再使用此设计。</value></data>
   <data name="Shell_Import_HeadlineOne" xml:space="preserve"><value>有 1 项未能精确导入。请先检查，再使用此设计。</value></data>
   <data name="Shell_Import_LineAt" xml:space="preserve"><value>第 {0} 行</value></data>
-  <data name="Shell_Import_LoadCatalog" xml:space="preserve"><value>加载玻璃库…</value></data>
+  <data name="Shell_Import_LoadCatalog" xml:space="preserve"><value>载入玻璃库…</value></data>
   <data name="Shell_Import_NotImported" xml:space="preserve"><value>未导入</value></data>
   <data name="Shell_Import_PlainGroup" xml:space="preserve"><value>{0}：</value></data>
   <data name="Shell_Import_PlainHeading" xml:space="preserve"><value>已导入 {0}（{1}）</value></data>
@@ -286,7 +286,7 @@
   <data name="Shell_Title_Undo" xml:space="preserve"><value>撤销（Ctrl+Z）</value></data>
   <data name="Shell_Title_UndoAction" xml:space="preserve"><value>撤销“{0}”（Ctrl+Z）</value></data>
   <data name="Shell_Toast_CatalogFailed" xml:space="preserve"><value>玻璃库：{0}</value></data>
-  <data name="Shell_Toast_CatalogLoaded" xml:space="preserve"><value>已加载玻璃库 {0}（{1} 种玻璃）。</value></data>
+  <data name="Shell_Toast_CatalogLoaded" xml:space="preserve"><value>已载入玻璃库 {0}（{1} 种玻璃）。</value></data>
   <data name="Shell_Toast_ImportFailed" xml:space="preserve"><value>导入：{0}</value></data>
   <data name="Shell_Toast_Imported" xml:space="preserve"><value>已导入 {0}：{1}。</value></data>
   <data name="Shell_Toast_NoSample" xml:space="preserve"><value>没有名为“{0}”的示例。</value></data>
@@ -573,7 +573,7 @@
   <data name="Lens_Section_Medium" xml:space="preserve"><value>间隔与介质</value></data>
   <data name="Lens_Section_Orders" xml:space="preserve"><value>级次</value></data>
   <data name="Lens_Section_Phase" xml:space="preserve"><value>相位</value></data>
-  <data name="Lens_Section_Placement" xml:space="preserve"><value>位置</value></data>
+  <data name="Lens_Section_Placement" xml:space="preserve"><value>位姿</value></data>
   <data name="Lens_Section_Polynomial" xml:space="preserve"><value>多项式</value></data>
   <data name="Lens_Section_QPolynomial" xml:space="preserve"><value>Q 多项式</value></data>
   <data name="Lens_Section_Rotation" xml:space="preserve"><value>旋转</value></data>
@@ -621,7 +621,7 @@
   <data name="Lens_System_AddWavelength" xml:space="preserve"><value>添加波长</value></data>
   <data name="Lens_System_CatalogBuiltin" xml:space="preserve"><value>内置</value></data>
   <data name="Lens_System_Catalogs" xml:space="preserve"><value>玻璃库</value></data>
-  <data name="Lens_System_CatalogsFooter" xml:space="preserve"><value>资料库中的玻璃库会加载到每个设计中；设计在保存时记录所用的玻璃库。可在“玻璃库”窗口中管理。</value></data>
+  <data name="Lens_System_CatalogsFooter" xml:space="preserve"><value>资料库中的玻璃库会载入到每个设计中；设计在保存时记录所用的玻璃库。可在“玻璃库”窗口中管理。</value></data>
   <data name="Lens_System_ConfigurationN" xml:space="preserve"><value>结构 {0}</value></data>
   <data name="Lens_System_Configurations" xml:space="preserve"><value>多重结构</value></data>
   <data name="Lens_System_Environment" xml:space="preserve"><value>环境</value></data>
@@ -710,7 +710,7 @@
   <data name="Lens_Undo_ChangeMaterial" xml:space="preserve"><value>更改材料</value></data>
   <data name="Lens_Undo_ChangeNamed" xml:space="preserve"><value>更改{0}</value></data>
   <data name="Lens_Undo_ChangeNotes" xml:space="preserve"><value>更改注释</value></data>
-  <data name="Lens_Undo_ChangePlacement" xml:space="preserve"><value>更改位置</value></data>
+  <data name="Lens_Undo_ChangePlacement" xml:space="preserve"><value>更改位姿</value></data>
   <data name="Lens_Undo_ChangePressure" xml:space="preserve"><value>更改气压</value></data>
   <data name="Lens_Undo_ChangePrimaryWavelength" xml:space="preserve"><value>更改主波长</value></data>
   <data name="Lens_Undo_ChangeRadius" xml:space="preserve"><value>更改曲率半径</value></data>
@@ -911,10 +911,10 @@
   <data name="Analysis_SettingName_delay_ms" xml:space="preserve"><value>延迟</value></data>
   <data name="Analysis_SettingName_detector" xml:space="preserve"><value>探测器</value></data>
   <data name="Analysis_SettingName_detector_aperture" xml:space="preserve"><value>探测器孔径</value></data>
-  <data name="Analysis_SettingName_detector_margin" xml:space="preserve"><value>探测器边距</value></data>
+  <data name="Analysis_SettingName_detector_margin" xml:space="preserve"><value>探测器裕量</value></data>
   <data name="Analysis_SettingName_detector_pixels" xml:space="preserve"><value>探测器像素</value></data>
   <data name="Analysis_SettingName_direction" xml:space="preserve"><value>方向</value></data>
-  <data name="Analysis_SettingName_edge_margin" xml:space="preserve"><value>边缘余量</value></data>
+  <data name="Analysis_SettingName_edge_margin" xml:space="preserve"><value>边缘裕量</value></data>
   <data name="Analysis_SettingName_enumeration" xml:space="preserve"><value>枚举方式</value></data>
   <data name="Analysis_SettingName_exclude_ghost_class" xml:space="preserve"><value>排除鬼像类别</value></data>
   <data name="Analysis_SettingName_extent" xml:space="preserve"><value>范围</value></data>
@@ -1192,7 +1192,7 @@
   <data name="Jobs_GlassMap_Title" xml:space="preserve"><value>玻璃图</value></data>
   <data name="Jobs_GlassSub_Activity" xml:space="preserve"><value>玻璃替换中</value></data>
   <data name="Jobs_GlassSub_ActivityCount" xml:space="preserve"><value>玻璃替换中 · {0}</value></data>
-  <data name="Jobs_GlassSub_AllLoaded" xml:space="preserve"><value>所有已加载</value></data>
+  <data name="Jobs_GlassSub_AllLoaded" xml:space="preserve"><value>所有已载入</value></data>
   <data name="Jobs_GlassSub_AlwaysInclude" xml:space="preserve"><value>始终包含</value></data>
   <data name="Jobs_GlassSub_Applied" xml:space="preserve"><value>已应用</value></data>
   <data name="Jobs_GlassSub_ApplyHelp" xml:space="preserve"><value>将预览的组合作为一步可撤销的操作应用</value></data>
@@ -1633,10 +1633,10 @@
   <data name="Jobs_Tolerance_Panel_Back" xml:space="preserve"><value>返回</value></data>
   <data name="Jobs_Tolerance_Panel_BackFocus" xml:space="preserve"><value>后焦距</value></data>
   <data name="Jobs_Tolerance_Panel_BackHelp" xml:space="preserve"><value>返回公差</value></data>
-  <data name="Jobs_Tolerance_Panel_Builds" xml:space="preserve"><value>{0} 个样件</value></data>
+  <data name="Jobs_Tolerance_Panel_Builds" xml:space="preserve"><value>{0} 个成品</value></data>
   <data name="Jobs_Tolerance_Panel_CancelHelp" xml:space="preserve"><value>结束运行并放弃结果</value></data>
   <data name="Jobs_Tolerance_Panel_Comp_Allowed" xml:space="preserve"><value>允许 ±{0} {1}</value></data>
-  <data name="Jobs_Tolerance_Panel_Comp_AtLimit" xml:space="preserve"><value>已达到限值：部分样件需要的调整超出允许范围。</value></data>
+  <data name="Jobs_Tolerance_Panel_Comp_AtLimit" xml:space="preserve"><value>已达到限值：部分成品需要的调整超出允许范围。</value></data>
   <data name="Jobs_Tolerance_Panel_Comp_Mean" xml:space="preserve"><value>蒙特卡罗均值</value></data>
   <data name="Jobs_Tolerance_Panel_Comp_MeanHelp" xml:space="preserve"><value>各次试验的均值，及其相对标称值的偏移</value></data>
   <data name="Jobs_Tolerance_Panel_Comp_MeanWithShift" xml:space="preserve"><value>{0} {1}（{2}）</value></data>
@@ -1653,7 +1653,7 @@
   <data name="Jobs_Tolerance_Panel_CouldNotSave" xml:space="preserve"><value>无法保存：{0}</value></data>
   <data name="Jobs_Tolerance_Panel_Criterion" xml:space="preserve"><value>判据</value></data>
   <data name="Jobs_Tolerance_Panel_CriterionHintFields" xml:space="preserve"><value>在设计的各视场和波长上，按其权重计算。</value></data>
-  <data name="Jobs_Tolerance_Panel_CriterionHintMerit" xml:space="preserve"><value>每个样件按优化页的评价函数评判。</value></data>
+  <data name="Jobs_Tolerance_Panel_CriterionHintMerit" xml:space="preserve"><value>每个成品按优化页的评价函数评判。</value></data>
   <data name="Jobs_Tolerance_Panel_CriterionHintMtf" xml:space="preserve"><value>评价函数设置中各频率处的 MTF，以与 1 的差值表示。</value></data>
   <data name="Jobs_Tolerance_Panel_CsvFileType" xml:space="preserve"><value>CSV（逗号分隔值）</value></data>
   <data name="Jobs_Tolerance_Panel_DefaultTolerancesButton" xml:space="preserve"><value>默认公差…</value></data>
@@ -1692,21 +1692,21 @@
   <data name="Jobs_Tolerance_Panel_Group_Expanded" xml:space="preserve"><value>已展开</value></data>
   <data name="Jobs_Tolerance_Panel_Group_Hide" xml:space="preserve"><value>隐藏 {0} 的公差</value></data>
   <data name="Jobs_Tolerance_Panel_Group_Show" xml:space="preserve"><value>显示 {1} 的 {0} 项公差</value></data>
-  <data name="Jobs_Tolerance_Panel_HistogramDashed" xml:space="preserve"><value>虚线：{0} % 的样件。</value></data>
+  <data name="Jobs_Tolerance_Panel_HistogramDashed" xml:space="preserve"><value>虚线：{0} % 的成品。</value></data>
   <data name="Jobs_Tolerance_Panel_HistogramHelp" xml:space="preserve"><value>单击柱条以列出其试验</value></data>
   <data name="Jobs_Tolerance_Panel_HistogramHint" xml:space="preserve"><value>单击直方图的柱条查看其试验；眼睛图标在窗口中重建该试验。</value></data>
   <data name="Jobs_Tolerance_Panel_HistogramHintSelected" xml:space="preserve"><value>眼睛图标在窗口中以只读方式重建试验。</value></data>
   <data name="Jobs_Tolerance_Panel_HistogramName" xml:space="preserve"><value>{0} 次蒙特卡罗试验的{1}分布</value></data>
   <data name="Jobs_Tolerance_Panel_HistogramSolid" xml:space="preserve"><value>实线：标称值 {0}。</value></data>
-  <data name="Jobs_Tolerance_Panel_HistogramSolidDashed" xml:space="preserve"><value>实线：标称值 {0}。虚线：{1} % 的样件。</value></data>
+  <data name="Jobs_Tolerance_Panel_HistogramSolidDashed" xml:space="preserve"><value>实线：标称值 {0}。虚线：{1} % 的成品。</value></data>
   <data name="Jobs_Tolerance_Panel_KeepTrials" xml:space="preserve"><value>保留试验</value></data>
   <data name="Jobs_Tolerance_Panel_KeepTrialsHelp" xml:space="preserve"><value>保留扰动和补偿器值的试验数（用于预览）</value></data>
   <data name="Jobs_Tolerance_Panel_KeptTrialsName" xml:space="preserve"><value>保留的试验数</value></data>
   <data name="Jobs_Tolerance_Panel_LastRunEstimate" xml:space="preserve"><value>上次运行：每次试验 {0}，因此 {1} 次试验约需 {2}。</value></data>
   <data name="Jobs_Tolerance_Panel_LastSurface" xml:space="preserve"><value>末面</value></data>
-  <data name="Jobs_Tolerance_Panel_LevelOfBuilds" xml:space="preserve"><value>{0} % 的样件</value></data>
+  <data name="Jobs_Tolerance_Panel_LevelOfBuilds" xml:space="preserve"><value>{0} % 的成品</value></data>
   <data name="Jobs_Tolerance_Panel_Levels" xml:space="preserve"><value>分位水平</value></data>
-  <data name="Jobs_Tolerance_Panel_LevelsHelp" xml:space="preserve"><value>样件的百分位数，取值 0…100</value></data>
+  <data name="Jobs_Tolerance_Panel_LevelsHelp" xml:space="preserve"><value>成品的百分位数，取值 0…100</value></data>
   <data name="Jobs_Tolerance_Panel_LevelsName" xml:space="preserve"><value>分位水平（百分比）</value></data>
   <data name="Jobs_Tolerance_Panel_LimitMinusName" xml:space="preserve"><value>{0} 下限</value></data>
   <data name="Jobs_Tolerance_Panel_LimitName" xml:space="preserve"><value>{0} 限值</value></data>
@@ -1714,13 +1714,13 @@
   <data name="Jobs_Tolerance_Panel_ListSeparator" xml:space="preserve"><value>、</value></data>
   <data name="Jobs_Tolerance_Panel_MenuButtonName" xml:space="preserve"><value>{0}：{1}</value></data>
   <data name="Jobs_Tolerance_Panel_MonteCarloGroup" xml:space="preserve"><value>蒙特卡罗</value></data>
-  <data name="Jobs_Tolerance_Panel_NoCompensators" xml:space="preserve"><value>无：每个样件按原样评判。</value></data>
+  <data name="Jobs_Tolerance_Panel_NoCompensators" xml:space="preserve"><value>无：每个成品按原样评判。</value></data>
   <data name="Jobs_Tolerance_Panel_NoTolerances" xml:space="preserve"><value>没有公差。生成一组默认公差，或用 + 添加。</value></data>
   <data name="Jobs_Tolerance_Panel_NoTrialInBar" xml:space="preserve"><value>此柱条中没有试验。</value></data>
   <data name="Jobs_Tolerance_Panel_Nominal" xml:space="preserve"><value>标称值</value></data>
   <data name="Jobs_Tolerance_Panel_PassLimit" xml:space="preserve"><value>合格限</value></data>
-  <data name="Jobs_Tolerance_Panel_PassLimitHelpHighest" xml:space="preserve"><value>样件允许的最高值；据此计算良率</value></data>
-  <data name="Jobs_Tolerance_Panel_PassLimitHelpLowest" xml:space="preserve"><value>样件允许的最低值；据此计算良率</value></data>
+  <data name="Jobs_Tolerance_Panel_PassLimitHelpHighest" xml:space="preserve"><value>成品允许的最高值；据此计算良率</value></data>
+  <data name="Jobs_Tolerance_Panel_PassLimitHelpLowest" xml:space="preserve"><value>成品允许的最低值；据此计算良率</value></data>
   <data name="Jobs_Tolerance_Panel_PassLimitNone" xml:space="preserve"><value>无</value></data>
   <data name="Jobs_Tolerance_Panel_PerTrial" xml:space="preserve"><value>每次试验 {0}</value></data>
   <data name="Jobs_Tolerance_Panel_PivotFirstVertex" xml:space="preserve"><value>首顶点（S{0}）</value></data>
@@ -1734,10 +1734,10 @@
   <data name="Jobs_Tolerance_Panel_PreviewCriterionNominal" xml:space="preserve"><value>判据 {0}（标称值 {1}）</value></data>
   <data name="Jobs_Tolerance_Panel_PreviewTrial" xml:space="preserve"><value>在窗口中预览试验 {0}：其扰动；不会应用</value></data>
   <data name="Jobs_Tolerance_Panel_PreviewTrialCompensated" xml:space="preserve"><value>在窗口中预览试验 {0}：其扰动及重新优化的补偿器；不会应用</value></data>
-  <data name="Jobs_Tolerance_Panel_PreviewWorseLimit" xml:space="preserve"><value>在窗口中预览该样件处于较差限值时的状态</value></data>
+  <data name="Jobs_Tolerance_Panel_PreviewWorseLimit" xml:space="preserve"><value>在窗口中预览该成品处于较差限值时的状态</value></data>
   <data name="Jobs_Tolerance_Panel_RangeFree" xml:space="preserve"><value>自由</value></data>
   <data name="Jobs_Tolerance_Panel_RangeOf" xml:space="preserve"><value>{0} 的范围</value></data>
-  <data name="Jobs_Tolerance_Panel_Rebuilding" xml:space="preserve"><value>正在引擎中重建该样件…</value></data>
+  <data name="Jobs_Tolerance_Panel_Rebuilding" xml:space="preserve"><value>正在引擎中重建该成品…</value></data>
   <data name="Jobs_Tolerance_Panel_RemoveCompensatorHelp" xml:space="preserve"><value>移除补偿器</value></data>
   <data name="Jobs_Tolerance_Panel_RowName" xml:space="preserve"><value>{0}，{1}</value></data>
   <data name="Jobs_Tolerance_Panel_RssPrediction" xml:space="preserve"><value>RSS 预测</value></data>
@@ -1823,7 +1823,7 @@
   <data name="Jobs_Tolerance_Session_FixMarked_Many" xml:space="preserve"><value>请先修正标红的 {0} 项公差。</value></data>
   <data name="Jobs_Tolerance_Session_FixMarked_One" xml:space="preserve"><value>请先修正标红的公差。</value></data>
   <data name="Jobs_Tolerance_Session_MinTrials" xml:space="preserve"><value>请至少运行 2 次蒙特卡罗试验。</value></data>
-  <data name="Jobs_Tolerance_Session_PreviewNoRay" xml:space="preserve"><value>引擎无法重建该样件：没有光线到达像面。</value></data>
+  <data name="Jobs_Tolerance_Session_PreviewNoRay" xml:space="preserve"><value>引擎无法重建该成品：没有光线到达像面。</value></data>
   <data name="Jobs_Tolerance_Session_Queued" xml:space="preserve"><value>排队中</value></data>
   <data name="Jobs_Tolerance_Views_BinTitle_Many" xml:space="preserve"><value>{1}–{2}{3} 中的 {0} 次试验</value></data>
   <data name="Jobs_Tolerance_Views_BinTitle_One" xml:space="preserve"><value>{1}–{2}{3} 中的 {0} 次试验</value></data>
@@ -2314,10 +2314,10 @@
   <data name="Glass_CatalogBar_NotesMany" xml:space="preserve"><value>{0} 条提示</value></data>
   <data name="Glass_CatalogBar_NotesOne" xml:space="preserve"><value>{0} 条提示</value></data>
   <data name="Glass_CatalogBar_NotesTip" xml:space="preserve"><value>引擎读取文件时发现的问题</value></data>
-  <data name="Glass_CatalogBar_Reload" xml:space="preserve"><value>重新加载</value></data>
+  <data name="Glass_CatalogBar_Reload" xml:space="preserve"><value>重新载入</value></data>
   <data name="Glass_CatalogBar_ReloadTip" xml:space="preserve"><value>重新读取玻璃库文件并列出变更</value></data>
   <data name="Glass_CatalogBar_RemoveFromDesignTip" xml:space="preserve"><value>从此设计中移除玻璃库（可用 Ctrl+Z 撤销）</value></data>
-  <data name="Glass_CatalogBar_RemoveFromLibraryTip" xml:space="preserve"><value>不再将此玻璃库加载到每个设计中（文件保留）</value></data>
+  <data name="Glass_CatalogBar_RemoveFromLibraryTip" xml:space="preserve"><value>不再将此玻璃库载入到每个设计中（文件保留）</value></data>
   <data name="Glass_Changes_Added" xml:space="preserve"><value>新增 {0} 种</value></data>
   <data name="Glass_Changes_Changed" xml:space="preserve"><value>变更 {0} 种</value></data>
   <data name="Glass_Changes_None" xml:space="preserve"><value>无变更</value></data>
@@ -2415,7 +2415,7 @@
   <data name="Glass_Menu_ExportAgf" xml:space="preserve"><value>导出为 AGF…</value></data>
   <data name="Glass_Menu_MoveToRecycleBin" xml:space="preserve"><value>移到回收站…</value></data>
   <data name="Glass_Menu_NewGlass" xml:space="preserve"><value>新建玻璃…</value></data>
-  <data name="Glass_Menu_ReloadFromDisk" xml:space="preserve"><value>从磁盘重新加载</value></data>
+  <data name="Glass_Menu_ReloadFromDisk" xml:space="preserve"><value>从磁盘重新载入</value></data>
   <data name="Glass_Menu_RemoveFromDesign" xml:space="preserve"><value>从设计中移除</value></data>
   <data name="Glass_Menu_RemoveFromLibrary" xml:space="preserve"><value>从资料库中移除</value></data>
   <data name="Glass_Menu_Rename" xml:space="preserve"><value>重命名…</value></data>
@@ -2435,7 +2435,7 @@
   <data name="Glass_Notes_Title" xml:space="preserve"><value>{0}：提示</value></data>
   <data name="Glass_Origin_Builtin" xml:space="preserve"><value>MKLight 内置</value></data>
   <data name="Glass_Origin_DesignOnly" xml:space="preserve"><value>仅此设计</value></data>
-  <data name="Glass_Origin_LibraryEveryDesign" xml:space="preserve"><value>资料库 · 加载到每个设计中</value></data>
+  <data name="Glass_Origin_LibraryEveryDesign" xml:space="preserve"><value>资料库 · 载入到每个设计中</value></data>
   <data name="Glass_Origin_LibraryInDesign" xml:space="preserve"><value>资料库 · 已记录在此设计中</value></data>
   <data name="Glass_Origin_User" xml:space="preserve"><value>你的玻璃 · 保存在应用的资料库中</value></data>
   <data name="Glass_Reload_Added" xml:space="preserve"><value>新增</value></data>
@@ -2446,14 +2446,14 @@
   <data name="Glass_Reload_Removed" xml:space="preserve"><value>移除</value></data>
   <data name="Glass_Reload_Same" xml:space="preserve"><value>文件中的玻璃与之前相同（{0} 种）。</value></data>
   <data name="Glass_Reload_Summary" xml:space="preserve"><value>{0}；{1} 种未变。</value></data>
-  <data name="Glass_Reload_Title" xml:space="preserve"><value>已重新加载 {0}</value></data>
+  <data name="Glass_Reload_Title" xml:space="preserve"><value>已重新载入 {0}</value></data>
   <data name="Glass_Rename_Button" xml:space="preserve"><value>重命名</value></data>
   <data name="Glass_Rename_Note" xml:space="preserve"><value>在玻璃引用中使用此玻璃库名称的设计会保留旧名称。</value></data>
   <data name="Glass_Rename_Title" xml:space="preserve"><value>重命名玻璃库</value></data>
   <data name="Glass_Scope_AllGlasses" xml:space="preserve"><value>全部玻璃</value></data>
   <data name="Glass_Scope_BuiltinGlasses" xml:space="preserve"><value>内置玻璃</value></data>
   <data name="Glass_Sidebar_AddCatalog" xml:space="preserve"><value>添加玻璃库…</value></data>
-  <data name="Glass_Sidebar_AddCatalogTip" xml:space="preserve"><value>资料库中的玻璃库和文件夹会加载到每个设计中</value></data>
+  <data name="Glass_Sidebar_AddCatalogTip" xml:space="preserve"><value>资料库中的玻璃库和文件夹会载入到每个设计中</value></data>
   <data name="Glass_Sidebar_AddToDesign" xml:space="preserve"><value>添加玻璃库到设计…</value></data>
   <data name="Glass_Sidebar_AddToDesignTip" xml:space="preserve"><value>在此设计中记录一个玻璃库文件</value></data>
   <data name="Glass_Sidebar_AllGlassesTip" xml:space="preserve"><value>设计可以使用的所有玻璃</value></data>
@@ -2502,11 +2502,11 @@
   <data name="Glass_Toast_Deleted" xml:space="preserve"><value>已删除 {0}。</value></data>
   <data name="Glass_Toast_ExportFailed" xml:space="preserve"><value>无法导出：{0}</value></data>
   <data name="Glass_Toast_Exported" xml:space="preserve"><value>已将 {0} 导出到 {1}。</value></data>
-  <data name="Glass_Toast_LoadFailed" xml:space="preserve"><value>无法加载 {0}：{1}</value></data>
+  <data name="Glass_Toast_LoadFailed" xml:space="preserve"><value>无法载入 {0}：{1}</value></data>
   <data name="Glass_Toast_MovedToRecycleBin" xml:space="preserve"><value>已将 {0} 移到回收站。</value></data>
   <data name="Glass_Toast_NotRegistered" xml:space="preserve"><value>{0} 不是已登记的资料库文件。</value></data>
-  <data name="Glass_Toast_ReloadFailed" xml:space="preserve"><value>无法重新加载 {0}：{1}</value></data>
-  <data name="Glass_Toast_Reloaded" xml:space="preserve"><value>已重新加载 {0}：{1}。</value></data>
+  <data name="Glass_Toast_ReloadFailed" xml:space="preserve"><value>无法重新载入 {0}：{1}</value></data>
+  <data name="Glass_Toast_Reloaded" xml:space="preserve"><value>已重新载入 {0}：{1}。</value></data>
   <data name="Glass_Toast_RemovedFolder" xml:space="preserve"><value>已从资料库中移除文件夹 {0}。</value></data>
   <data name="Glass_Toast_RemovedFromDesign" xml:space="preserve"><value>已从 {1} 中移除 {0}。在设计窗口中撤销即可恢复。</value></data>
   <data name="Glass_Toast_RemovedFromLibrary" xml:space="preserve"><value>已从资料库中移除 {0}。</value></data>
