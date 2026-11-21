@@ -22,8 +22,10 @@
 #   2. build the Swift package (apps/macos) in release;
 #   3. assemble MKLight.app: executable, Info.plist with the .mklight document
 #      type and the imported .zmx/.seq lens file types,
-#      SwiftPM resource bundles, precompiled viewport shaders when the
-#      Metal toolchain is installed (the app otherwise compiles the bundled
+#      SwiftPM resource bundles, the languages (the compiled string catalog
+#      and the engine text catalogs locales/<language>/engine.json, in
+#      Contents/Resources/<language>.lproj), precompiled viewport shaders when
+#      the Metal toolchain is installed (the app otherwise compiles the bundled
 #      shader source at run time);
 #   4. ad-hoc code signing.
 set -euo pipefail
@@ -150,6 +152,28 @@ for bundle in "$BIN_DIR"/*.bundle; do
   cp -R "$bundle" "$APP/Contents/Resources/"
 done
 
+# Languages (docs/APP.md, "Languages"). The app's text is looked up in the
+# main bundle, so the string catalog SwiftPM compiled into MKLightUI's
+# resource bundle goes into the app's own Resources, one <language>.lproj each;
+# English is the source language and needs no table. The engine text
+# catalogs go beside it. The lproj folders are also what macOS offers in the
+# per-app language setting and what localises the system menus.
+mkdir -p "$APP/Contents/Resources/en.lproj"
+for lproj in "$BIN_DIR"/MKLight_MKLightUI.bundle/Contents/Resources/*.lproj "$BIN_DIR"/MKLight_MKLightUI.bundle/*.lproj; do
+  [[ -d "$lproj" ]] || continue
+  mkdir -p "$APP/Contents/Resources/$(basename "$lproj")"
+  cp -R "$lproj"/. "$APP/Contents/Resources/$(basename "$lproj")/"
+done
+for catalog in "$ROOT"/locales/*/engine.json; do
+  [[ -f "$catalog" ]] || continue
+  lang="$(basename "$(dirname "$catalog")")"
+  mkdir -p "$APP/Contents/Resources/$lang.lproj"
+  cp "$catalog" "$APP/Contents/Resources/$lang.lproj/engine.json"
+done
+LANGUAGES=()
+for lproj in "$APP/Contents/Resources"/*.lproj; do LANGUAGES+=("$(basename "$lproj" .lproj)"); done
+echo "    languages: ${LANGUAGES[*]}"
+
 # Precompiled shaders (optional): needs the Metal toolchain component
 # (`xcodebuild -downloadComponent MetalToolchain`). Compiled with IEEE-safe
 # math, matching the runtime-compiled fallback.
@@ -245,6 +269,10 @@ cat > "$APP/Contents/Info.plist" <<PLIST
 </dict>
 </plist>
 PLIST
+/usr/libexec/PlistBuddy -c "Add :CFBundleLocalizations array" "$APP/Contents/Info.plist"
+for lang in "${LANGUAGES[@]}"; do
+  /usr/libexec/PlistBuddy -c "Add :CFBundleLocalizations: string $lang" "$APP/Contents/Info.plist"
+done
 plutil -lint "$APP/Contents/Info.plist" >/dev/null
 
 # App icon: apps/macos/Resources/AppIcon.icns, built from AppIcon.svg with

@@ -1,0 +1,1480 @@
+{
+  "sourceLanguage": "en",
+  "strings": {
+    "": {},
+    "% of builds": {},
+    "%@   %@": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "new",
+            "value": "%1$@   %2$@"
+          }
+        }
+      }
+    },
+    "%@ %% of the Monte Carlo trials reach %@ this value": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "new",
+            "value": "%1$@ %% of the Monte Carlo trials reach %2$@ this value"
+          }
+        }
+      }
+    },
+    "%@ %@": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "new",
+            "value": "%1$@ %2$@"
+          }
+        }
+      }
+    },
+    "%@ %@ · shown in the layout and the analyses, not applied": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "new",
+            "value": "%1$@ %2$@ · shown in the layout and the analyses, not applied"
+          }
+        }
+      }
+    },
+    "%@ (%lld)": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "new",
+            "value": "%1$@ (%2$lld)"
+          }
+        }
+      }
+    },
+    "%@ Reloaded": {},
+    "%@ could not be read": {},
+    "%@ glass": {},
+    "%@ glass (Glass Catalogs sets statuses)": {},
+    "%@ is undefined at every sample: %@.": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "new",
+            "value": "%1$@ is undefined at every sample: %2$@."
+          }
+        }
+      }
+    },
+    "%@ layout": {},
+    "%@ map": {},
+    "%@ map over the normalized field, %lld by %lld samples": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "new",
+            "value": "%1$@ map over the normalized field, %2$lld by %3$lld samples"
+          }
+        }
+      }
+    },
+    "%@ micrometers": {},
+    "%@ of the predicted change": {},
+    "%@ over the pupil": {},
+    "%@ settings": {},
+    "%@ versus image radius, %lld samples": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "new",
+            "value": "%1$@ versus image radius, %2$lld samples"
+          }
+        }
+      }
+    },
+    "%@ vs image radius": {},
+    "%@ µm": {},
+    "%@ · S%lld–%lld": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "new",
+            "value": "%1$@ · S%2$lld–%3$lld"
+          }
+        }
+      }
+    },
+    "%@ → %@": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "new",
+            "value": "%1$@ → %2$@"
+          }
+        }
+      }
+    },
+    "%@%@": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "new",
+            "value": "%1$@%2$@"
+          }
+        }
+      }
+    },
+    "%@, %@": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "new",
+            "value": "%1$@, %2$@"
+          }
+        }
+      }
+    },
+    "%@, %@ of %@": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "new",
+            "value": "%1$@, %2$@ of %3$@"
+          }
+        }
+      }
+    },
+    "%@, defocus %@, spot RMS %@, GEO %@": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "new",
+            "value": "%1$@, defocus %2$@, spot RMS %3$@, GEO %4$@"
+          }
+        }
+      }
+    },
+    "%@, surfaces %@": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "new",
+            "value": "%1$@, surfaces %2$@"
+          }
+        }
+      }
+    },
+    "%@. %@": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "new",
+            "value": "%1$@. %2$@"
+          }
+        }
+      }
+    },
+    "%@: %@": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "new",
+            "value": "%1$@: %2$@"
+          }
+        }
+      }
+    },
+    "%@: %@ of %@": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "new",
+            "value": "%1$@: %2$@ of %3$@"
+          }
+        }
+      }
+    },
+    "%@: %@ of the predicted change. Click to select the surface.": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "new",
+            "value": "%1$@: %2$@ of the predicted change. Click to select the surface."
+          }
+        }
+      }
+    },
+    "%@; %lld unchanged.": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "new",
+            "value": "%1$@; %2$lld unchanged."
+          }
+        }
+      }
+    },
+    "%lld": {},
+    "%lld Attempts Not Used": {},
+    "%lld Warnings": {},
+    "%lld issue%@": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "new",
+            "value": "%1$lld issue%2$@"
+          }
+        }
+      }
+    },
+    "%lld more rows": {},
+    "%lld nearest to the current glass": {},
+    "%lld of %@": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "new",
+            "value": "%1$lld of %2$@"
+          }
+        }
+      }
+    },
+    "%lld operand%@": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "new",
+            "value": "%1$lld operand%2$@"
+          }
+        }
+      }
+    },
+    "%lld override%@": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "new",
+            "value": "%1$lld override%2$@"
+          }
+        }
+      }
+    },
+    "%lld percent": {},
+    "%lld pixels": {},
+    "%lld planes": {},
+    "%lld px": {},
+    "%lld row%@ skipped": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "new",
+            "value": "%1$lld row%2$@ skipped"
+          }
+        }
+      }
+    },
+    "%lld terms, the most this type allows.": {},
+    "%lld times": {},
+    "%lld × %lld px": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "new",
+            "value": "%1$lld × %2$lld px"
+          }
+        }
+      }
+    },
+    "%lld λ": {},
+    "%lld. %@": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "new",
+            "value": "%1$lld. %2$@"
+          }
+        }
+      }
+    },
+    "%lld. %@%@": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "new",
+            "value": "%1$lld. %2$@%3$@"
+          }
+        }
+      }
+    },
+    "%lld: %@": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "new",
+            "value": "%1$lld: %2$@"
+          }
+        }
+      }
+    },
+    "+": {},
+    "0 to 1": {},
+    "0 to 100": {},
+    "1 Warning": {},
+    "1, 2": {},
+    "10, 30": {},
+    "3D View": {},
+    "50, 90, 97.7": {},
+    "= target, ≤ an upper bound, ≥ a lower bound": {},
+    "A Cauchy fit through nd, the F–C dispersion and ΔPg,F from the normal line (valid 0.35–1.1 µm unless set below).": {},
+    "A cylinder is a biconic with one section plane.": {},
+    "A design glass with a melt offset, dotted from its catalog position": {},
+    "A spectrum this control cannot edit: %@": {},
+    "A value of 0 leaves that kind out.": {},
+    "AGF formula coefficients, λ in µm.": {},
+    "Abbe number V": {},
+    "About radius bounds": {},
+    "Add": {},
+    "Add %@  %@": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "new",
+            "value": "Add %1$@  %2$@"
+          }
+        }
+      }
+    },
+    "Add Analysis": {},
+    "Add Catalog or Folder to Library…": {},
+    "Add Catalog to Design…": {},
+    "Add Catalog…": {},
+    "Add Compensator": {},
+    "Add Decenter or Tilt…": {},
+    "Add Field": {},
+    "Add Glass Catalog to Design…": {},
+    "Add Melt Offset…": {},
+    "Add Operand": {},
+    "Add Point": {},
+    "Add Row": {},
+    "Add Solve": {},
+    "Add Term": {},
+    "Add Wavelength": {},
+    "Add a glass or a catalog": {},
+    "Add a tolerance on a surface": {},
+    "Add an analysis pane": {},
+    "Add an analysis pane to this window": {},
+    "Add an operand after the selection": {},
+    "Add solves in the surface inspector: marginal or chief ray height on a thickness, angle or F-number on a curvature, pickups.": {},
+    "Add to Design…": {},
+    "Added": {},
+    "Aims every ray through the real stop instead of the paraxial entrance pupil. Slower, needed for wide fields and pupil aberration.": {},
+    "Air": {},
+    "Airy": {},
+    "Algorithm": {},
+    "All": {},
+    "All %lld messages from the engine": {},
+    "All (polychromatic)": {},
+    "All Glasses": {},
+    "All catalogs": {},
+    "All fields (weighted)": {},
+    "All loaded": {},
+    "Allow in Glass Substitution": {},
+    "Analyses": {},
+    "Analysis": {},
+    "Analysis Failed": {},
+    "Anamorphic": {},
+    "Annular": {},
+    "Aperture": {},
+    "Applied to the design. Undo with ⌘Z.": {},
+    "Apply Solves…": {},
+    "Apply the result as one step you can undo": {},
+    "Arms %lld": {},
+    "Attempt Not Used": {},
+    "Automatic": {},
+    "Availability": {},
+    "BFL x": {},
+    "BFL x / y": {},
+    "BFL y": {},
+    "Back to 632.8 nm": {},
+    "Back to the catalog glass": {},
+    "Back to the job's settings": {},
+    "Base": {},
+    "Base Shape": {},
+    "Beam Footprints in 3D": {},
+    "Beam footprints": {},
+    "Best glasses so far": {},
+    "Blur ⌀ (mm)": {},
+    "Bound curvatures as": {},
+    "Box scale: one for all cells, or one per field": {},
+    "CPU Reference (f64)": {},
+    "CPU reference (f64)": {},
+    "CPU · f64": {},
+    "Cancel": {},
+    "Cancel Running Analyses": {},
+    "Cancel this analysis (⌘.)": {},
+    "Cancelled": {},
+    "Candidate %lld": {},
+    "Candidates for Every Lens": {},
+    "Candidates for S%lld · %@": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "new",
+            "value": "Candidates for S%1$lld · %2$@"
+          }
+        }
+      }
+    },
+    "Candidates for surface %lld": {},
+    "Candidates for this lens only": {},
+    "Catalog": {},
+    "Catalog (%@)": {},
+    "Catalog's Status": {},
+    "Catalogs": {},
+    "Catalogs and folders in the library load into every design": {},
+    "Centroid": {},
+    "Centroid (piston and tilt removed)": {},
+    "Change Analysis": {},
+    "Changed": {},
+    "Chief ray": {},
+    "Chief ray (piston removed)": {},
+    "Chief ray angle (°)": {},
+    "Chief ray height on thickness": {},
+    "Choose": {},
+    "Choose Image…": {},
+    "Chromatic": {},
+    "Circular": {},
+    "Class": {},
+    "Clear": {},
+    "Click a bar of the histogram for its trials; the eye rebuilds a trial in the window.": {},
+    "Click a bar to list its trials": {},
+    "Click a glass to inspect it.": {},
+    "Click to center the patch; it snaps to the axis and the field points.": {},
+    "Click to switch between the source and the simulated image": {},
+    "Clipping": {},
+    "Close": {},
+    "Close %@": {},
+    "Close Pane": {},
+    "Coating": {},
+    "Coefficient (mm)": {},
+    "Coefficients": {},
+    "Collapsed, %lld tolerances": {},
+    "Color scale": {},
+    "Colors over the map's own range (small differences show), or over 0 to 1 (to compare designs)": {},
+    "Combinations": {},
+    "Combinations to try": {},
+    "Comment": {},
+    "Comparison": {},
+    "Compensators": {},
+    "Compiling the GPU's compute kernels, once after installing or updating MKLight or macOS. A GPU analysis started now waits only for the kernels it needs.": {},
+    "Compute On": {},
+    "Compute on": {},
+    "Computed": {},
+    "Computing": {},
+    "Configurations": {},
+    "Constraint": {},
+    "Controlled by a %@ solve": {},
+    "Convert to Custom": {},
+    "Copied": {},
+    "Copies the list as text": {},
+    "Copy Name": {},
+    "Copy Report": {},
+    "Copy Result as JSON": {},
+    "Copy Summary": {},
+    "Copy a summary as text, or save the tables as CSV": {},
+    "Copy this glass into a user catalog to edit it": {},
+    "Cost": {},
+    "Creates a new design from this sample": {},
+    "Criterion": {},
+    "Current merit": {},
+    "Curvature 1/mm": {},
+    "Curvatures as": {},
+    "Custom": {},
+    "DOE power, surface %lld": {},
+    "Damped least-squares iterations that re-optimize the shape for each glass combination": {},
+    "Data range": {},
+    "Daylight, 5500 K": {},
+    "Decenter, then tilt": {},
+    "Default": {},
+    "Default Tolerances": {},
+    "Default Tolerances…": {},
+    "Default: the engine generates the merit from a few choices. Custom: edit every operand.": {},
+    "Defaults": {},
+    "Defocus": {},
+    "Defocus from the image surface": {},
+    "Defocus the points were computed at": {},
+    "Delete": {},
+    "Delete Surface": {},
+    "Delete point": {},
+    "Delete row": {},
+    "Delete the selected operands (⌫)": {},
+    "Delete the selected surface (⌘⌫)": {},
+    "Delete the selected tolerances (⌫)": {},
+    "Delete this point": {},
+    "Delete this row": {},
+    "Delete “%@”?": {},
+    "Delete…": {},
+    "Density": {},
+    "Departure from base": {},
+    "Departure map from the base conic": {},
+    "Design": {},
+    "Design Has Errors": {},
+    "Design Not Ready": {},
+    "Design Wavelengths": {},
+    "Design changed": {},
+    "Design has errors": {},
+    "Design variables (%lld)": {},
+    "Designs that name the catalog in a glass reference keep the old name.": {},
+    "Designs that use its glasses will not find them.": {},
+    "Designs that use “%@” will not find it under the new name.": {},
+    "Diffraction": {},
+    "Diffraction Efficiency": {},
+    "Diffractive": {},
+    "Dimensionless": {},
+    "Disable": {},
+    "Dispersion": {},
+    "Display": {},
+    "Distortion": {},
+    "Distribution": {},
+    "Distribution of %lld Monte Carlo trials of the %@": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "new",
+            "value": "Distribution of %1$lld Monte Carlo trials of the %2$@"
+          }
+        }
+      }
+    },
+    "Done": {},
+    "Double-click a glass to use it for the selected surface": {},
+    "Drag to move the layout, or out of the window to open it in a window of its own": {},
+    "Drop a project or a .zmx or .seq lens file here to open it.": {},
+    "Drop this result; the design stays as it is": {},
+    "Dry run: the values the solves would set. Nothing has changed yet.": {},
+    "Dummy": {},
+    "Duplicate": {},
+    "Duplicate Pane": {},
+    "Duplicate the selected operands": {},
+    "Duplicate the selected tolerances (⌘D)": {},
+    "Duplicate to User Glasses…": {},
+    "Duplicate…": {},
+    "EFL x": {},
+    "EFL x %@, y %@ millimeters; BFL x %@, y %@; squeeze %@": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "new",
+            "value": "EFL x %1$@, y %2$@ millimeters; BFL x %3$@, y %4$@; squeeze %5$@"
+          }
+        }
+      }
+    },
+    "EFL x / y": {},
+    "EFL y": {},
+    "Each combination re-optimizes every curvature and the back focus.": {},
+    "Each tolerance alone at its limits, largest change first; the bar is its share of the predicted change. Click a row to select its surface; the eye previews that build.": {},
+    "Edit": {},
+    "Edit Merit and Variables…": {},
+    "Edit…": {},
+    "Efficiency of the trace order (%lld) at the design wavelength %@ µm.": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "new",
+            "value": "Efficiency of the trace order (%1$lld) at the design wavelength %2$@ µm."
+          }
+        }
+      }
+    },
+    "Element": {},
+    "Elliptical": {},
+    "Enable": {},
+    "Enabled": {},
+    "End Preview": {},
+    "End preview": {},
+    "End the preview": {},
+    "End the run and discard it": {},
+    "Ends the preview": {},
+    "Engine": {},
+    "Enter and read the bounds of radii as a radius window in mm, or as the curvature c = 1/R the optimizer uses": {},
+    "Environment": {},
+    "Equal energy: bins of equal energy, each sample at its centroid. Uniform: evenly spaced samples weighted by their energy.": {},
+    "Evaluated on the CPU f64 reference.": {},
+    "Evaluation failed: %@": {},
+    "Even Asphere": {},
+    "Every curvature and the back focus": {},
+    "Exclude from Glass Substitution": {},
+    "Exclude from glass substitution": {},
+    "Excluded from glass substitution": {},
+    "Expanded": {},
+    "Export": {},
+    "Export as AGF…": {},
+    "Exposure": {},
+    "F-number on curvature": {},
+    "Field": {},
+    "Field %lld": {},
+    "Field (%@)": {},
+    "Field (Hx, Hy)": {},
+    "Field Mapping": {},
+    "Field diagram": {},
+    "Field of view": {},
+    "Fields": {},
+    "Filter": {},
+    "First": {},
+    "First Order": {},
+    "First Surface": {},
+    "First Vertex (S%lld)": {},
+    "First plane": {},
+    "First-order data, engine and compute backend": {},
+    "Fit": {},
+    "Fit All": {},
+    "Fit Layout": {},
+    "Fit Lens": {},
+    "Fit the image and reset the pan": {},
+    "Fit the layout (⌘0, or double-click)": {},
+    "Fix the design's errors first.": {},
+    "Fix this parameter (remove the variable)": {},
+    "Fixed": {},
+    "Focus (mm)": {},
+    "Focus range": {},
+    "Focused near the sensor": {},
+    "Footprint on surface %lld, %lld rays pass, %lld clipped": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "new",
+            "value": "Footprint on surface %1$lld, %2$lld rays pass, %3$lld clipped"
+          }
+        }
+      }
+    },
+    "Footprints": {},
+    "Formula": {},
+    "Frequencies": {},
+    "From %@ to %@": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "new",
+            "value": "From %1$@ to %2$@"
+          }
+        }
+      }
+    },
+    "From 0 to %@ waves at a radius of %@ millimeters": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "new",
+            "value": "From 0 to %1$@ waves at a radius of %2$@ millimeters"
+          }
+        }
+      }
+    },
+    "GPU": {},
+    "GPU ready": {},
+    "GPU · f32": {},
+    "Generate a tolerance set for every element from a class of manufacture": {},
+    "Geometric": {},
+    "Ghost": {},
+    "Give the catalog glass a measured melt's Δn_d and ΔV_d": {},
+    "Glass": {},
+    "Glass Catalogs": {},
+    "Glass Catalogs…": {},
+    "Glass Map": {},
+    "Glass Substitution…": {},
+    "Glass map, %@ against Abbe number, %lld glasses": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "new",
+            "value": "Glass map, %1$@ against Abbe number, %2$lld glasses"
+          }
+        }
+      }
+    },
+    "Glass name": {},
+    "Glasses That May Change": {},
+    "Glasses of %@": {},
+    "Glasses within a window": {},
+    "Grid distortion, maximum %@ percent": {},
+    "He–Ne": {},
+    "Hide": {},
+    "Hide %@": {},
+    "Hide Layout": {},
+    "Hide Lens Data": {},
+    "Hide the beam footprints on the surfaces": {},
+    "Hide the settings": {},
+    "Hide the tolerances of %@": {},
+    "Higher-order paths were dropped by the path budget.": {},
+    "Hold it exactly (or as a bound) instead of weighting it in the merit": {},
+    "Hold the focal length": {},
+    "Hold the signed EFL_y / EFL_x at this value (anamorphic designs).": {},
+    "Horizontal divider": {},
+    "How Monte Carlo trials draw each perturbation within its limits": {},
+    "Hx": {},
+    "Hy": {},
+    "Ideal": {},
+    "Ideal (mm)": {},
+    "Ideal: every photon in the trace order. Kinoform: a continuous blazed relief. Multilevel: a staircase of N etch levels.": {},
+    "Image": {},
+    "Image radius (mm)": {},
+    "Image surface only": {},
+    "Import CSV…": {},
+    "Imported “%@”": {},
+    "In the design": {},
+    "Index": {},
+    "Index and Abbe offset applied": {},
+    "Index at the catalog's reference conditions": {},
+    "Index relative to air at the analysis temperature and pressure": {},
+    "Insert Surface": {},
+    "Insert Surface After": {},
+    "Insert Surface Before": {},
+    "Insert a surface before the selection (⇧⌘I)": {},
+    "Inspector": {},
+    "Inspector pages": {},
+    "Interaction": {},
+    "Internal absorption coefficient": {},
+    "Issues": {},
+    "It reached its limit: some builds need more adjustment than allowed.": {},
+    "Iteration": {},
+    "Iterations": {},
+    "Judge by the weakest field and direction at each frequency instead of the weighted mean.": {},
+    "K": {},
+    "Keep": {},
+    "Keep the EFL at its start value as a constraint, unless the merit has an EFL operand.": {},
+    "Keep the best": {},
+    "Kind": {},
+    "Kinoform": {},
+    "Last Surface": {},
+    "Last Vertex (S%lld)": {},
+    "Last plane": {},
+    "Lateral color (µm)": {},
+    "Lateral color versus field": {},
+    "Layout": {},
+    "Layout Not Available": {},
+    "Lens": {},
+    "Lens data": {},
+    "Levels": {},
+    "Library": {},
+    "Library catalogs load into every design; a design records the ones it uses when saved. Right-click a catalog to reload or remove it.": {},
+    "Limits": {},
+    "Line %lld: %@ — %@": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "new",
+            "value": "Line %1$lld: %2$@ — %3$@"
+          }
+        }
+      }
+    },
+    "List the worst trials instead of the selected bar's": {},
+    "Load Glass Catalog…": {},
+    "Loads a glass catalog and imports the file again with it": {},
+    "Log scale": {},
+    "MKLight": {},
+    "Make Aperture Stop": {},
+    "Make Asymmetric": {},
+    "Make Cylinder": {},
+    "Make Symmetric": {},
+    "Make primary": {},
+    "Margin": {},
+    "Marginal ray angle on curvature": {},
+    "Marginal ray height on thickness": {},
+    "Mark values with V in the lens data or the inspector to choose them; each gets sensible bounds you can edit here.": {},
+    "Max": {},
+    "Max %@ %%": {},
+    "Max angle (°)": {},
+    "Maximise the weakest field and direction at each frequency (minimax), instead of the field-weighted bounds.": {},
+    "Maximum chief-ray incidence against image radius; linear between points, held beyond the ends.": {},
+    "Melt glass": {},
+    "Melt offset": {},
+    "Melt offset Δn_d / ΔV_d on the catalog glass; edit it in the inspector": {},
+    "Melt offset Δn_d / ΔV_d: a replacement glass is installed without it": {},
+    "Meridional section or 3D view (⌘2, ⌘3)": {},
+    "Merit": {},
+    "Merit Function": {},
+    "Merit history, %lld iterations, logarithmic scale": {},
+    "Merit operands": {},
+    "Method": {},
+    "Min": {},
+    "Mirror": {},
+    "Mock engine: results are synthetic. The engine library is not linked into this build.": {},
+    "Mock engine: synthetic results": {},
+    "Mode": {},
+    "Model": {},
+    "Model glass: nd %@, Vd %@, ΔPg,F %@": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "new",
+            "value": "Model glass: nd %1$@, Vd %2$@, ΔPg,F %3$@"
+          }
+        }
+      }
+    },
+    "Monte Carlo": {},
+    "Monte Carlo: every tolerance drawn at random per trial; the same seed gives the same trials.": {},
+    "More": {},
+    "Move All Panels Here": {},
+    "Move Down": {},
+    "Move Up": {},
+    "Move down (⌥⌘↓)": {},
+    "Move these panels back into the main window": {},
+    "Move to Main Window": {},
+    "Move to New Window": {},
+    "Move to Trash": {},
+    "Move to Trash…": {},
+    "Move up (⌥⌘↑)": {},
+    "Move “%@” to the Trash?": {},
+    "Moves %@, pivot %@": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "new",
+            "value": "Moves %1$@, pivot %2$@"
+          }
+        }
+      }
+    },
+    "Multilevel": {},
+    "Name": {},
+    "New Analysis Pane": {},
+    "New Design": {},
+    "New Glass…": {},
+    "New User Catalog": {},
+    "New Window": {},
+    "New from Sample": {},
+    "Next": {},
+    "No Combinations": {},
+    "No Ghost Paths": {},
+    "No Glass Selected": {},
+    "No Glasses": {},
+    "No Issues": {},
+    "No Layout": {},
+    "No Limit": {},
+    "No Panels": {},
+    "No Solves": {},
+    "No Surface Selected": {},
+    "No Values": {},
+    "No combination could be evaluated.": {},
+    "No design open": {},
+    "No first-order data yet.": {},
+    "No issues": {},
+    "No layout": {},
+    "No operands. Add one with +, or convert the default merit.": {},
+    "No perturbation.": {},
+    "No preview": {},
+    "No tolerances. Use Default Tolerances, or add them one by one.": {},
+    "No trial in this bar.": {},
+    "No values": {},
+    "None": {},
+    "None: every trial is judged as built, without refocusing.": {},
+    "Not Available": {},
+    "Not rotationally symmetric. The engine's first-order data covers the y section.": {},
+    "Number of etch levels of the staircase (2 binary, 4, 8, 16 …).": {},
+    "Numbers of earlier operands, e.g. 1, 3": {},
+    "Object": {},
+    "Off": {},
+    "Off (true proportions)": {},
+    "Offset": {},
+    "Offset (µm)": {},
+    "On": {},
+    "One centroid for all wavelengths, so lateral color counts; otherwise one per wavelength.": {},
+    "Open in New Pane": {},
+    "Opens an MKLight project, or imports a .zmx or .seq lens file": {},
+    "Open…": {},
+    "Operand %lld, %@, %@": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "new",
+            "value": "Operand %1$lld, %2$@, %3$@"
+          }
+        }
+      }
+    },
+    "Operands": {},
+    "Optical Data": {},
+    "Optimize…": {},
+    "Order": {},
+    "Other wavelengths (%lld)": {},
+    "Output pixels per side": {},
+    "Outside the glass's data range: the index is extrapolated": {},
+    "Own candidates for this lens": {},
+    "P": {},
+    "PSF %lld × %@": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "new",
+            "value": "PSF %1$lld × %2$@"
+          }
+        }
+      }
+    },
+    "PSF grid nodes; the image is mapped bilinearly between them.": {},
+    "PV %@": {},
+    "P_g,F": {},
+    "Panel": {},
+    "Paraxial power φ = −m λ A₁ / (π r_norm²), added to the base's refractive power. A DOE's Abbe number is about −3.45.": {},
+    "Part of the patch lies outside the design's field.": {},
+    "Partial dispersion P": {},
+    "Pass at or above": {},
+    "Pass at or below": {},
+    "Patch Center": {},
+    "Patch center": {},
+    "Pattern exact": {},
+    "Peak to valley %@ over a radius of %@ millimeters": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "new",
+            "value": "Peak to valley %1$@ over a radius of %2$@ millimeters"
+          }
+        }
+      }
+    },
+    "Percentiles": {},
+    "Perturbation": {},
+    "Perturbations, largest share of their limit first": {},
+    "Petzval radius %@ mm": {},
+    "Phase (order +1)": {},
+    "Phase power of the trace order (base refractive power excluded)": {},
+    "Phase profile": {},
+    "Physical and Catalog Data": {},
+    "Pick on the Field…": {},
+    "Pin": {},
+    "Pin at its value (equal bounds): keep it as a variable but hold it": {},
+    "Pixel %@ × %@": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "new",
+            "value": "Pixel %1$@ × %2$@"
+          }
+        }
+      }
+    },
+    "Placement": {},
+    "Plane": {},
+    "Planes": {},
+    "Planes before and after focus": {},
+    "Planes from the first to the last; 3 shows before, on and after focus.": {},
+    "Power in x (plane in y)": {},
+    "Power in y (plane in x)": {},
+    "Preparing GPU": {},
+    "Preparing GPU %lld%%": {},
+    "Presets": {},
+    "Preview": {},
+    "Preview in the window": {},
+    "Preview this build in the window: the tolerance at its worse limit%@; not applied": {},
+    "Preview trial %lld in the window: its perturbations%@; not applied": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "new",
+            "value": "Preview trial %1$lld in the window: its perturbations%2$@; not applied"
+          }
+        }
+      }
+    },
+    "Previewed in the window": {},
+    "Previewing %@ · not applied": {},
+    "Previewing %@. The design has not changed.": {},
+    "Previews this build in the window": {},
+    "Primary": {},
+    "Primary wavelength": {},
+    "Put the catalog back in the library": {},
+    "Quantity": {},
+    "RMS %@": {},
+    "RMS %@ · GEO %@": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "new",
+            "value": "RMS %1$@ · GEO %2$@"
+          }
+        }
+      }
+    },
+    "Radius (mm)": {},
+    "Radius mm": {},
+    "Range": {},
+    "Range and Data": {},
+    "Range µm": {},
+    "Rank %lld, merit %@, glasses %@": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "new",
+            "value": "Rank %1$lld, merit %2$@, glasses %3$@"
+          }
+        }
+      }
+    },
+    "Ray Aiming": {},
+    "Ray Colors": {},
+    "Ray colors and sampling": {},
+    "Rays per Field": {},
+    "Re-optimize every curvature and the back focus": {},
+    "Re-optimize the design variables (%lld)": {},
+    "Re-optimized for every trial within ± the range around its nominal value; empty is free.": {},
+    "Re-optimized for this build%@": {},
+    "Read the catalog file again and list what changed": {},
+    "Real (mm)": {},
+    "Real ray aiming": {},
+    "Rebuilding the build in the engine…": {},
+    "Rectangular": {},
+    "Reference": {},
+    "Refract": {},
+    "Refractive index against wavelength": {},
+    "Refractive index n": {},
+    "Refractive index n_d or partial dispersion P_g,F against Abbe number V_d": {},
+    "Refractive index versus wavelength": {},
+    "Rel. illum.": {},
+    "Rel. irradiance": {},
+    "Reload": {},
+    "Reload from Disk": {},
+    "Remove": {},
+    "Remove %@": {},
+    "Remove Field": {},
+    "Remove Melt Offset": {},
+    "Remove Wavelength": {},
+    "Remove from Design": {},
+    "Remove from Library": {},
+    "Remove the catalog from this design (undo in the design window)": {},
+    "Remove this compensator": {},
+    "Remove this term": {},
+    "Remove this wavelength": {},
+    "Remove variable": {},
+    "Remove wavelength %lld": {},
+    "Removed": {},
+    "Rename": {},
+    "Rename Catalog": {},
+    "Rename…": {},
+    "Replace Tolerances": {},
+    "Replace every tolerance by this class's set for each element": {},
+    "Replace with Sample": {},
+    "Reset Panel Layout": {},
+    "Reset to Catalog Settings": {},
+    "Resolution": {},
+    "Response": {},
+    "Restore the default settings": {},
+    "Return after surface": {},
+    "Ringed: the candidate's glasses, labeled with their surfaces.": {},
+    "Rings %lld": {},
+    "Run": {},
+    "Run Analyses": {},
+    "Run Information": {},
+    "Run again (⌘R)": {},
+    "Run the job again with the same settings": {},
+    "S": {},
+    "S%@": {},
+    "S%lld": {},
+    "S%lld %@": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "new",
+            "value": "S%1$lld %2$@"
+          }
+        }
+      }
+    },
+    "Samples": {},
+    "Save": {},
+    "Save Monte Carlo Trials as CSV…": {},
+    "Save Sensitivity Table as CSV…": {},
+    "Scale": {},
+    "Search": {},
+    "Search operands": {},
+    "Searched on %@; merits reported on the CPU f64 reference.": {},
+    "Section View": {},
+    "Seed": {},
+    "Seidel": {},
+    "Seidel Coefficients Do Not Apply": {},
+    "Seidel coefficients per surface and their sum": {},
+    "Select": {},
+    "Select a bar to list its trials": {},
+    "Select a glass to see its data and use it.": {},
+    "Select a row in the lens data to edit its surface.": {},
+    "Select surface %lld": {},
+    "Select surface %lld in the lens table": {},
+    "Semi-diameter": {},
+    "Sensitivity": {},
+    "Sensitivity: each tolerance at its − and + limit alone (%lld evaluations), ranked, with the root-sum-square prediction.": {},
+    "Sensor CRA Limit": {},
+    "Sensor Response from CSV…": {},
+    "Sequential optical design": {},
+    "Series": {},
+    "Set Curve Samples above zero to plot the index over the glass's range.": {},
+    "Set Through Focus Samples to plot the merit against defocus.": {},
+    "Set this term to zero": {},
+    "Settings": {},
+    "Shape": {},
+    "Shape changes (%lld)": {},
+    "Shape iterations each": {},
+    "Show": {},
+    "Show %@": {},
+    "Show %lld more": {},
+    "Show Issues": {},
+    "Show Layout": {},
+    "Show Lens Data": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "显示镜头数据"
+          }
+        }
+      }
+    },
+    "Show Settings": {},
+    "Show Welcome Window": {},
+    "Show all %lld": {},
+    "Show another analysis in this pane": {},
+    "Show field %lld": {},
+    "Show in Finder": {},
+    "Show in Glass Catalogs": {},
+    "Show in Inspector": {},
+    "Show only some glasses": {},
+    "Show or hide the inspector (⌃⌘I)": {},
+    "Show the %lld tolerances of %@": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "new",
+            "value": "Show the %1$lld tolerances of %2$@"
+          }
+        }
+      }
+    },
+    "Show the 12 largest": {},
+    "Show the 6 largest": {},
+    "Show the beam footprint of every field on every surface": {},
+    "Show the design's validation issues (⌃⌘E)": {},
+    "Show the last results": {},
+    "Show the last run's results": {},
+    "Show the layout viewport (⌥⌘L)": {},
+    "Show the lens data (⌥⌘E)": {},
+    "Show the lens data or the layout, or add an analysis. Panels moved to other windows can come back here.": {},
+    "Show the optimized design in the layout and analyses before applying it": {},
+    "Show the running %@ job": {},
+    "Show the settings of this analysis": {},
+    "Show the terms that are zero": {},
+    "Simulated image, %lld by %lld pixels": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "new",
+            "value": "Simulated image, %1$lld by %2$lld pixels"
+          }
+        }
+      }
+    },
+    "Solve: %@": {},
+    "Solves": {},
+    "Solving…": {},
+    "Source": {},
+    "Source: %@": {},
+    "Source: %@ (missing)": {},
+    "Spacing": {},
+    "Spacing and Medium": {},
+    "Spectrum": {},
+    "Spectrum preview, %@": {},
+    "Sphere / Conic": {},
+    "Split position": {},
+    "Squeeze": {},
+    "Squeeze target": {},
+    "Squeeze, EFL y over EFL x": {},
+    "Start a custom merit from the operands the default generates for this design": {},
+    "Start again from the design's wavelengths and weights": {},
+    "Status": {},
+    "Stop": {},
+    "Stop keeps the best design so far. Cancel discards the run. You can close this panel; the job continues.": {},
+    "Stop keeps the combinations ranked so far. Cancel discards the run. You can close this panel; the search continues.": {},
+    "Stop keeps the sensitivities and trials completed so far. Cancel discards the run. You can close this panel; the job continues.": {},
+    "Stop loading this catalog into every design (the file stays)": {},
+    "Stopped: tolerances not evaluated are missing.": {},
+    "Stretch ×%lld": {},
+    "Substitution": {},
+    "Surface": {},
+    "Surface %lld": {},
+    "Surface %lld, aperture stop": {},
+    "Surface Mesh in 3D": {},
+    "Surface type": {},
+    "Surfaces": {},
+    "Symmetry": {},
+    "System wavelengths estimated with blaze m₀λ₀/λ, ignoring the relief material's dispersion. The engine traces the exact model.": {},
+    "TCE": {},
+    "Tabs": {},
+    "Target": {},
+    "Temperature": {},
+    "Term": {},
+    "Test fringes at": {},
+    "The PSF window and sample spacing this run used%@.": {},
+    "The best merit so far, as the search evaluates it.": {},
+    "The bounds are in %@": {},
+    "The catalog file's nd and Vd disagree with its dispersion coefficients. MKLight uses the coefficients.": {},
+    "The design as it is": {},
+    "The design as it is, with the compensators re-optimized": {},
+    "The design has errors": {},
+    "The design has no glass to replace.": {},
+    "The design now holds these solved values.": {},
+    "The design passed every check.": {},
+    "The element: the surfaces that move together": {},
+    "The engine checked the design and found nothing to report.": {},
+    "The engine could not evaluate this merit: %@": {},
+    "The engine evaluates the built-in pattern analytically at each pixel's exact source point (through the distortion), averaged over the pixel: no bitmap in between, so the blur is the lens's. The source shown here is drawn with the same definition.": {},
+    "The engine found no problems in the design": {},
+    "The enumeration found no ghost reaching the sensor.": {},
+    "The expected value over random builds: nominal plus every tolerance's expected change over its distribution (independent errors add their changes of the mean-square criterion)": {},
+    "The eye rebuilds a trial in the window, read-only.": {},
+    "The file has the same glasses as before (%lld).": {},
+    "The first trials keep their perturbations and compensator values for the trial list and the CSV export (at most 10 000). Any trial can be previewed.": {},
+    "The glass is removed from %@. Designs that use it will not find it. This cannot be undone.": {},
+    "The interferometer wavelength: one test fringe is half a wave of sag at it. Power and irregularity tolerances are counted in these fringes.": {},
+    "The layout is out of date. Click to update it.": {},
+    "The nearest glasses": {},
+    "The percentiles of the builds the results report, e.g. 50, 90, 97.7": {},
+    "The search's merit, including the penalty that holds the focal length; the result reports the merit itself.": {},
+    "The section is drawn %lld times taller than true proportions. Click to change or turn off.": {},
+    "The sensitivity evaluations moved it from %@ to +%@ %@ of ±%@ allowed": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "new",
+            "value": "The sensitivity evaluations moved it from %1$@ to +%2$@ %3$@ of ±%4$@ allowed"
+          }
+        }
+      }
+    },
+    "The shape has no real sag over ±%@ mm.": {},
+    "The simulated part of the field: a square around the patch center, as a fraction of the field. A smaller patch has finer pixels, so the blur shows.": {},
+    "The surface (a thickness is the gap after it)": {},
+    "The vertex the element tilts about; every element tolerance starting on S%lld uses it": {},
+    "The wavelengths this analysis runs with: the design's, or a spectrum sampled for this run only.": {},
+    "The yield is the share of Monte Carlo trials that pass.": {},
+    "Thickness limits (mm)": {},
+    "This design is not rotationally symmetric. The engine's first-order data covers the y section.": {},
+    "Through focus": {},
+    "Tilt, then decenter": {},
+    "Time limit": {},
+    "Toggle Variable": {},
+    "Tolerances": {},
+    "Tolerance…": {},
+    "Trace order at λ₀": {},
+    "Transmission": {},
+    "Trial %lld": {},
+    "Trial %lld, %@": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "new",
+            "value": "Trial %1$lld, %2$@"
+          }
+        }
+      }
+    },
+    "Trials": {},
+    "Try Again": {},
+    "Tungsten halogen, 3200 K": {},
+    "Two columns, wavelength (µm or nm) and response; a header line is optional.": {},
+    "Type": {},
+    "Uncoated": {},
+    "Undo": {},
+    "Unit": {},
+    "Unpin": {},
+    "Unpin: let the optimizer vary it again": {},
+    "Update": {},
+    "Update Automatically": {},
+    "Updates on request only. Click to update automatically.": {},
+    "Updates when the design changes. Click to update on request only.": {},
+    "Use for Surface": {},
+    "Use for Surface %lld": {},
+    "Use in glass substitution": {},
+    "User Glasses": {},
+    "Uses the candidates for every lens.": {},
+    "V": {},
+    "V_d": {},
+    "V_d ±": {},
+    "Value %@": {},
+    "Variable": {},
+    "Variable on a solved value: the optimizer leaves it out. Remove the variable or the solve.": {},
+    "Variable with bounds": {},
+    "Variable, pinned (equal bounds)": {},
+    "Variables": {},
+    "Vary": {},
+    "Vd": {},
+    "Vertical Stretch": {},
+    "Vertical divider": {},
+    "Vertical stretch": {},
+    "Viewport Unavailable": {},
+    "Violation": {},
+    "Warning": {},
+    "Wavefront (waves)": {},
+    "Wavelength": {},
+    "Wavelength (µm)": {},
+    "Wavelengths": {},
+    "Weakest field": {},
+    "Weight": {},
+    "Welcome to MKLight": {},
+    "What reading the catalog file reported: skipped, replaced or inconsistent glasses": {},
+    "Where analyses compute. Automatic uses the GPU where the engine has a path and it pays off.": {},
+    "Where the patch is centered: on the axis, at a design field point, or anywhere you pick on the field.": {},
+    "White-light centroid": {},
+    "With no glass ticked, every model glass (n_d, V_d) snaps to its nearest real glasses.": {},
+    "Worst Trials": {},
+    "X (%@)": {},
+    "X–Z Section": {},
+    "Y (%@)": {},
+    "Yield %@ at %@ %@": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "new",
+            "value": "Yield %1$@ at %2$@ %3$@"
+          }
+        }
+      }
+    },
+    "Your setting (the catalog says otherwise)": {},
+    "Your settings apply to every design and are not saved in projects. Glass substitution skips obsolete, special and excluded glasses by default.": {},
+    "Y–Z section, X–Z section or 3D view (⌘2, ⌥⌘2, ⌘3)": {},
+    "Z%lld": {},
+    "Zernike (%@, waves)": {},
+    "Zero Terms": {},
+    "Zoom in": {},
+    "Zoom out": {},
+    "allowed ±%@ %@": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "new",
+            "value": "allowed ±%1$@ %2$@"
+          }
+        }
+      }
+    },
+    "aperture stop": {},
+    "at bound": {},
+    "auto": {},
+    "band": {},
+    "bounded variable": {},
+    "catalog %@  %@": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "new",
+            "value": "catalog %1$@  %2$@"
+          }
+        }
+      }
+    },
+    "constraint": {},
+    "constraints not met": {},
+    "controlled by a %@ solve": {},
+    "cyc/mm": {},
+    "default": {},
+    "deg": {},
+    "h": {},
+    "hi": {},
+    "lo": {},
+    "log₁₀ merit": {},
+    "mm": {},
+    "model": {},
+    "n": {},
+    "n %@": {},
+    "n cat.": {},
+    "n_d": {},
+    "n_d %@  V_d %@": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "new",
+            "value": "n_d %1$@  V_d %2$@"
+          }
+        }
+      }
+    },
+    "n_d ±": {},
+    "nd": {},
+    "near focus": {},
+    "nm": {},
+    "none": {},
+    "off": {},
+    "offset %@": {},
+    "on": {},
+    "open": {},
+    "pinned": {},
+    "pinned variable": {},
+    "range %@ … %@, %lld without a value": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "new",
+            "value": "range %1$@ … %2$@, %3$lld without a value"
+          }
+        }
+      }
+    },
+    "residual %@": {},
+    "s": {},
+    "to": {},
+    "trials’ perturbations": {},
+    "variable": {},
+    "variable left out: a solve sets it": {},
+    "vertical ×%lld": {},
+    "x": {},
+    "x %@, y %@": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "new",
+            "value": "x %1$@, y %2$@"
+          }
+        }
+      }
+    },
+    "x (mm)": {},
+    "y": {},
+    "y (mm)": {},
+    "zero": {},
+    "±": {},
+    "±%@": {},
+    "µm": {},
+    "·": {},
+    "· %@": {},
+    "×": {},
+    "×%lld": {},
+    "Δ %@ at − / +": {},
+    "ΔP": {},
+    "ΔPg,F": {},
+    "Δn_d %@, ΔV_d %@ from the catalog values": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "new",
+            "value": "Δn_d %1$@, ΔV_d %2$@ from the catalog values"
+          }
+        }
+      }
+    },
+    "ΠR": {},
+    "α (1/mm)": {},
+    "λ": {},
+    "λ (µm)": {},
+    "λ µm": {},
+    "λ80 nm": {},
+    "–": {},
+    "… %lld more": {},
+    "… and %lld more": {},
+    "−": {},
+    "− / + limits": {}
+  },
+  "version": "1.0"
+}
