@@ -22,8 +22,8 @@ enum EngineChoice {
             return MockEngine()
             #else
             let alert = NSAlert()
-            alert.messageText = "The MKLight engine could not be started"
-            alert.informativeText = error.localizedDescription
+            alert.messageText = String(localized: "The MKLight engine could not be started")
+            alert.informativeText = EngineText.string(error.localizedDescription)
             alert.alertStyle = .critical
             alert.runModal()
             exit(1)

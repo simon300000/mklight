@@ -64,9 +64,9 @@ final class DesignSession {
 
     func title(of panel: PanelID) -> String {
         switch panel {
-        case .lensData: "Lens Data"
-        case .layout: "Layout"
-        case .analysis(let id): pane(id).map { AnalysisCatalog.title(of: $0.analysis) } ?? "Analysis"
+        case .lensData: String(localized: "Lens Data")
+        case .layout: String(localized: "Layout")
+        case .analysis(let id): pane(id).map { AnalysisCatalog.title(of: $0.analysis) } ?? String(localized: "Analysis")
         }
     }
 
@@ -269,7 +269,7 @@ final class DesignSession {
             setColoring: { [self] in window.rayColoring = $0 },
             backend: Binding(get: { [self] in workspace.backend }, set: { [self] in workspace.backend = $0 }),
             replaceWithSample: { [self] s in
-                design.replace(system: s, actionName: "Replace with Sample", undoManager: undoManager)
+                design.replace(system: s, actionName: String(localized: "Replace with Sample"), undoManager: undoManager)
                 window.selection = nil
                 window.fitRequest += 1
             })
@@ -296,7 +296,7 @@ final class DesignSession {
                 #if os(macOS)
                 if let t = self.mainWindow?.title, !t.isEmpty { return t }
                 #endif
-                return self.system.name.isEmpty ? "Design" : self.system.name
+                return self.system.name.isEmpty ? String(localized: "Design") : self.system.name
             },
             workspace: workspace,
             glassSurface: { [weak self] in
@@ -305,7 +305,7 @@ final class DesignSession {
             },
             assign: { [weak self] i, catalog, name in
                 guard let self else { return }
-                self.design.edit("Change Material", undoManager: self.undoManager) { s in
+                self.design.edit(String(localized: "Change Material"), undoManager: self.undoManager) { s in
                     guard s.surfaces.indices.contains(i) else { return }
                     s.surfaces[i].material = s.surfaces[i].material.replaced(by: .catalog(catalog: catalog, name: name))
                 }

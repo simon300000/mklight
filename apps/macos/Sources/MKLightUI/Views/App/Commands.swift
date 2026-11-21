@@ -76,10 +76,10 @@ struct MKLightCommands: Commands {
         CommandGroup(replacing: .undoRedo) {
             let _ = UndoMenuState.shared.revision
             let u = undo?.manager
-            Button(u.flatMap { $0.canUndo ? $0.undoMenuItemTitle : nil } ?? "Undo") { Self.perform(redo: false, u) }
+            Button(u.flatMap { $0.canUndo ? $0.undoMenuItemTitle : nil } ?? String(localized: "Undo")) { Self.perform(redo: false, u) }
                 .keyboardShortcut("z", modifiers: .command)
                 .disabled(!(u?.canUndo ?? false) && !Self.editingText)
-            Button(u.flatMap { $0.canRedo ? $0.redoMenuItemTitle : nil } ?? "Redo") { Self.perform(redo: true, u) }
+            Button(u.flatMap { $0.canRedo ? $0.redoMenuItemTitle : nil } ?? String(localized: "Redo")) { Self.perform(redo: true, u) }
                 .keyboardShortcut("z", modifiers: [.command, .shift])
                 .disabled(!(u?.canRedo ?? false) && !Self.editingText)
         }
@@ -160,10 +160,10 @@ struct MKLightCommands: Commands {
             .disabled(actions == nil)
         }
         CommandGroup(before: .sidebar) {
-            Button(actions?.showsLensData == true ? "Hide Lens Data" : "Show Lens Data") { actions?.toggleLensData() }
+            Button(actions?.showsLensData == true ? String(localized: "Hide Lens Data") : String(localized: "Show Lens Data")) { actions?.toggleLensData() }
                 .keyboardShortcut("e", modifiers: [.command, .option])
                 .disabled(actions == nil)
-            Button(actions?.showsLayout == false ? "Show Layout" : "Hide Layout") { actions?.toggleViewport() }
+            Button(actions?.showsLayout == false ? String(localized: "Show Layout") : String(localized: "Hide Layout")) { actions?.toggleViewport() }
                 .keyboardShortcut("l", modifiers: [.command, .option])
                 .disabled(actions == nil)
             Menu("Panel") {
@@ -172,7 +172,7 @@ struct MKLightCommands: Commands {
                     .disabled(panel == nil || actions?.focusedPanelAlone == true)
                 Button("Move to Main Window") { if let panel { actions?.moveToMainWindow(panel) } }
                     .disabled(panel == nil || actions?.focusedPanelDetached != true)
-                Button(panel == .lensData ? "Hide Lens Data" : panel == .layout ? "Hide Layout" : "Close Pane") { if let panel { actions?.closePanel(panel) } }
+                Button(panel == .lensData ? String(localized: "Hide Lens Data") : panel == .layout ? String(localized: "Hide Layout") : String(localized: "Close Pane")) { if let panel { actions?.closePanel(panel) } }
                     .disabled(panel == nil)
                 Divider()
                 Button("Reset Panel Layout") { actions?.resetLayout() }
