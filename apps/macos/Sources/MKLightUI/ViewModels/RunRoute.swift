@@ -19,37 +19,37 @@ public enum RunRoute {
         let line: String
         switch (chosen, rule) {
         case ("qualified_metal", "cost model"?):
-            line = "GPU by predicted time" + predicted(d)
+            line = String(localized: "GPU by predicted time") + predicted(d)
         case ("cpu_reference", "cost model"?):
             // The GPU is chosen only for a clear predicted advantage.
             if let (gpu, cpu) = times(d), gpu < cpu {
-                line = "CPU: the GPU's predicted gain is too small" + predicted(d)
+                line = String(localized: "CPU: the GPU's predicted gain is too small") + predicted(d)
             } else {
-                line = "CPU by predicted time" + predicted(d)
+                line = String(localized: "CPU by predicted time") + predicted(d)
             }
         case ("cpu_reference", "accuracy exclusion"?):
-            line = "CPU: this analysis is not accurate enough on the GPU"
+            line = String(localized: "CPU: this analysis is not accurate enough on the GPU")
         case ("cpu_reference", "no device share"?):
-            line = "CPU: the GPU takes no part of a run of this size and shape"
+            line = String(localized: "CPU: the GPU takes no part of a run of this size and shape")
         case ("cpu_reference", "known failure"?):
-            line = "CPU: this request already failed on the GPU"
+            line = String(localized: "CPU: this request already failed on the GPU")
         case ("qualified_metal", nil):
             switch d["reason"]?.string {
-            case "no cost calibration for this device": line = "GPU: no timing data for this device, so no prediction"
-            case "no calibration for this analysis": line = "GPU: no timing data for this analysis, so no prediction"
-            default: line = "GPU, without a prediction"
+            case "no cost calibration for this device": line = String(localized: "GPU: no timing data for this device, so no prediction")
+            case "no calibration for this analysis": line = String(localized: "GPU: no timing data for this analysis, so no prediction")
+            default: line = String(localized: "GPU, without a prediction")
             }
         default:
             return nil
         }
-        return d["repeated"]?.bool == true ? line + "; kept from the first identical request" : line
+        return d["repeated"]?.bool == true ? String(localized: "\(line); kept from the first identical request") : line
     }
 
     /// The tier of a run that was not design tier; `nil` for design tier.
     public static func tier(_ tier: Tier) -> String? {
         switch tier {
         case .design: nil
-        case .preview: "Preview: cheaper sampling, not for final decisions"
+        case .preview: String(localized: "Preview: cheaper sampling, not for final decisions")
         }
     }
 
@@ -68,19 +68,23 @@ public enum RunRoute {
             let took = a.elapsedMs > 0 ? duration(a.elapsedMs) : nil
             let title: String =
                 switch a.outcome {
-                case "failed": "\(name) failed" + (took.map { " after \($0)" } ?? "") + "; completed on the CPU"
-                case "skipped": "\(name) not tried: the same input already failed on it"
-                case "reference_completion": "\(name) path completed the result on the CPU" + (took.map { " (\($0))" } ?? "")
-                default: "\(name) not used (\(a.outcome.replacingOccurrences(of: "_", with: " ")))"
+                case "failed":
+                    took.map { String(localized: "\(name) failed after \($0); completed on the CPU") }
+                        ?? String(localized: "\(name) failed; completed on the CPU")
+                case "skipped": String(localized: "\(name) not tried: the same input already failed on it")
+                case "reference_completion":
+                    took.map { String(localized: "\(name) path completed the result on the CPU (\($0))") }
+                        ?? String(localized: "\(name) path completed the result on the CPU")
+                default: String(localized: "\(name) not used (\(a.outcome.replacingOccurrences(of: "_", with: " ")))")
                 }
-            return Attempt(id: k, title: title, reason: a.reason)
+            return Attempt(id: k, title: title, reason: EngineText.string(a.reason))
         }
     }
 
     /// `gpu:metal` → `GPU`; other ids as the engine names them.
     static func backendName(_ id: String) -> String {
         if id.hasPrefix("gpu:") { return "GPU" }
-        return id == "cpu_reference" ? "CPU reference" : id
+        return id == "cpu_reference" ? String(localized: "CPU reference") : id
     }
 
     /// Both predicted times (GPU, CPU) in ms, when the decision has them.
@@ -94,7 +98,7 @@ public enum RunRoute {
     /// ` (GPU predicted 12 ms, CPU 31 ms)`, or nothing without both times.
     private static func predicted(_ d: [String: JSONValue]) -> String {
         guard let (gpu, cpu) = times(d) else { return "" }
-        return " (GPU predicted \(duration(gpu)), CPU \(duration(cpu)))"
+        return String(localized: " (GPU predicted \(duration(gpu)), CPU \(duration(cpu)))")
     }
 
     /// `Fmt.duration`, with a time that rounds to nothing as `<1 ms`.

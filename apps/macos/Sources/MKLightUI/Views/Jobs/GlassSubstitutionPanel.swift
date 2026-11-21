@@ -27,7 +27,7 @@ struct GlassSubstitutionPanel: View {
             case .setup: setup
             case .running: running
             case .finished: results
-            case .failed(let why): JobFailure(title: "Glass Substitution Failed", reason: why)
+            case .failed(let why): JobFailure(title: String(localized: "Glass Substitution Failed"), reason: why)
             }
         } actions: {
             actions
@@ -47,7 +47,7 @@ struct GlassSubstitutionPanel: View {
 
     private var subtitle: String {
         let n = session.selected.count
-        return n == 0 ? "Snap model glasses to real glasses" : "\(n) glass\(n == 1 ? "" : "es") may change"
+        return n == 0 ? String(localized: "Snap model glasses to real glasses") : n == 1 ? String(localized: "1 glass may change") : String(localized: "\(n) glasses may change")
     }
 
     private var phase: Int {
@@ -106,7 +106,7 @@ struct GlassSubstitutionPanel: View {
                     }
                     LabeledContent("Time limit") {
                         HStack(spacing: 4) {
-                            OptionalNumberField(title: "Time limit", value: session.maxSeconds, prompt: "none", width: 80) { v in
+                            OptionalNumberField(title: String(localized: "Time limit"), value: session.maxSeconds, prompt: String(localized: "none"), width: 80) { v in
                                 session.maxSeconds = v.flatMap { $0 > 0 ? $0 : nil }
                             }
                             Text("s").foregroundStyle(.secondary)
@@ -157,8 +157,13 @@ struct GlassSubstitutionPanel: View {
 
     private var meritSummary: String {
         let m = design.merit
-        let base = m.mode == .custom ? "Custom merit, \(m.operands.count) operands" : "Default merit: " + m.defaults.summary
-        return base + (m.holdEFL ? ", focal length held." : ".")
+        let n = m.operands.count, summary = m.defaults.summary
+        switch (m.mode == .custom, m.holdEFL) {
+        case (true, true): return String(localized: "Custom merit, \(n) operands, focal length held.")
+        case (true, false): return String(localized: "Custom merit, \(n) operands.")
+        case (false, true): return String(localized: "Default merit: \(summary), focal length held.")
+        case (false, false): return String(localized: "Default merit: \(summary).")
+        }
     }
 
     private func slotRow(_ slot: GlassSlot) -> some View {
@@ -193,8 +198,8 @@ struct GlassSubstitutionPanel: View {
     private var running: some View {
         VStack(alignment: .leading, spacing: Space.l) {
             HStack(alignment: .firstTextBaseline, spacing: Space.xl) {
-                BigNumber(label: "Combinations", value: session.progress.map { "\($0.combinations) / \(session.maxCombinations)" } ?? "—")
-                BigNumber(label: "Best merit", value: session.progress.map { Fmt.short($0.bestMerit) } ?? "—")
+                BigNumber(label: String(localized: "Combinations"), value: session.progress.map { "\($0.combinations) / \(session.maxCombinations)" } ?? "—")
+                BigNumber(label: String(localized: "Best merit"), value: session.progress.map { Fmt.short($0.bestMerit) } ?? "—")
             }
             if let g = session.progress?.glasses, !g.isEmpty {
                 VStack(alignment: .leading, spacing: 2) {
@@ -271,8 +276,8 @@ struct GlassSubstitutionPanel: View {
 
     private func changeSummary(_ c: GlassCombination) -> String {
         let moved = c.movedChanges.count
-        var s = moved == 0 ? "shape unchanged" : "\(moved) variable\(moved == 1 ? "" : "s") re-optimized"
-        if c.cutShort { s += " · cut short" }
+        var s = moved == 0 ? String(localized: "shape unchanged") : moved == 1 ? String(localized: "1 variable re-optimized") : String(localized: "\(moved) variables re-optimized")
+        if c.cutShort { s += " · " + String(localized: "cut short") }
         return s
     }
 
@@ -286,8 +291,8 @@ struct GlassSubstitutionPanel: View {
                 if !session.applied { Text("Previewed in the window").font(.caption).foregroundStyle(.tint) }
             }
             HStack(alignment: .firstTextBaseline, spacing: Space.xl) {
-                BigNumber(label: "Merit now", value: Fmt.short(start))
-                BigNumber(label: "Candidate", value: Fmt.short(c.merit))
+                BigNumber(label: String(localized: "Merit now"), value: Fmt.short(start))
+                BigNumber(label: String(localized: "Candidate"), value: Fmt.short(c.merit))
             }
             Grid(alignment: .leading, horizontalSpacing: Space.s, verticalSpacing: 3) {
                 ForEach(c.glasses, id: \.surface) { g in
@@ -372,12 +377,18 @@ struct GlassSubstitutionPanel: View {
     }
 
     private func statusText(_ r: GlassSubstitutionResult) -> String {
-        var s = "\(r.combinations) combination\(r.combinations == 1 ? "" : "s") re-optimized"
-        if r.failed > 0 { s += ", \(r.failed) failed" }
-        s += ". "
-        if r.stopped { s += "Stopped early: the ranking so far. " }
-        if r.termination == "time_limit" { s += "The time limit ended the search. " }
-        if !session.applied { s += "Select a combination to preview it in the window." }
+        let n = r.combinations
+        var s: String
+        switch (n == 1, r.failed > 0) {
+        case (true, true): s = String(localized: "1 combination re-optimized, \(r.failed) failed.")
+        case (true, false): s = String(localized: "1 combination re-optimized.")
+        case (false, true): s = String(localized: "\(n) combinations re-optimized, \(r.failed) failed.")
+        case (false, false): s = String(localized: "\(n) combinations re-optimized.")
+        }
+        s += " "
+        if r.stopped { s += String(localized: "Stopped early: the ranking so far.") + " " }
+        if r.termination == "time_limit" { s += String(localized: "The time limit ended the search.") + " " }
+        if !session.applied { s += String(localized: "Select a combination to preview it in the window.") }
         return s
     }
 
@@ -388,18 +399,18 @@ struct GlassSubstitutionPanel: View {
         let cannotRun = workspace.snapshot == nil || !workspace.modelErrors.isEmpty || (session.selected.isEmpty && !slots.contains(where: \.isModel))
         switch session.state {
         case .setup:
-            bar.start("Find Glasses", disabled: cannotRun) { session.start(in: workspace, document: design) }
+            bar.start(String(localized: "Find Glasses"), disabled: cannotRun) { session.start(in: workspace, document: design) }
         case .failed:
             bar.failed(back: { session.reset(workspace) }, retryDisabled: cannotRun) {
                 session.start(in: workspace, document: design, fresh: true)
             }
         case .running(let p):
             bar.running(
-                p, detail: session.progress.map { "\($0.combinations) combinations" } ?? "Preparing", canStop: session.canStop,
-                stopHelp: "End now and keep the combinations ranked so far", cancel: session.cancel, stop: session.stop)
+                p, detail: session.progress.map { String(localized: "\($0.combinations) combinations") } ?? String(localized: "Preparing"), canStop: session.canStop,
+                stopHelp: String(localized: "End now and keep the combinations ranked so far"), cancel: session.cancel, stop: session.stop)
         case .finished:
             if session.applied {
-                bar.done(help: "Back to the glasses and the search settings") { session.reset(workspace) }
+                bar.done(help: String(localized: "Back to the glasses and the search settings")) { session.reset(workspace) }
             } else {
                 bar.review(discard: { session.reset(workspace) }, applyDisabled: session.selectedCombination?.system == nil) {
                     session.apply(to: design, workspace: workspace, undoManager: undoManager)
@@ -473,7 +484,7 @@ struct CandidateForm: View {
     var body: some View {
         VStack(alignment: .leading, spacing: Space.s) {
             LabeledContent("Catalogs") {
-                Menu(candidates.catalogs.isEmpty ? "All loaded" : candidates.catalogs.joined(separator: ", ")) {
+                Menu(candidates.catalogs.isEmpty ? String(localized: "All loaded") : candidates.catalogs.joined(separator: ", ")) {
                     Button("All loaded") { candidates.catalogs = [] }
                     Divider()
                     ForEach(catalogs) { c in
@@ -489,7 +500,7 @@ struct CandidateForm: View {
             LabeledContent("Status") {
                 Menu(statusTitle) {
                     ForEach(GlassCandidates.allStatuses, id: \.self) { s in
-                        Toggle(s.capitalized, isOn: Binding(
+                        Toggle(GlassCandidates.statusTitle(s), isOn: Binding(
                             get: { candidates.statuses.contains(s) },
                             set: { on in
                                 if on { candidates.statuses.insert(s) } else if candidates.statuses.count > 1 { candidates.statuses.remove(s) }
@@ -509,20 +520,20 @@ struct CandidateForm: View {
             case .window:
                 HStack {
                     Text("n_d ±").foregroundStyle(.secondary)
-                    OptionalNumberField(title: "n_d window", value: candidates.windowNd, width: 64) { candidates.windowNd = max($0 ?? 0.05, 1e-4) }
+                    OptionalNumberField(title: String(localized: "n_d window"), value: candidates.windowNd, width: 64) { candidates.windowNd = max($0 ?? 0.05, 1e-4) }
                     Text("V_d ±").foregroundStyle(.secondary)
-                    OptionalNumberField(title: "V_d window", value: candidates.windowVd, width: 56) { candidates.windowVd = max($0 ?? 5, 0.1) }
+                    OptionalNumberField(title: String(localized: "V_d window"), value: candidates.windowVd, width: 56) { candidates.windowVd = max($0 ?? 5, 0.1) }
                 }
                 .font(.callout)
             }
-            NameListField(title: "Always include", names: $candidates.include, prompt: "N-BK7, SCHOTT:F2")
-            NameListField(title: "Never use", names: $candidates.exclude, prompt: "names")
+            NameListField(title: String(localized: "Always include"), names: $candidates.include, prompt: "N-BK7, SCHOTT:F2")
+            NameListField(title: String(localized: "Never use"), names: $candidates.exclude, prompt: String(localized: "names"))
             DisclosureGroup("Limits", isExpanded: $showLimits) {
                 Grid(alignment: .leading, horizontalSpacing: Space.s, verticalSpacing: Space.xs) {
-                    limit("Min. transmission", \.minTransmission, help: "Internal transmission at the shortest wavelength through the lens's center thickness (0…1)")
-                    limit("Max. relative cost", \.maxRelativeCost, help: "Catalog relative cost")
-                    limit("Max. climate class", \.maxClimateClass, help: "Climate resistance class (CR)")
-                    limit("Max. stain class", \.maxStainClass, help: "Stain resistance class (FR)")
+                    limit(String(localized: "Min. transmission"), \.minTransmission, help: String(localized: "Internal transmission at the shortest wavelength through the lens's center thickness (0…1)"))
+                    limit(String(localized: "Max. relative cost"), \.maxRelativeCost, help: String(localized: "Catalog relative cost"))
+                    limit(String(localized: "Max. climate class"), \.maxClimateClass, help: String(localized: "Climate resistance class (CR)"))
+                    limit(String(localized: "Max. stain class"), \.maxStainClass, help: String(localized: "Stain resistance class (FR)"))
                 }
                 .padding(.top, Space.xs)
             }
@@ -531,7 +542,7 @@ struct CandidateForm: View {
     }
 
     private var statusTitle: String {
-        GlassCandidates.allStatuses.filter(candidates.statuses.contains).map(\.capitalized).joined(separator: ", ")
+        GlassCandidates.allStatuses.filter(candidates.statuses.contains).map(GlassCandidates.statusTitle).joined(separator: ", ")
     }
 
     private func limit(_ title: String, _ key: WritableKeyPath<GlassCandidates, Double?>, help: String) -> some View {
@@ -573,8 +584,8 @@ struct LayoutComparison: View {
 
     var body: some View {
         HStack(spacing: Space.s) {
-            figure("Before", before)
-            figure("Candidate", after)
+            figure(String(localized: "Before"), before)
+            figure(String(localized: "Candidate"), after)
         }
         .frame(height: 96)
     }
