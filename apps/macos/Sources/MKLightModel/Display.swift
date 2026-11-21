@@ -32,13 +32,20 @@ extension Surface {
 /// **One rule app-wide:** numbers are shown with a decimal point and no
 /// digit grouping, whatever the system region, as in lens prescriptions,
 /// glass catalogues and the engine's files (`1.5`, `12345.678`). The app's
-/// views run with `NumberDisplay.locale` (en_US_POSIX), so Swift Charts
+/// views run with `NumberDisplay.locale` (US POSIX numbers in the app's
+/// language, which SwiftUI also reads to pick the strings), so Swift Charts
 /// axes, `formatted()` and number fields follow the same rule; the
 /// `String(format:)` paths are locale-free. Typed numbers also accept a
 /// decimal comma (`LensValueParser.number`).
 public enum NumberDisplay {
-    /// The locale every view formats numbers with.
-    public static let locale = Locale(identifier: "en_US_POSIX")
+    /// The locale every view formats numbers with: `en_US_POSIX`, in the
+    /// app's language (`zh-Hans_US_POSIX`), so that the views' text stays
+    /// in that language.
+    public static let locale = locale(language: Bundle.main.preferredLocalizations.first ?? "en")
+
+    public static func locale(language: String) -> Locale {
+        Locale(identifier: "\(language)_US_POSIX")
+    }
 
     /// Up to `digits` significant digits, trailing zeros dropped, without
     /// exponent for ordinary magnitudes: `1.5`, `1.7552`, `0.0001`.

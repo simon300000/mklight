@@ -101,7 +101,7 @@ struct GlassSubstitutionPanel: View {
                     }
                     Text(session.algorithm.detail).hint()
                     LabeledContent("Combinations to try") {
-                        TextField("Combinations", value: $session.maxCombinations.atLeast(1), format: .number)
+                        TextField("Combinations", value: $session.maxCombinations.atLeast(1), format: .number.grouping(.never))
                             .labelsHidden().multilineTextAlignment(.trailing).frame(width: 80)
                     }
                     LabeledContent("Time limit") {
@@ -113,12 +113,12 @@ struct GlassSubstitutionPanel: View {
                         }
                     }
                     LabeledContent("Shape iterations each") {
-                        TextField("Iterations", value: $session.localIterations.atLeast(1), format: .number)
+                        TextField("Iterations", value: $session.localIterations.atLeast(1), format: .number.grouping(.never))
                             .labelsHidden().multilineTextAlignment(.trailing).frame(width: 80)
                     }
                     .help("Damped least-squares iterations that re-optimize the shape for each glass combination")
                     LabeledContent("Keep the best") {
-                        TextField("Keep", value: $session.topN.atLeast(1), format: .number)
+                        TextField("Keep", value: $session.topN.atLeast(1), format: .number.grouping(.never))
                             .labelsHidden().multilineTextAlignment(.trailing).frame(width: 80)
                     }
                 }

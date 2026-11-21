@@ -343,12 +343,12 @@ struct OptimizePanel: View {
                         ForEach(OptimizeSession.algorithms, id: \.id) { Text($0.title).tag($0.id) }
                     }
                     LabeledContent("Iterations") {
-                        TextField("Iterations", value: $session.maxIterations.atLeast(1), format: .number, prompt: Text("default"))
+                        TextField("Iterations", value: $session.maxIterations.atLeast(1), format: .number.grouping(.never), prompt: Text("default"))
                             .labelsHidden().multilineTextAlignment(.trailing).frame(width: 90)
                     }
                     if stochastic {
                         LabeledContent("Seed") {
-                            TextField("Seed", value: $session.seed.atLeast(0), format: .number)
+                            TextField("Seed", value: $session.seed.atLeast(0), format: .number.grouping(.never))
                                 .labelsHidden().multilineTextAlignment(.trailing).frame(width: 90)
                         }
                     }

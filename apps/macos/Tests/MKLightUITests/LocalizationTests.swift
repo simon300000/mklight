@@ -29,7 +29,7 @@ import Testing
 
     /// Format specifiers in order of argument, `%%` excluded.
     static func specifiers(_ s: String) -> [String] {
-        let pattern = /%(?:(\d+)\$)?[-+ #0]*\d*(?:\.\d+)?((?:ll|l|hh|h|z|q)?[@dDiuUxXoOfeEgGcCsSpaA])/
+        let pattern = /%(?:(\d+)\$)?[-+#0]*\d*(?:\.\d+)?((?:ll|l|hh|h|z|q)?[@dDiuUxXoOfeEgGcCsSpaA])/
         var out: [(Int, String)] = []
         var next = 1
         for m in s.replacing("%%", with: "").matches(of: pattern) {
