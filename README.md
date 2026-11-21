@@ -70,18 +70,29 @@ or tolerancing are previewed in every panel before you apply them, and
 every edit can be undone. It is the reference: features land here first.
 [App](docs/APP.md)
 
+<p align="center">
+  <img src="docs/images/separate-windows.png" alt="A Cooke triplet in the main window, with through-focus MTF and a relative illumination map in a separate window">
+</p>
+
 **Windows.** A native WinUI 3 app with Fluent design and Mica, a Direct3D
 3-D view, and CUDA on NVIDIA GPUs. It follows the Mac app feature for
 feature (panels and separate windows, the inspector, design jobs with
 previews, the glass library) and is close to parity.
 [Windows](docs/WINDOWS.md)
 
+<table>
+<tr>
+<td width="50%"><img src="docs/images/windows-main.png" alt="MKLight for Windows: a Double Gauss with lens data, layout, spot diagram, MTF, glass map and the surface inspector"></td>
+<td width="50%"><img src="docs/images/windows-3d-dark.png" alt="MKLight for Windows in the dark theme: a Double Gauss in the Direct3D 3-D view with ray fans and a wavefront map"></td>
+</tr>
+</table>
+
 **Web.** The same engine compiled to WebAssembly and run in a Web Worker,
 with WebGPU where the browser offers it, so nothing has to be installed.
 [Web](docs/WEB.md)
 
 <p align="center">
-  <img src="docs/images/separate-windows.png" alt="A Cooke triplet in the main window, with through-focus MTF and a relative illumination map in a separate window">
+  <img src="docs/images/web-main.png" alt="MKLight in the browser: a Double Gauss with lens data, layout, spot diagram, ray fan and the surface inspector">
 </p>
 
 ## A closer look
