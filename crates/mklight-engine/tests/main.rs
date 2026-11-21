@@ -7,6 +7,7 @@ mod analyses;
 mod cuda_calibration;
 mod gpu;
 mod graph;
+mod i18n;
 mod material_offsets;
 mod p11_routes;
 mod policies;

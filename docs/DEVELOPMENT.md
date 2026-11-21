@@ -31,7 +31,8 @@ system is in [ARCHITECTURE.md](ARCHITECTURE.md).
 | `crates/mklight-wasm`, `apps/web/engine` | The engine for the web: the wasm-bindgen API and the `@engine` worker and TypeScript client ([WEB.md](WEB.md)) |
 | `apps/macos` | The SwiftUI app ([apps/macos/README.md](../apps/macos/README.md) has its package layout) |
 | `docs` | The reference documents; `docs/history` keeps two measurement records they cite |
-| `scripts` | `build-macos.sh` builds the app, `build-wasm.sh` the web engine, `test.sh` runs the Rust tests |
+| `locales` | Translations of the engine's display text and the glossary ([I18N.md](I18N.md)) |
+| `scripts` | `build-macos.sh` builds the app, `build-wasm.sh` the web engine, `test.sh` runs the Rust tests, `i18n-check.sh` checks the engine translations |
 
 ARCHITECTURE.md has the diagram of how the crates depend on each other and
 what each one holds.
