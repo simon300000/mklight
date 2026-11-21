@@ -26,6 +26,8 @@ struct WindowActions {
     var setMode: (ViewportMode) -> Void
     var toggleViewport: () -> Void
     var toggleLensData: () -> Void
+    var toggleInspector: () -> Void
+    var showsInspector: Bool
     var showsLayout: Bool
     var showsLensData: Bool
     /// The panel the panel commands act on, if it is open.
@@ -89,7 +91,15 @@ struct MKLightCommands: Commands {
                 .keyboardShortcut("1", modifiers: [.command, .shift])
         }
         SidebarCommands()
-        InspectorCommands()
+        // The inspector toggle of InspectorCommands, written out: the
+        // system's reads "Show检查器" in Chinese.
+        CommandGroup(after: .sidebar) {
+            Button(actions?.showsInspector == true ? String(localized: "Hide Inspector") : String(localized: "Show Inspector")) {
+                actions?.toggleInspector()
+            }
+            .keyboardShortcut("i", modifiers: [.command, .control])
+            .disabled(actions == nil)
+        }
         CommandMenu("Lens") {
             Button("Insert Surface Before") { actions?.insertBefore() }
                 .keyboardShortcut("i", modifiers: [.command, .shift])

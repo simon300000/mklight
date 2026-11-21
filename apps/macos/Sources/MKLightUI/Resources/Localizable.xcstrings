@@ -9550,6 +9550,9 @@
         }
       }
     },
+    "Hide Inspector" : {
+
+    },
     "Hide Layout" : {
       "localizations" : {
         "zh-Hans" : {
@@ -16650,6 +16653,9 @@
           }
         }
       }
+    },
+    "Show Inspector" : {
+
     },
     "Show Issues" : {
       "localizations" : {

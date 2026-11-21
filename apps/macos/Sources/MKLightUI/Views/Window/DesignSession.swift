@@ -257,6 +257,8 @@ final class DesignSession {
             setMode: { [self] in window.viewportMode = $0 },
             toggleViewport: { [self] in toggle(.layout) },
             toggleLensData: { [self] in toggle(.lensData) },
+            toggleInspector: { [self] in window.showInspector.toggle() },
+            showsInspector: window.showInspector,
             showsLayout: arrangement.contains(.layout),
             showsLensData: arrangement.contains(.lensData),
             focusedPanel: panel.flatMap { arrangement.contains($0) ? $0 : nil },
