@@ -338,8 +338,8 @@ private struct LensTableHeader: View {
     var body: some View {
         HStack(alignment: .center, spacing: Space.s) {
             PanelHeaderTitle(
-                panel: .lensData, title: "Lens Data", symbol: "tablecells", subtitle: subtitle,
-                help: "Lens Data: the design's surfaces")
+                panel: .lensData, title: String(localized: "Lens Data"), symbol: "tablecells", subtitle: subtitle,
+                help: String(localized: "Lens Data: the design's surfaces"))
             Spacer(minLength: Space.xs)
             GlassEffectContainer(spacing: Space.s) {
                 HStack(spacing: Space.xs) {
