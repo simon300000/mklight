@@ -433,9 +433,19 @@ English is the source language. Simplified Chinese (`zh-Hans`) is the first tran
   * It is translated through the catalog shared by every app, `locales/<language>/engine.json`
     at the repository root (docs/I18N.md), shipped beside the app as `locales/…/engine.json`.
   * `EngineText.T` (MKLight.Model) looks up the exact English, and a miss shows the English.
-  * `EngineText.Diagnostic` fills a code's template from the issue's `args` and falls back
-    to the English message.
-  * Every place that displays engine text goes through it; keys and identifiers stay English.
+  * `EngineText.EnumLabel` gives a raw settings enum value's label, and a miss falls back to
+    the app's own formatting. The value written to settings stays the raw one.
+  * `EngineText.Issue` shows a coded issue (validation, or an invalid model's
+    `[code] path: message`) by its template with `{surface}` and `{path}`. The English message
+    stays visible as a second line.
+  * Text is translated only where it is displayed. Whatever the app parses, matches, writes
+    back or exports stays English, including the tolerance labels sent to the engine and
+    written to summaries (`ParamPath.EnglishLabel`).
+* **Labels the app derives** are app text, so they live in the resw, not the engine catalog:
+  * setting names without an engine title (`Analysis_SettingName_*`);
+  * analysis category titles (`Analysis_Category_*`);
+  * parameter labels built in MKLight.Model (`Model_Param_*`, through `ModelText`).
+  A test checks that every untitled setting and category the engine has today has a key.
 * **Not translated:** units, symbols, glass and catalog names, identifiers, file extensions,
   user data, and keyboard shortcuts. Numbers keep invariant formatting.
 * **Tests** (`Localization/LocalizationTests.cs`):
