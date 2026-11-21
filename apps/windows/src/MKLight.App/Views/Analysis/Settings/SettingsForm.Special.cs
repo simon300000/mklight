@@ -2,7 +2,9 @@ using System.Text.Json.Nodes;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Controls.Primitives;
+using MKLight.App.Support;
 using MKLight.App.Views.Analysis.Results.Readers;
+using MKLight.Model;
 using static MKLight.App.Views.Analysis.Settings.FormControls;
 
 namespace MKLight.App.Views.Analysis.Settings;
@@ -20,7 +22,7 @@ public sealed partial class SettingsForm
         if (slot.Field.Properties.FirstOrDefault(p => p.Name == "grid") is { } grid) row.Children.Add(Number(slot.Child(grid)));
         if (slot.Field.Properties.FirstOrDefault(p => p.Name == "rays") is { } rays)
         {
-            var label = Label("Rays", Help(rays));
+            var label = Label(Loc.S("Analysis_Settings_Rays"), Help(rays));
             label.Margin = new Thickness(6, 0, 0, 0);
             row.Children.Add(label);
             row.Children.Add(Number(slot.Child(rays)));
@@ -113,7 +115,7 @@ public sealed partial class SettingsForm
             var rows = TableSetting.Rows(slot.Current, columns, rowsAreArrays);
             var panel = new StackPanel { Spacing = 8, Width = Math.Clamp(80 * columns.Count + 70, 240, 520) };
             panel.Children.Add(Heading(SettingEntry.Label(f)));
-            if (f.Description.Length > 0) panel.Children.Add(Hint(f.Description));
+            if (f.Description.Length > 0) panel.Children.Add(Hint(EngineText.T(f.Description)));
             var host = new ContentControl { HorizontalContentAlignment = HorizontalAlignment.Left, IsTabStop = false };
             panel.Children.Add(host);
             void Commit()
@@ -137,15 +139,15 @@ public sealed partial class SettingsForm
                         Microsoft.UI.Xaml.Automation.AutomationProperties.SetName(box, SettingEntry.Label(col));
                         Put(g, box, r + 1, k);
                     }
-                    Put(g, IconButton("\uE738", "Delete this row", () => { rows.Remove(cells); Commit(); DispatcherQueue.TryEnqueue(Fill); }), r + 1, columns.Count);
+                    Put(g, IconButton("\uE738", Loc.S("Analysis_Settings_DeleteRow"), () => { rows.Remove(cells); Commit(); DispatcherQueue.TryEnqueue(Fill); }), r + 1, columns.Count);
                 }
-                var footer = Row(TextButton("\uE710", "Add Row", () =>
+                var footer = Row(TextButton("\uE710", Loc.S("Analysis_Settings_AddRow"), () =>
                 {
                     rows.Add(rows.Count > 0 ? rows[^1].Select(c => c?.DeepClone()).ToArray() : columns.Select(c => c.Default?.DeepClone()).ToArray());
                     Commit();
                     DispatcherQueue.TryEnqueue(Fill);
                 }));
-                if (rows.Count > 0) footer.Children.Add(TextButton("\uE894", "Clear", () => { rows.Clear(); Commit(); DispatcherQueue.TryEnqueue(Fill); }));
+                if (rows.Count > 0) footer.Children.Add(TextButton("\uE894", Loc.S("Analysis_Settings_Clear"), () => { rows.Clear(); Commit(); DispatcherQueue.TryEnqueue(Fill); }));
                 var p = new StackPanel { Spacing = 8 };
                 if (rows.Count > 0) p.Children.Add(g);
                 p.Children.Add(footer);
@@ -165,8 +167,8 @@ public sealed partial class SettingsForm
         {
             var rows = SensorLimit.Rows(slot.Current);
             var panel = new StackPanel { Spacing = 8, Width = 300 };
-            panel.Children.Add(Heading("Sensor CRA Limit"));
-            panel.Children.Add(Hint("Maximum chief-ray incidence against image radius; linear between points, held beyond the ends."));
+            panel.Children.Add(Heading(Loc.S("Analysis_Settings_SensorHeading")));
+            panel.Children.Add(Hint(Loc.S("Analysis_Settings_SensorHint")));
             var host = new ContentControl { HorizontalContentAlignment = HorizontalAlignment.Left, IsTabStop = false };
             panel.Children.Add(host);
             void Commit(bool refill)
@@ -187,16 +189,16 @@ public sealed partial class SettingsForm
             }
             void Fill()
             {
-                var g = TableGrid(["Radius (mm)", "Max angle (°)"], 96);
+                var g = TableGrid([Loc.S("Analysis_Settings_SensorRadiusHeader"), Loc.S("Analysis_Settings_SensorAngleHeader")], 96);
                 for (var r = 0; r < rows.Count; r++)
                 {
                     var i = r;
-                    Put(g, Box(() => rows[i].Radius, v => rows[i] = (v, rows[i].Angle), 0, "Radius"), r + 1, 0);
-                    Put(g, Box(() => rows[i].Angle, v => rows[i] = (rows[i].Radius, v), double.NegativeInfinity, "Maximum angle"), r + 1, 1);
-                    Put(g, IconButton("\uE738", "Delete this point", () => { rows.RemoveAt(i); Commit(true); }), r + 1, 2);
+                    Put(g, Box(() => rows[i].Radius, v => rows[i] = (v, rows[i].Angle), 0, Loc.S("Analysis_Settings_SensorRadius")), r + 1, 0);
+                    Put(g, Box(() => rows[i].Angle, v => rows[i] = (rows[i].Radius, v), double.NegativeInfinity, Loc.S("Analysis_Settings_SensorAngle")), r + 1, 1);
+                    Put(g, IconButton("\uE738", Loc.S("Analysis_Settings_DeletePoint"), () => { rows.RemoveAt(i); Commit(true); }), r + 1, 2);
                 }
-                var footer = Row(TextButton("\uE710", "Add Point", () => { rows.Add(SensorLimit.Next(rows)); Commit(true); }));
-                if (rows.Count > 0) footer.Children.Add(TextButton("\uE894", "No Limit", () => { rows.Clear(); Commit(true); }));
+                var footer = Row(TextButton("\uE710", Loc.S("Analysis_Settings_AddPoint"), () => { rows.Add(SensorLimit.Next(rows)); Commit(true); }));
+                if (rows.Count > 0) footer.Children.Add(TextButton("\uE894", Loc.S("Analysis_Settings_NoLimit"), () => { rows.Clear(); Commit(true); }));
                 var p = new StackPanel { Spacing = 8 };
                 if (rows.Count > 0) p.Children.Add(g);
                 p.Children.Add(footer);
@@ -215,7 +217,7 @@ public sealed partial class SettingsForm
         var v = slot.Current;
         var title = Json.Str(Json.At(v, "kind")) switch
         {
-            "buffer" => Results.ImageSourceImport.FileName(_settings) ?? "Image buffer",
+            "buffer" => Results.ImageSourceImport.FileName(_settings) ?? Loc.S("Analysis_Settings_ImageBuffer"),
             "path" => Path.GetFileName(Json.Str(Json.At(v, "path")) ?? ""),
             _ => ImageSourcePatterns.Title(Json.Str(Json.At(v, "pattern")) ?? "grid"),
         };
@@ -228,7 +230,7 @@ public sealed partial class SettingsForm
             menu.Items.Add(item);
         }
         menu.Items.Add(new MenuFlyoutSeparator());
-        var choose = new MenuFlyoutItem { Text = "Choose Image…" };
+        var choose = new MenuFlyoutItem { Text = Loc.S("Analysis_Settings_ChooseImage") };
         choose.Click += async (_, _) =>
         {
             if (PaneOf(this) is not { } pane || await Results.ImageSimulationFiles.PickAsync(this) is not { } path) return;
@@ -292,8 +294,8 @@ public sealed partial class SettingsForm
             props.FirstOrDefault(p => p.Name == name) ?? Synthetic(name, type, Json.At(slot.Field.Default, name), help, unit);
         var pupilDefault = Json.At(slot.Field.Default, "pupil");
         var pupil = slot.Child(Synthetic("pupil", "object", pupilDefault, ""));
-        var grid = Synthetic("grid", "integer", Json.At(pupilDefault, "grid") ?? 0, "Pupil grid samples per side; 0 chooses from the wavefront slope (64 to 1024).");
-        var rays = Synthetic("rays", "integer", Json.At(pupilDefault, "rays") ?? 65, "Rays traced per pupil diameter.");
+        var grid = Synthetic("grid", "integer", Json.At(pupilDefault, "grid") ?? 0, Loc.S("Analysis_Settings_OpticsPupilHelp"));
+        var rays = Synthetic("rays", "integer", Json.At(pupilDefault, "rays") ?? 65, Loc.S("Analysis_Settings_OpticsRaysHelp"));
 
         UIElement Labelled(string label, UIElement control, string help)
         {
@@ -304,12 +306,12 @@ public sealed partial class SettingsForm
         }
         var p = new StackPanel { Spacing = 6 };
         p.Children.Add(Row(
-            Labelled("PSF window", Number(slot.Child(Prop("psf_size", "integer", "PSF window samples per side (odd); 0 sizes it from the blur and diffraction."))), "PSF window samples per side"),
-            Labelled("Spacing", Number(slot.Child(Prop("psf_spacing_mm", "number", "PSF sample spacing; empty uses the smallest λ·F/# over the patch divided by 2.5.", "mm"))), "PSF sample spacing")));
+            Labelled(Loc.S("Analysis_Settings_OpticsPsfWindow"), Number(slot.Child(Prop("psf_size", "integer", Loc.S("Analysis_Settings_OpticsPsfWindowHelp")))), Loc.S("Analysis_Settings_OpticsPsfWindowTip")),
+            Labelled(Loc.S("Analysis_Settings_OpticsSpacing"), Number(slot.Child(Prop("psf_spacing_mm", "number", Loc.S("Analysis_Settings_OpticsSpacingHelp"), "mm"))), Loc.S("Analysis_Settings_OpticsSpacingTip"))));
         p.Children.Add(Row(
-            Labelled("Pupil", Number(pupil.Child(grid)), grid.Description),
-            Labelled("Rays", Number(pupil.Child(rays)), rays.Description)));
-        p.Children.Add(Labelled("PSF grid", Number(slot.Child(Prop("field_grid", "integer", "PSFs per side of the patch; the image is mapped between them."))), "PSFs per side of the patch"));
+            Labelled(Loc.S("Analysis_Settings_OpticsPupil"), Number(pupil.Child(grid)), grid.Description),
+            Labelled(Loc.S("Analysis_Settings_Rays"), Number(pupil.Child(rays)), rays.Description)));
+        p.Children.Add(Labelled(Loc.S("Analysis_Settings_OpticsPsfGrid"), Number(slot.Child(Prop("field_grid", "integer", Loc.S("Analysis_Settings_OpticsPsfGridHelp")))), Loc.S("Analysis_Settings_OpticsPsfGridTip")));
         return p;
     }
 

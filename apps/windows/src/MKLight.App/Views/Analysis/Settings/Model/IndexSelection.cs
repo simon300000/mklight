@@ -1,5 +1,6 @@
 using System.Globalization;
 using System.Text.Json.Nodes;
+using MKLight.App.Support;
 using MKLight.App.Views.Analysis.Results.Readers;
 
 namespace MKLight.App.Views.Analysis.Settings;
@@ -93,34 +94,35 @@ public sealed record IndexSelection(SelectionKind Kind, IReadOnlyList<int> Indic
     {
         switch (Kind)
         {
-            case SelectionKind.All: return "All";
-            case SelectionKind.Primary: return "Primary";
+            case SelectionKind.All: return Loc.S("Analysis_Settings_All");
+            case SelectionKind.Primary: return Loc.S("Analysis_Settings_Primary");
         }
         var known = options.Select(o => o.Index).ToHashSet();
-        if (options.Count > 0 && Indices.Count == options.Count && Indices.All(known.Contains)) return "All";
+        if (options.Count > 0 && Indices.Count == options.Count && Indices.All(known.Contains)) return Loc.S("Analysis_Settings_All");
         var titles = Indices.Select(i => ShortTitle(i, options)).ToList();
         if (titles.Count == 1) return titles[0];
         var joined = string.Join(", ", titles);
         if (titles.Count <= 3 && joined.Length <= 12) return joined;
         return options.Count > 0
-            ? FormattableString.Invariant($"{Indices.Count} of {options.Count}")
-            : FormattableString.Invariant($"{Indices.Count} selected");
+            ? Loc.F("Analysis_Settings_CountOf", Indices.Count, options.Count)
+            : Loc.F("Analysis_Settings_SelectedCount", Indices.Count);
     }
 
     /// <summary>The accessible value: "All 5", "Primary", "1, 3 of 5".</summary>
     public string AccessibleValue(IReadOnlyList<(int Index, string Title)> options) => Kind switch
     {
-        SelectionKind.All => options.Count > 0 ? FormattableString.Invariant($"All {options.Count}") : "All",
-        SelectionKind.Primary => "Primary",
-        _ => string.Join(", ", Indices.Select(i => ShortTitle(i, options)))
-            + (options.Count > 0 ? FormattableString.Invariant($" of {options.Count}") : ""),
+        SelectionKind.All => options.Count > 0 ? Loc.F("Analysis_Settings_AllCount", options.Count) : Loc.S("Analysis_Settings_All"),
+        SelectionKind.Primary => Loc.S("Analysis_Settings_Primary"),
+        _ => options.Count > 0
+            ? Loc.F("Analysis_Settings_CountOf", string.Join(", ", Indices.Select(i => ShortTitle(i, options))), options.Count)
+            : string.Join(", ", Indices.Select(i => ShortTitle(i, options))),
     };
 
     /// <summary>The short title of an option ("2" of "2: 14°", "0.5876 µm" of "0.5876 µm (primary)"); its number when unknown.</summary>
     public static string ShortTitle(int index, IReadOnlyList<(int Index, string Title)> options)
     {
         foreach (var (k, t) in options)
-            if (k == index) return t.Split(':')[0].Replace(" (primary)", "", StringComparison.Ordinal);
+            if (k == index) return t.Split(':')[0].Replace(Loc.F("Analysis_Settings_PrimarySuffix", ""), "", StringComparison.Ordinal);
         return (index + 1).ToString(CultureInfo.InvariantCulture);
     }
 

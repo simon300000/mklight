@@ -1,6 +1,8 @@
 using System.Globalization;
 using System.Text.Json.Nodes;
+using MKLight.App.Support;
 using MKLight.App.Views.Analysis.Results.Readers;
+using MKLight.Model;
 
 namespace MKLight.App.Views.Analysis.Settings;
 
@@ -61,27 +63,31 @@ public static class SettingEntry
 {
     // MARK: Labels
 
-    /// <summary>The row label: the title, or the name in words without its unit suffix ("Max Radius").</summary>
+    /// <summary>The row label: the title, or the name in words without its unit suffix ("Max Radius"); engine text, translated.</summary>
     public static string Label(SettingsField f)
     {
         var name = f.Name;
         foreach (var suffix in new[] { "_mm", "_um", "_deg" })
             if (name.EndsWith(suffix, StringComparison.Ordinal)) { name = name[..^suffix.Length]; break; }
-        var t = f.Title == f.Name ? Words(name) : f.Title;
+        var t = EngineText.T(f.Title == f.Name ? Words(name) : f.Title);
         return t.Length > 22 ? t[..20] + "…" : t;
     }
 
     static string Words(string snake) =>
         string.Join(' ', snake.Split('_', StringSplitOptions.RemoveEmptyEntries).Select(w => char.ToUpperInvariant(w[0]) + w[1..].ToLowerInvariant()));
 
-    /// <summary>An enum value's title: "FFT", "Primary Chief", "N-SK16" (names with capitals as written).</summary>
+    /// <summary>An enum value's title: "FFT", "Primary Chief", "N-SK16" (names with capitals as written); engine text, translated.</summary>
     public static string Title(JsonNode? v)
     {
         if (Json.Str(v) is not string s) return Json.Display(v);
-        if (s.Length <= 3) return s.ToUpperInvariant();
-        if (s.Any(char.IsUpper)) return s;
-        return Words(s);
+        if (s.Length <= 3) return EngineText.T(s.ToUpperInvariant());
+        if (s.Any(char.IsUpper)) return EngineText.T(s);
+        return EngineText.T(Words(s));
     }
+
+    /// <summary>Typed text that asks for the automatic value: "auto", or the word the boxes show for it.</summary>
+    public static bool IsAutoWord(string t) =>
+        t.StartsWith("auto", StringComparison.OrdinalIgnoreCase) || t.StartsWith(Loc.S("Analysis_Settings_AutoWord"), StringComparison.OrdinalIgnoreCase);
 
     // MARK: Numbers
 
@@ -102,7 +108,7 @@ public static class SettingEntry
     {
         var t = text.Trim();
         var typed = NumberText.Parse(t);
-        if (t.Length == 0 || (auto is not null && t.StartsWith("auto", StringComparison.OrdinalIgnoreCase)) || (auto == AutoSentinel.Zero && typed == 0))
+        if (t.Length == 0 || (auto is not null && IsAutoWord(t)) || (auto == AutoSentinel.Zero && typed == 0))
         {
             return auto switch
             {
@@ -160,7 +166,7 @@ public static class SettingEntry
     public static Edit? ParseList(string text, SettingsField f, bool integer, AutoSentinel? auto)
     {
         var t = text.Trim();
-        if (t.Length == 0 || (auto is not null && t.StartsWith("auto", StringComparison.OrdinalIgnoreCase)))
+        if (t.Length == 0 || (auto is not null && IsAutoWord(t)))
             return new Edit(f.Nullable && auto is null ? null : new JsonArray());
         if (Numbers(t) is not double[] v) return null;
         if (auto == AutoSentinel.Empty)
@@ -214,7 +220,7 @@ public static class SettingEntry
     public static (string? Before, string Between) PairWords(SettingsField f)
     {
         if (f.Name.EndsWith("center", StringComparison.Ordinal) || f.Name.EndsWith("centre", StringComparison.Ordinal)) return ("Hx", "Hy");
-        if (f.Name.Contains("range") || f.Description.Contains("[min, max]", StringComparison.OrdinalIgnoreCase)) return (null, "to");
+        if (f.Name.Contains("range") || f.Description.Contains("[min, max]", StringComparison.OrdinalIgnoreCase)) return (null, Loc.S("Analysis_Settings_PairTo"));
         return (null, "×");
     }
 
@@ -228,12 +234,12 @@ public static class SettingEntry
     {
         switch (Json.Str(Json.At(v, "type")))
         {
-            case "primary": return "Primary";
+            case "primary": return Loc.S("Analysis_Settings_Primary");
             case "index":
                 var i = Json.Int(Json.At(v, "index")) ?? 0;
                 return options.Where(o => o.Index == i).Select(o => Short(o.Title)).FirstOrDefault() ?? (i + 1).ToString(CultureInfo.InvariantCulture);
-            case "list": return $"{(Json.Arr(Json.At(v, "indices"))?.Count ?? 0).ToString(CultureInfo.InvariantCulture)} selected";
-            default: return "All";
+            case "list": return Loc.F("Analysis_Settings_SelectedCount", Json.Arr(Json.At(v, "indices"))?.Count ?? 0);
+            default: return Loc.S("Analysis_Settings_All");
         }
     }
 
@@ -256,9 +262,9 @@ public static class SettingEntry
     public static string IndexListTitle(JsonNode? v, IReadOnlyList<(int Index, string Title)> options)
     {
         var s = (Json.Arr(v) ?? []).Select(Json.Int).OfType<int>().ToHashSet();
-        if (s.Count == 0 || (s.Count == options.Count && options.Count > 0)) return "All";
+        if (s.Count == 0 || (s.Count == options.Count && options.Count > 0)) return Loc.S("Analysis_Settings_All");
         if (s.Count == 1 && options.FirstOrDefault(o => o.Index == s.First()) is { Title: not null } one) return Short(one.Title);
-        return FormattableString.Invariant($"{s.Count} of {options.Count}");
+        return Loc.F("Analysis_Settings_CountOf", s.Count, options.Count);
     }
 
     /// <summary>The index list with <paramref name="index"/> switched on or off, sorted.</summary>
@@ -275,14 +281,17 @@ public static class SettingEntry
     public static string ThroughFocusSummary(JsonNode? v, string? used)
     {
         var steps = Json.Int(Json.At(v, "steps")) ?? 3;
-        var planes = steps == 1 ? "1 plane" : FormattableString.Invariant($"{steps} planes");
+        var planes = Planes(steps);
         if (Json.Number(Json.At(v, "min")) is double a && Json.Number(Json.At(v, "max")) is double b)
         {
-            if (Math.Abs(a + b) <= 1e-12 * Math.Max(1, Math.Abs(b))) return $"±{Fmt.Short(b)} mm · {planes}";
-            return $"{Fmt.Short(a)} to {Fmt.Short(b)} mm · {planes}";
+            if (Math.Abs(a + b) <= 1e-12 * Math.Max(1, Math.Abs(b))) return Loc.F("Analysis_Settings_ThroughFocusSymmetric", Fmt.Short(b), planes);
+            return Loc.F("Analysis_Settings_ThroughFocusRange", Fmt.Short(a), Fmt.Short(b), planes);
         }
-        return used is not null ? $"{used} mm · {planes}" : $"Auto range · {planes}";
+        return used is not null ? Loc.F("Analysis_Settings_ThroughFocusUsed", used, planes) : Loc.F("Analysis_Settings_ThroughFocusAuto", planes);
     }
+
+    /// <summary>"1 plane", "3 planes".</summary>
+    public static string Planes(int steps) => steps == 1 ? Loc.S("Analysis_Settings_Planes_One") : Loc.F("Analysis_Settings_Planes_Many", steps);
 
     /// <summary>The through-focus object with new bounds or steps.</summary>
     public static JsonObject ThroughFocus(double? min, double? max, int steps) => new()

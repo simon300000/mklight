@@ -22,6 +22,303 @@
   <!-- area: Lens -->
   <!-- end area: Lens -->
   <!-- area: Analysis -->
+  <data name="Analysis_Csv_CannotRead" xml:space="preserve"><value>cannot be read</value></data>
+  <data name="Analysis_Csv_NotNumber" xml:space="preserve"><value>not a number</value></data>
+  <data name="Analysis_Csv_RepeatsWavelength" xml:space="preserve"><value>repeats a wavelength</value></data>
+  <data name="Analysis_Csv_ResponseNegative" xml:space="preserve"><value>response must not be negative</value></data>
+  <data name="Analysis_Csv_TwoColumns" xml:space="preserve"><value>needs two columns</value></data>
+  <data name="Analysis_Csv_WavelengthPositive" xml:space="preserve"><value>wavelength must be positive</value></data>
+  <data name="Analysis_ImageSim_ExtentLabel" xml:space="preserve"><value>{0} · {1} wide, pixel {2}</value></data>
+  <data name="Analysis_ImageSim_FieldPoint" xml:space="preserve"><value>Field {0} {1}</value></data>
+  <data name="Analysis_ImageSim_FullField" xml:space="preserve"><value>full field</value></data>
+  <data name="Analysis_ImageSim_FullSquare" xml:space="preserve"><value>full square</value></data>
+  <data name="Analysis_ImageSim_OnAxis" xml:space="preserve"><value>on axis</value></data>
+  <data name="Analysis_ImageSim_OnAxisTitle" xml:space="preserve"><value>On axis</value></data>
+  <data name="Analysis_ImageSim_PatternGrid" xml:space="preserve"><value>Grid</value></data>
+  <data name="Analysis_ImageSim_PatternSiemensStar" xml:space="preserve"><value>Siemens star</value></data>
+  <data name="Analysis_ImageSim_PatternSlantedEdge" xml:space="preserve"><value>Slanted edge</value></data>
+  <data name="Analysis_ImageSim_PatternTextChart" xml:space="preserve"><value>Text chart</value></data>
+  <data name="Analysis_More_AutoUpdate" xml:space="preserve"><value>Update Automatically</value></data>
+  <data name="Analysis_More_Close" xml:space="preserve"><value>Close Pane</value></data>
+  <data name="Analysis_More_CopyJson" xml:space="preserve"><value>Copy Result as JSON</value></data>
+  <data name="Analysis_More_Duplicate" xml:space="preserve"><value>Duplicate Pane</value></data>
+  <data name="Analysis_More_MoveToMain" xml:space="preserve"><value>Move to Main Window</value></data>
+  <data name="Analysis_More_MoveToNewWindow" xml:space="preserve"><value>Move to New Window</value></data>
+  <data name="Analysis_More_ShowSettings" xml:space="preserve"><value>Show Settings</value></data>
+  <data name="Analysis_Pane_AccessibleName" xml:space="preserve"><value>{0} pane</value></data>
+  <data name="Analysis_Pane_AccessibleNamePreview" xml:space="preserve"><value>{0} pane, {1}</value></data>
+  <data name="Analysis_Pane_AutoOffTip" xml:space="preserve"><value>Updates on request only. Click to update automatically.</value></data>
+  <data name="Analysis_Pane_AutoOnTip" xml:space="preserve"><value>Updates when the design changes. Click to update on request only.</value></data>
+  <data name="Analysis_Pane_CancelTip" xml:space="preserve"><value>Cancel this analysis</value></data>
+  <data name="Analysis_Pane_CopiedJson" xml:space="preserve"><value>Copied the result as JSON.</value></data>
+  <data name="Analysis_Pane_DefaultSettings" xml:space="preserve"><value>Default settings</value></data>
+  <data name="Analysis_Pane_DefaultSettingsManual" xml:space="preserve"><value>Default settings · manual</value></data>
+  <data name="Analysis_Pane_Defaults.Content" xml:space="preserve"><value>Defaults</value></data>
+  <data name="Analysis_Pane_Done.Content" xml:space="preserve"><value>Done</value></data>
+  <data name="Analysis_Pane_FailedCapsule" xml:space="preserve"><value>Update failed · {0}</value></data>
+  <data name="Analysis_Pane_FailedName" xml:space="preserve"><value>Update failed: {0}</value></data>
+  <data name="Analysis_Pane_FailedNote.Text" xml:space="preserve"><value>The result shown is from the last run that succeeded.</value></data>
+  <data name="Analysis_Pane_FailedRetry.Content" xml:space="preserve"><value>Try Again</value></data>
+  <data name="Analysis_Pane_FailedTip" xml:space="preserve"><value>The update failed: {0}</value></data>
+  <data name="Analysis_Pane_FailedTipNote" xml:space="preserve"><value>The result shown is from the last run that succeeded. Click for details.</value></data>
+  <data name="Analysis_Pane_FailedTitle.Text" xml:space="preserve"><value>The update failed</value></data>
+  <data name="Analysis_Pane_HeaderName" xml:space="preserve"><value>{0} header</value></data>
+  <data name="Analysis_Pane_HideSettingsTip" xml:space="preserve"><value>Hide the settings</value></data>
+  <data name="Analysis_Pane_More" xml:space="preserve"><value>More</value></data>
+  <data name="Analysis_Pane_OutOfDate" xml:space="preserve"><value>Out of date</value></data>
+  <data name="Analysis_Pane_OutOfDateSummary" xml:space="preserve"><value>Out of date · {0}</value></data>
+  <data name="Analysis_Pane_PreviewLabel" xml:space="preserve"><value>Previewing {0} · not applied</value></data>
+  <data name="Analysis_Pane_PreviewNote" xml:space="preserve"><value> · not applied</value></data>
+  <data name="Analysis_Pane_PreviewTip" xml:space="preserve"><value>This pane shows {0}, a candidate that is not applied to the design. Apply it or end the preview in the design job.</value></data>
+  <data name="Analysis_Pane_PreviewTitle" xml:space="preserve"><value>Previewing {0}</value></data>
+  <data name="Analysis_Pane_RunDetailsTip" xml:space="preserve"><value>Run details</value></data>
+  <data name="Analysis_Pane_RunTip" xml:space="preserve"><value>Run again (F5)</value></data>
+  <data name="Analysis_Pane_Settings" xml:space="preserve"><value>Settings</value></data>
+  <data name="Analysis_Pane_ShowSettingsTip" xml:space="preserve"><value>Show the settings of this analysis</value></data>
+  <data name="Analysis_Pane_StageProgress" xml:space="preserve"><value>{0} · {1}%</value></data>
+  <data name="Analysis_Pane_StaleChanged" xml:space="preserve"><value>Design changed</value></data>
+  <data name="Analysis_Pane_StaleChangedReason" xml:space="preserve"><value>This result is from an earlier design.</value></data>
+  <data name="Analysis_Pane_StaleErrors" xml:space="preserve"><value>The design has errors</value></data>
+  <data name="Analysis_Pane_StaleErrorsReason" xml:space="preserve"><value>Fix them to update this result.</value></data>
+  <data name="Analysis_Pane_StaleUpdate.Content" xml:space="preserve"><value>Update</value></data>
+  <data name="Analysis_Pane_TitleHelp" xml:space="preserve"><value>Choose another analysis for this pane. Drag to move the pane.</value></data>
+  <data name="Analysis_Pane_TitleTip" xml:space="preserve"><value>{0}: {1}</value></data>
+  <data name="Analysis_Pane_TitleTipDrag" xml:space="preserve"><value>Drag to move the pane, or out of the window to open it in a window of its own.</value></data>
+  <data name="Analysis_Placeholder_Cancelled" xml:space="preserve"><value>Cancelled</value></data>
+  <data name="Analysis_Placeholder_Computing" xml:space="preserve"><value>Computing…</value></data>
+  <data name="Analysis_Placeholder_DesignHasErrors" xml:space="preserve"><value>Design Has Errors</value></data>
+  <data name="Analysis_Placeholder_Failed" xml:space="preserve"><value>Analysis Failed</value></data>
+  <data name="Analysis_Placeholder_FailedText" xml:space="preserve"><value>The analysis failed.</value></data>
+  <data name="Analysis_Placeholder_Name" xml:space="preserve"><value>{0}. {1}</value></data>
+  <data name="Analysis_Placeholder_NotAvailable" xml:space="preserve"><value>Not Available</value></data>
+  <data name="Analysis_Placeholder_NotAvailableText" xml:space="preserve"><value>This engine build does not provide this analysis.</value></data>
+  <data name="Analysis_Placeholder_NotDrawn" xml:space="preserve"><value>Result Not Drawn</value></data>
+  <data name="Analysis_Placeholder_NotDrawnText" xml:space="preserve"><value>This result could not be drawn: {0}</value></data>
+  <data name="Analysis_Placeholder_NotReady" xml:space="preserve"><value>Design Not Ready</value></data>
+  <data name="Analysis_Placeholder_NotRunYet" xml:space="preserve"><value>Not Run Yet</value></data>
+  <data name="Analysis_Placeholder_OnRequest" xml:space="preserve"><value>This analysis runs on request.</value></data>
+  <data name="Analysis_Placeholder_Run" xml:space="preserve"><value>Run</value></data>
+  <data name="Analysis_Placeholder_ShowIssues" xml:space="preserve"><value>Show Issues</value></data>
+  <data name="Analysis_Placeholder_TryAgain" xml:space="preserve"><value>Try Again</value></data>
+  <data name="Analysis_Placeholder_Waiting" xml:space="preserve"><value>Waiting for the design</value></data>
+  <data name="Analysis_Remedy_ImageGridHelp" xml:space="preserve"><value>The image grid is set to {0}. The automatic grid holds the blur and its diffraction wings, then runs again.</value></data>
+  <data name="Analysis_Remedy_ImageGridTitle" xml:space="preserve"><value>Size the Image Grid Automatically ({0} → auto)</value></data>
+  <data name="Analysis_Remedy_PsfWindowHelp" xml:space="preserve"><value>The PSF window is set to {0} samples. The automatic window holds the blur and its diffraction wings, then runs again.</value></data>
+  <data name="Analysis_Remedy_PsfWindowTitle" xml:space="preserve"><value>Size the PSF Window Automatically ({0} → auto)</value></data>
+  <data name="Analysis_Remedy_PupilHelp" xml:space="preserve"><value>The pupil grid is set to {0}. Automatic sampling picks a grid fine enough for the wavefront&apos;s slope (64 to 1024), then runs again.</value></data>
+  <data name="Analysis_Remedy_PupilTitle" xml:space="preserve"><value>Sample the Pupil Automatically (grid {0} → auto)</value></data>
+  <data name="Analysis_Route_AttemptCompleted" xml:space="preserve"><value>{0} path completed the result on the CPU</value></data>
+  <data name="Analysis_Route_AttemptCompletedTook" xml:space="preserve"><value>{0} path completed the result on the CPU ({1})</value></data>
+  <data name="Analysis_Route_AttemptFailed" xml:space="preserve"><value>{0} failed; completed on the CPU</value></data>
+  <data name="Analysis_Route_AttemptFailedAfter" xml:space="preserve"><value>{0} failed after {1}; completed on the CPU</value></data>
+  <data name="Analysis_Route_AttemptNotUsed" xml:space="preserve"><value>{0} not used ({1})</value></data>
+  <data name="Analysis_Route_AttemptSkipped" xml:space="preserve"><value>{0} not tried: the same input already failed on it</value></data>
+  <data name="Analysis_Route_Automatic" xml:space="preserve"><value>Automatic</value></data>
+  <data name="Analysis_Route_CpuAccuracy" xml:space="preserve"><value>CPU: this analysis is not accurate enough on the GPU</value></data>
+  <data name="Analysis_Route_CpuBelowBreakEven" xml:space="preserve"><value>CPU: a run below the measured break-even</value></data>
+  <data name="Analysis_Route_CpuKnownFailure" xml:space="preserve"><value>CPU: this request already failed on the GPU</value></data>
+  <data name="Analysis_Route_CpuMeasuredGainSmall" xml:space="preserve"><value>CPU: the GPU&apos;s measured gain is too small{0}</value></data>
+  <data name="Analysis_Route_CpuNoMeasuredGain" xml:space="preserve"><value>CPU: no measured GPU gain for this analysis</value></data>
+  <data name="Analysis_Route_CpuNoShare" xml:space="preserve"><value>CPU: the GPU takes no part of a run of this size and shape</value></data>
+  <data name="Analysis_Route_CpuPredicted" xml:space="preserve"><value>CPU by predicted time{0}</value></data>
+  <data name="Analysis_Route_CpuPredictedGainSmall" xml:space="preserve"><value>CPU: the GPU&apos;s predicted gain is too small{0}</value></data>
+  <data name="Analysis_Route_CpuReference" xml:space="preserve"><value>CPU reference</value></data>
+  <data name="Analysis_Route_EngineDefault" xml:space="preserve"><value>{0} (the engine&apos;s default)</value></data>
+  <data name="Analysis_Route_Gpu" xml:space="preserve"><value>GPU ({0})</value></data>
+  <data name="Analysis_Route_GpuAboveBreakEven" xml:space="preserve"><value>GPU: a run above the measured break-even</value></data>
+  <data name="Analysis_Route_GpuMeasured" xml:space="preserve"><value>GPU by measured timings{0}</value></data>
+  <data name="Analysis_Route_GpuNoAnalysisTimings" xml:space="preserve"><value>GPU: no timing data for this analysis, so no prediction</value></data>
+  <data name="Analysis_Route_GpuNoDeviceTimings" xml:space="preserve"><value>GPU: no timing data for this device, so no prediction</value></data>
+  <data name="Analysis_Route_GpuNoPrediction" xml:space="preserve"><value>GPU, without a prediction</value></data>
+  <data name="Analysis_Route_GpuPredicted" xml:space="preserve"><value>GPU by predicted time{0}</value></data>
+  <data name="Analysis_Route_Predicted" xml:space="preserve"><value> (GPU predicted {0}, CPU {1})</value></data>
+  <data name="Analysis_Route_PreviewTier" xml:space="preserve"><value>Preview: cheaper sampling, not for final decisions</value></data>
+  <data name="Analysis_Route_Repeated" xml:space="preserve"><value>{0}; kept from the first identical request</value></data>
+  <data name="Analysis_RunDetails_AllMessages" xml:space="preserve"><value>All {0} messages from the engine</value></data>
+  <data name="Analysis_RunDetails_AttemptsNotUsed_Many" xml:space="preserve"><value>{0} Attempts Not Used</value></data>
+  <data name="Analysis_RunDetails_AttemptsNotUsed_One" xml:space="preserve"><value>Attempt Not Used</value></data>
+  <data name="Analysis_RunDetails_ComputedOn" xml:space="preserve"><value>Computed on</value></data>
+  <data name="Analysis_RunDetails_Engine" xml:space="preserve"><value>Engine</value></data>
+  <data name="Analysis_RunDetails_Field" xml:space="preserve"><value>Field {0}</value></data>
+  <data name="Analysis_RunDetails_FieldPoint" xml:space="preserve"><value>field {0}</value></data>
+  <data name="Analysis_RunDetails_Heading" xml:space="preserve"><value>Run Information</value></data>
+  <data name="Analysis_RunDetails_ItemName" xml:space="preserve"><value>{0}: {1}</value></data>
+  <data name="Analysis_RunDetails_Precision" xml:space="preserve"><value>Precision</value></data>
+  <data name="Analysis_RunDetails_PrecisionF32" xml:space="preserve"><value>f32 (GPU, qualified)</value></data>
+  <data name="Analysis_RunDetails_PrecisionF64" xml:space="preserve"><value>f64 reference</value></data>
+  <data name="Analysis_RunDetails_RanOnCpu" xml:space="preserve"><value>Ran on the CPU</value></data>
+  <data name="Analysis_RunDetails_RanOnCpuTip" xml:space="preserve"><value>Ran on the CPU: {0}</value></data>
+  <data name="Analysis_RunDetails_Requested" xml:space="preserve"><value>Requested</value></data>
+  <data name="Analysis_RunDetails_Route" xml:space="preserve"><value>Route</value></data>
+  <data name="Analysis_RunDetails_ScopedWarning" xml:space="preserve"><value>{0}: {1}</value></data>
+  <data name="Analysis_RunDetails_Seed" xml:space="preserve"><value>Seed</value></data>
+  <data name="Analysis_RunDetails_Snapshot" xml:space="preserve"><value>Snapshot</value></data>
+  <data name="Analysis_RunDetails_Surface" xml:space="preserve"><value>Surface {0}</value></data>
+  <data name="Analysis_RunDetails_Tier" xml:space="preserve"><value>Tier</value></data>
+  <data name="Analysis_RunDetails_Time" xml:space="preserve"><value>Time</value></data>
+  <data name="Analysis_RunDetails_WarningSummary" xml:space="preserve"><value>{0} (and {1} more)</value></data>
+  <data name="Analysis_RunDetails_Warnings_Many" xml:space="preserve"><value>{0} Warnings</value></data>
+  <data name="Analysis_RunDetails_Warnings_One" xml:space="preserve"><value>Warning</value></data>
+  <data name="Analysis_Settings_AddPoint" xml:space="preserve"><value>Add Point</value></data>
+  <data name="Analysis_Settings_AddRow" xml:space="preserve"><value>Add Row</value></data>
+  <data name="Analysis_Settings_All" xml:space="preserve"><value>All</value></data>
+  <data name="Analysis_Settings_AllCount" xml:space="preserve"><value>All {0}</value></data>
+  <data name="Analysis_Settings_Any" xml:space="preserve"><value>any</value></data>
+  <data name="Analysis_Settings_Auto" xml:space="preserve"><value>Auto</value></data>
+  <data name="Analysis_Settings_AutoClearHelp" xml:space="preserve"><value>Clear the field to let the engine choose.</value></data>
+  <data name="Analysis_Settings_AutoClearZeroHelp" xml:space="preserve"><value>Clear the field (or type 0) to let the engine choose.</value></data>
+  <data name="Analysis_Settings_AutoHelp" xml:space="preserve"><value>Automatic: the engine chooses from the system.</value></data>
+  <data name="Analysis_Settings_AutoUsed" xml:space="preserve"><value>Auto ({0})</value></data>
+  <data name="Analysis_Settings_AutoWord" xml:space="preserve"><value>auto</value></data>
+  <data name="Analysis_Settings_Automatic" xml:space="preserve"><value>Automatic</value></data>
+  <data name="Analysis_Settings_BoundHelp" xml:space="preserve"><value>Half-range of the planes; empty lets the engine choose from the depth of focus and the geometric blur.</value></data>
+  <data name="Analysis_Settings_ChooseImage" xml:space="preserve"><value>Choose Image…</value></data>
+  <data name="Analysis_Settings_Clear" xml:space="preserve"><value>Clear</value></data>
+  <data name="Analysis_Settings_CountOf" xml:space="preserve"><value>{0} of {1}</value></data>
+  <data name="Analysis_Settings_DeletePoint" xml:space="preserve"><value>Delete this point</value></data>
+  <data name="Analysis_Settings_DeleteRow" xml:space="preserve"><value>Delete this row</value></data>
+  <data name="Analysis_Settings_FewerPlanes" xml:space="preserve"><value>Fewer planes</value></data>
+  <data name="Analysis_Settings_ImageBuffer" xml:space="preserve"><value>Image buffer</value></data>
+  <data name="Analysis_Settings_ListAutoHelp" xml:space="preserve"><value>Comma separated; empty lets the engine choose.</value></data>
+  <data name="Analysis_Settings_ListHelp" xml:space="preserve"><value>Comma separated.</value></data>
+  <data name="Analysis_Settings_MorePlanes" xml:space="preserve"><value>More planes</value></data>
+  <data name="Analysis_Settings_NoLimit" xml:space="preserve"><value>No Limit</value></data>
+  <data name="Analysis_Settings_NoSettings" xml:space="preserve"><value>This analysis has no settings to change.</value></data>
+  <data name="Analysis_Settings_None" xml:space="preserve"><value>None</value></data>
+  <data name="Analysis_Settings_NoneCheckedHelp" xml:space="preserve"><value>None checked: all.</value></data>
+  <data name="Analysis_Settings_NoneWord" xml:space="preserve"><value>none</value></data>
+  <data name="Analysis_Settings_NumbersHelp" xml:space="preserve"><value>Numbers, comma separated; empty: all.</value></data>
+  <data name="Analysis_Settings_Off" xml:space="preserve"><value>Off</value></data>
+  <data name="Analysis_Settings_On" xml:space="preserve"><value>On</value></data>
+  <data name="Analysis_Settings_OpticsPsfGrid" xml:space="preserve"><value>PSF grid</value></data>
+  <data name="Analysis_Settings_OpticsPsfGridHelp" xml:space="preserve"><value>PSFs per side of the patch; the image is mapped between them.</value></data>
+  <data name="Analysis_Settings_OpticsPsfGridTip" xml:space="preserve"><value>PSFs per side of the patch</value></data>
+  <data name="Analysis_Settings_OpticsPsfWindow" xml:space="preserve"><value>PSF window</value></data>
+  <data name="Analysis_Settings_OpticsPsfWindowHelp" xml:space="preserve"><value>PSF window samples per side (odd); 0 sizes it from the blur and diffraction.</value></data>
+  <data name="Analysis_Settings_OpticsPsfWindowTip" xml:space="preserve"><value>PSF window samples per side</value></data>
+  <data name="Analysis_Settings_OpticsPupil" xml:space="preserve"><value>Pupil</value></data>
+  <data name="Analysis_Settings_OpticsPupilHelp" xml:space="preserve"><value>Pupil grid samples per side; 0 chooses from the wavefront slope (64 to 1024).</value></data>
+  <data name="Analysis_Settings_OpticsRaysHelp" xml:space="preserve"><value>Rays traced per pupil diameter.</value></data>
+  <data name="Analysis_Settings_OpticsSpacing" xml:space="preserve"><value>Spacing</value></data>
+  <data name="Analysis_Settings_OpticsSpacingHelp" xml:space="preserve"><value>PSF sample spacing; empty uses the smallest λ·F/# over the patch divided by 2.5.</value></data>
+  <data name="Analysis_Settings_OpticsSpacingTip" xml:space="preserve"><value>PSF sample spacing</value></data>
+  <data name="Analysis_Settings_PairTo" xml:space="preserve"><value>to</value></data>
+  <data name="Analysis_Settings_Planes_Many" xml:space="preserve"><value>{0} planes</value></data>
+  <data name="Analysis_Settings_Planes_One" xml:space="preserve"><value>1 plane</value></data>
+  <data name="Analysis_Settings_Points_Many" xml:space="preserve"><value>{0} points</value></data>
+  <data name="Analysis_Settings_Primary" xml:space="preserve"><value>Primary</value></data>
+  <data name="Analysis_Settings_PrimarySuffix" xml:space="preserve"><value>{0} (primary)</value></data>
+  <data name="Analysis_Settings_Range" xml:space="preserve"><value>{0} to {1}</value></data>
+  <data name="Analysis_Settings_Rays" xml:space="preserve"><value>Rays</value></data>
+  <data name="Analysis_Settings_Rows_Many" xml:space="preserve"><value>{0} rows</value></data>
+  <data name="Analysis_Settings_Rows_One" xml:space="preserve"><value>1 row</value></data>
+  <data name="Analysis_Settings_SelectedCount" xml:space="preserve"><value>{0} selected</value></data>
+  <data name="Analysis_Settings_SelectionHelp" xml:space="preserve"><value>{0}: {1}</value></data>
+  <data name="Analysis_Settings_SensorAngle" xml:space="preserve"><value>Maximum angle</value></data>
+  <data name="Analysis_Settings_SensorAngleHeader" xml:space="preserve"><value>Max angle (°)</value></data>
+  <data name="Analysis_Settings_SensorHeading" xml:space="preserve"><value>Sensor CRA Limit</value></data>
+  <data name="Analysis_Settings_SensorHint" xml:space="preserve"><value>Maximum chief-ray incidence against image radius; linear between points, held beyond the ends.</value></data>
+  <data name="Analysis_Settings_SensorLimitTitle" xml:space="preserve"><value>Sensor limit: {0}</value></data>
+  <data name="Analysis_Settings_SensorRadius" xml:space="preserve"><value>Radius</value></data>
+  <data name="Analysis_Settings_SensorRadiusHeader" xml:space="preserve"><value>Radius (mm)</value></data>
+  <data name="Analysis_Settings_SurfaceImage" xml:space="preserve"><value>Image</value></data>
+  <data name="Analysis_Settings_SurfaceObject" xml:space="preserve"><value>Object</value></data>
+  <data name="Analysis_Settings_SurfaceStop" xml:space="preserve"><value>{0} (stop)</value></data>
+  <data name="Analysis_Settings_ThroughFocusAuto" xml:space="preserve"><value>Auto range · {0}</value></data>
+  <data name="Analysis_Settings_ThroughFocusOff" xml:space="preserve"><value>Image surface only</value></data>
+  <data name="Analysis_Settings_ThroughFocusOn" xml:space="preserve"><value>Planes before and after focus</value></data>
+  <data name="Analysis_Settings_ThroughFocusRange" xml:space="preserve"><value>{0} to {1} mm · {2}</value></data>
+  <data name="Analysis_Settings_ThroughFocusSymmetric" xml:space="preserve"><value>±{0} mm · {1}</value></data>
+  <data name="Analysis_Settings_ThroughFocusUsed" xml:space="preserve"><value>{0} mm · {1}</value></data>
+  <data name="Analysis_Spectrum_Add" xml:space="preserve"><value>Add</value></data>
+  <data name="Analysis_Spectrum_CannotEdit" xml:space="preserve"><value>A spectrum this control cannot edit: {0}</value></data>
+  <data name="Analysis_Spectrum_Caption" xml:space="preserve"><value>{0} · {1} λ</value></data>
+  <data name="Analysis_Spectrum_CaptionPrimary" xml:space="preserve"><value>{0} · primary {1} µm</value></data>
+  <data name="Analysis_Spectrum_Custom" xml:space="preserve"><value>Custom</value></data>
+  <data name="Analysis_Spectrum_Daylight" xml:space="preserve"><value>Daylight, 5500 K</value></data>
+  <data name="Analysis_Spectrum_DesignWavelengths" xml:space="preserve"><value>Design Wavelengths</value></data>
+  <data name="Analysis_Spectrum_DesignWavelengthsTip" xml:space="preserve"><value>Start again from the design&apos;s wavelengths and weights</value></data>
+  <data name="Analysis_Spectrum_EqualEnergy" xml:space="preserve"><value>Equal energy</value></data>
+  <data name="Analysis_Spectrum_FileProblem" xml:space="preserve"><value>{0}: {1}</value></data>
+  <data name="Analysis_Spectrum_FromCsv" xml:space="preserve"><value>Sensor Response from CSV…</value></data>
+  <data name="Analysis_Spectrum_ImportCsv" xml:space="preserve"><value>Import CSV…</value></data>
+  <data name="Analysis_Spectrum_ImportCsvHelp" xml:space="preserve"><value>Two columns, wavelength (µm or nm) and response; a header line is optional.</value></data>
+  <data name="Analysis_Spectrum_Imported" xml:space="preserve"><value>Imported {0} rows in {1}</value></data>
+  <data name="Analysis_Spectrum_ImportedHeader" xml:space="preserve"><value>Imported {0} rows in {1}, header skipped</value></data>
+  <data name="Analysis_Spectrum_IssueNoWavelength" xml:space="preserve"><value>Add at least one wavelength.</value></data>
+  <data name="Analysis_Spectrum_IssueRange" xml:space="preserve"><value>The range must be positive and increasing.</value></data>
+  <data name="Analysis_Spectrum_IssueRangePhotopic" xml:space="preserve"><value>The range must lie inside the photopic table ({0}–{1} µm).</value></data>
+  <data name="Analysis_Spectrum_IssueRangeScotopic" xml:space="preserve"><value>The range must lie inside the scotopic table ({0}–{1} µm).</value></data>
+  <data name="Analysis_Spectrum_IssueRangeTable" xml:space="preserve"><value>The range must lie inside the response table ({0}–{1} µm).</value></data>
+  <data name="Analysis_Spectrum_IssueResponseNegative" xml:space="preserve"><value>Responses must not be negative.</value></data>
+  <data name="Analysis_Spectrum_IssueSamples" xml:space="preserve"><value>Samples must be between {0} and {1}.</value></data>
+  <data name="Analysis_Spectrum_IssueTableRows" xml:space="preserve"><value>The response table needs at least two rows.</value></data>
+  <data name="Analysis_Spectrum_IssueTemperature" xml:space="preserve"><value>The temperature must be positive.</value></data>
+  <data name="Analysis_Spectrum_IssueWavelengthPositive" xml:space="preserve"><value>Wavelengths must be positive.</value></data>
+  <data name="Analysis_Spectrum_IssueWavelengthsIncrease" xml:space="preserve"><value>Wavelengths must increase.</value></data>
+  <data name="Analysis_Spectrum_IssueWeightNegative" xml:space="preserve"><value>Weights must not be negative.</value></data>
+  <data name="Analysis_Spectrum_KindBlackbody" xml:space="preserve"><value>Blackbody</value></data>
+  <data name="Analysis_Spectrum_KindDesign" xml:space="preserve"><value>Design wavelengths</value></data>
+  <data name="Analysis_Spectrum_KindExplicit" xml:space="preserve"><value>Explicit wavelengths</value></data>
+  <data name="Analysis_Spectrum_KindPhotopic" xml:space="preserve"><value>Photopic V(λ)</value></data>
+  <data name="Analysis_Spectrum_KindScotopic" xml:space="preserve"><value>Scotopic V′(λ)</value></data>
+  <data name="Analysis_Spectrum_KindSensor" xml:space="preserve"><value>Sensor response</value></data>
+  <data name="Analysis_Spectrum_Label" xml:space="preserve"><value>Spectrum</value></data>
+  <data name="Analysis_Spectrum_LineProblem" xml:space="preserve"><value>Line {0}: {1} — {2}</value></data>
+  <data name="Analysis_Spectrum_LowerName" xml:space="preserve"><value>Shortest wavelength in micrometres</value></data>
+  <data name="Analysis_Spectrum_MenuHelp" xml:space="preserve"><value>The wavelengths this analysis runs with: the design&apos;s, or a spectrum sampled for this run only.</value></data>
+  <data name="Analysis_Spectrum_MoreProblems" xml:space="preserve"><value>… and {0} more</value></data>
+  <data name="Analysis_Spectrum_NoTable" xml:space="preserve"><value>No table</value></data>
+  <data name="Analysis_Spectrum_NoTableRows" xml:space="preserve"><value>The file has no table of at least two rows.</value></data>
+  <data name="Analysis_Spectrum_PreviewName" xml:space="preserve"><value>Spectrum preview, {0}</value></data>
+  <data name="Analysis_Spectrum_Range" xml:space="preserve"><value>Range</value></data>
+  <data name="Analysis_Spectrum_RemoveName" xml:space="preserve"><value>Remove wavelength {0}</value></data>
+  <data name="Analysis_Spectrum_RemoveTip" xml:space="preserve"><value>Remove this wavelength</value></data>
+  <data name="Analysis_Spectrum_Response" xml:space="preserve"><value>Response</value></data>
+  <data name="Analysis_Spectrum_Samples" xml:space="preserve"><value>Samples</value></data>
+  <data name="Analysis_Spectrum_SamplesName" xml:space="preserve"><value>Number of samples</value></data>
+  <data name="Analysis_Spectrum_Skipped_Many" xml:space="preserve"><value>{0} rows skipped</value></data>
+  <data name="Analysis_Spectrum_Skipped_One" xml:space="preserve"><value>1 row skipped</value></data>
+  <data name="Analysis_Spectrum_SourceApproximate" xml:space="preserve"><value>Approximate preview</value></data>
+  <data name="Analysis_Spectrum_SourceDesign" xml:space="preserve"><value>Design</value></data>
+  <data name="Analysis_Spectrum_SourceEngine" xml:space="preserve"><value>Engine-resolved</value></data>
+  <data name="Analysis_Spectrum_SourceExplicit" xml:space="preserve"><value>Explicit</value></data>
+  <data name="Analysis_Spectrum_SpacingHelp" xml:space="preserve"><value>Equal energy: bins of equal energy, each sample at its centroid. Uniform: evenly spaced samples weighted by their energy.</value></data>
+  <data name="Analysis_Spectrum_Spoken" xml:space="preserve"><value>{0} wavelengths from {1} to {2} micrometres</value></data>
+  <data name="Analysis_Spectrum_SpokenPrimary" xml:space="preserve"><value>{0}, primary {1}</value></data>
+  <data name="Analysis_Spectrum_SummaryBlackbody" xml:space="preserve"><value>blackbody {0}</value></data>
+  <data name="Analysis_Spectrum_SummaryDesign" xml:space="preserve"><value>design</value></data>
+  <data name="Analysis_Spectrum_SummaryPhotopic" xml:space="preserve"><value>photopic</value></data>
+  <data name="Analysis_Spectrum_SummaryScotopic" xml:space="preserve"><value>scotopic</value></data>
+  <data name="Analysis_Spectrum_SummarySensor" xml:space="preserve"><value>sensor ({0} rows)</value></data>
+  <data name="Analysis_Spectrum_SummaryWavelengths" xml:space="preserve"><value>{0} wavelengths</value></data>
+  <data name="Analysis_Spectrum_TableSummary" xml:space="preserve"><value>{0} rows · {1}–{2} µm</value></data>
+  <data name="Analysis_Spectrum_Temperature" xml:space="preserve"><value>Temperature</value></data>
+  <data name="Analysis_Spectrum_TemperatureName" xml:space="preserve"><value>Temperature in kelvin</value></data>
+  <data name="Analysis_Spectrum_Tungsten" xml:space="preserve"><value>Tungsten halogen, 3200 K</value></data>
+  <data name="Analysis_Spectrum_Uniform" xml:space="preserve"><value>Uniform</value></data>
+  <data name="Analysis_Spectrum_Unreadable" xml:space="preserve"><value>The file could not be read</value></data>
+  <data name="Analysis_Spectrum_UpperName" xml:space="preserve"><value>Longest wavelength in micrometres</value></data>
+  <data name="Analysis_Spectrum_WavelengthName" xml:space="preserve"><value>Wavelength {0} in micrometres</value></data>
+  <data name="Analysis_Spectrum_Weight" xml:space="preserve"><value>Weight</value></data>
+  <data name="Analysis_Spectrum_WeightName" xml:space="preserve"><value>Weight of wavelength {0}</value></data>
+  <data name="Analysis_Summary_All" xml:space="preserve"><value>all</value></data>
+  <data name="Analysis_Summary_Auto" xml:space="preserve"><value>{0} auto</value></data>
+  <data name="Analysis_Summary_Off" xml:space="preserve"><value>off</value></data>
+  <data name="Analysis_Summary_On" xml:space="preserve"><value>on</value></data>
+  <data name="Analysis_Summary_Pair" xml:space="preserve"><value>{0} {1} {2} {3}</value></data>
+  <data name="Analysis_Summary_Point" xml:space="preserve"><value>{0} ({1}, {2})</value></data>
+  <data name="Analysis_Summary_Primary" xml:space="preserve"><value>primary</value></data>
+  <data name="Analysis_Summary_Pupil" xml:space="preserve"><value>Pupil {0}</value></data>
+  <data name="Analysis_Summary_SensorLimitNone" xml:space="preserve"><value>Sensor limit none</value></data>
+  <data name="Analysis_Summary_SensorLimit_Many" xml:space="preserve"><value>Sensor limit {0} points</value></data>
+  <data name="Analysis_Summary_SensorLimit_One" xml:space="preserve"><value>Sensor limit 1 point</value></data>
+  <data name="Analysis_Summary_SinglePlane" xml:space="preserve"><value>Single plane</value></data>
+  <data name="Analysis_Summary_Source" xml:space="preserve"><value>Source {0}</value></data>
+  <data name="Analysis_Summary_SourceImage" xml:space="preserve"><value>image</value></data>
+  <data name="Analysis_Summary_Spectrum" xml:space="preserve"><value>Spectrum {0}</value></data>
+  <data name="Analysis_Summary_SpectrumCustom" xml:space="preserve"><value>Spectrum custom</value></data>
+  <data name="Analysis_Summary_Value" xml:space="preserve"><value>{0} {1}</value></data>
   <!-- end area: Analysis -->
   <!-- area: Jobs -->
   <!-- end area: Jobs -->

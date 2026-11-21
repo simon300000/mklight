@@ -82,8 +82,8 @@
                     <ContentPresenter x:Name="SettingsContent" />
                 </ScrollViewer>
                 <StackPanel Grid.Row="1" Orientation="Horizontal" HorizontalAlignment="Right" Spacing="6">
-                    <Button Content="Defaults" Style="{StaticResource CapsuleButton}" Click="OnDefaults" />
-                    <Button Content="Done" Style="{StaticResource CapsuleButton}" Click="OnSettingsDone" />
+                    <Button x:Uid="Analysis_Pane_Defaults" Content="Defaults" Style="{StaticResource CapsuleButton}" Click="OnDefaults" />
+                    <Button x:Uid="Analysis_Pane_Done" Content="Done" Style="{StaticResource CapsuleButton}" Click="OnSettingsDone" />
                 </StackPanel>
             </Grid>
         </Border>
@@ -115,7 +115,7 @@
                 <StackPanel Spacing="8" HorizontalAlignment="Center">
                     <TextBlock x:Name="StaleTitle" Text="Design changed" Style="{StaticResource PanelTitleText}" HorizontalAlignment="Center" />
                     <TextBlock x:Name="StaleReason" Style="{StaticResource CaptionText}" HorizontalAlignment="Center" Text="This result is from an earlier design." />
-                    <Button x:Name="StaleUpdate" Content="Update" Style="{StaticResource AccentCapsuleButton}" HorizontalAlignment="Center" Click="OnUpdate" />
+                    <Button x:Name="StaleUpdate" x:Uid="Analysis_Pane_StaleUpdate" Content="Update" Style="{StaticResource AccentCapsuleButton}" HorizontalAlignment="Center" Click="OnUpdate" />
                 </StackPanel>
             </Border>
             <!-- A rerun failed: the last result stays; this capsule says so, the message on hover and click. -->
@@ -136,10 +136,10 @@
                 <Button.Flyout>
                     <Flyout Placement="Top">
                         <StackPanel Width="300" Spacing="8">
-                            <TextBlock Text="The update failed" Style="{StaticResource PanelTitleText}" />
+                            <TextBlock x:Uid="Analysis_Pane_FailedTitle" Text="The update failed" Style="{StaticResource PanelTitleText}" />
                             <TextBlock x:Name="FailedMessage" Style="{StaticResource BodyText}" TextWrapping="Wrap" IsTextSelectionEnabled="True" />
-                            <TextBlock Text="The result shown is from the last run that succeeded." Style="{StaticResource CaptionText}" TextWrapping="Wrap" />
-                            <Button x:Name="FailedRetry" Content="Try Again" Style="{StaticResource CapsuleButton}" HorizontalAlignment="Right" Click="OnRetry" />
+                            <TextBlock x:Uid="Analysis_Pane_FailedNote" Text="The result shown is from the last run that succeeded." Style="{StaticResource CaptionText}" TextWrapping="Wrap" />
+                            <Button x:Name="FailedRetry" x:Uid="Analysis_Pane_FailedRetry" Content="Try Again" Style="{StaticResource CapsuleButton}" HorizontalAlignment="Right" Click="OnRetry" />
                         </StackPanel>
                     </Flyout>
                 </Button.Flyout>
