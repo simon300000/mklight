@@ -28,7 +28,7 @@ public sealed partial class InspectorView : UserControl
         root.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
         root.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
         var chip = new Border { Style = (Style)Application.Current.Resources["GlassChip"], HorizontalAlignment = HorizontalAlignment.Center, Child = _tabs };
-        Microsoft.UI.Xaml.Automation.AutomationProperties.SetName(chip, "Inspector pages");
+        Microsoft.UI.Xaml.Automation.AutomationProperties.SetName(chip, Loc.S("Lens_Inspector_Pages"));
         root.Children.Add(chip);
         Grid.SetRow(_host, 1);
         root.Children.Add(_host);
@@ -69,12 +69,12 @@ public sealed partial class InspectorView : UserControl
     /// <summary>The Mac app's tab help.</summary>
     static string Help(InspectorPageInfo page) => page.Id switch
     {
-        "surface" => "The selected surface",
-        "system" => "Aperture, fields, wavelengths and environment",
-        "optimize" => "Optimize the design",
-        "glass_substitution" => "Replace glasses with catalog glasses, re-optimizing each combination",
-        "tolerance" => "Tolerance analysis: sensitivities and Monte Carlo",
-        "solves" => "Preview and apply the design's solves",
+        "surface" => Loc.S("Lens_Inspector_HelpSurface"),
+        "system" => Loc.S("Lens_Inspector_HelpSystem"),
+        "optimize" => Loc.S("Lens_Inspector_HelpOptimize"),
+        "glass_substitution" => Loc.S("Lens_Inspector_HelpGlassSubstitution"),
+        "tolerance" => Loc.S("Lens_Inspector_HelpTolerance"),
+        "solves" => Loc.S("Lens_Inspector_HelpSolves"),
         _ => page.Title,
     };
 
@@ -107,7 +107,8 @@ public sealed partial class InspectorView : UserControl
         {
             var selected = id == Page;
             button.Background = new SolidColorBrush(selected ? accent.WithAlpha(0.16) : Microsoft.UI.Colors.Transparent);
-            button.Foreground = selected ? accentText : secondary;            Microsoft.UI.Xaml.Automation.AutomationProperties.SetItemStatus(button, selected ? "Selected" : _session.RunningJobs.ContainsKey(id) ? "Running" : "");
+            button.Foreground = selected ? accentText : secondary;
+            Microsoft.UI.Xaml.Automation.AutomationProperties.SetItemStatus(button, selected ? Loc.S("Lens_Inspector_TabSelected") : _session.RunningJobs.ContainsKey(id) ? Loc.S("Lens_Inspector_TabRunning") : "");
             if (button.Content is TextBlock t) t.FontWeight = selected ? Microsoft.UI.Text.FontWeights.SemiBold : Microsoft.UI.Text.FontWeights.Normal;
             dot.Fill = accentText;
             dot.Visibility = _session.RunningJobs.ContainsKey(id) ? Visibility.Visible : Visibility.Collapsed;

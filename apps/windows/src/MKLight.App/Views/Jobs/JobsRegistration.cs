@@ -21,10 +21,10 @@ static class JobsRegistration
     [ModuleInitializer]
     internal static void Register()
     {
-        InspectorPages.Add(new("optimize", "Optimize", "\uE9D9", 20, s => new OptimizePanel(s)));
-        InspectorPages.Add(new("glass_substitution", "Glass Substitution", "\uEB42", 21, s => new GlassSubstitutionPanel(s)));
-        InspectorPages.Add(new("tolerance", "Tolerance", "\uE9E9", 22, s => new TolerancePanel(s)));
-        InspectorPages.Add(new("solves", "Apply Solves", "\uE943", 23, s => new SolvesPanel(s)));
+        InspectorPages.Add(new("optimize", Loc.S("Jobs_Registration_Page_Optimize"), "\uE9D9", 20, s => new OptimizePanel(s)));
+        InspectorPages.Add(new("glass_substitution", Loc.S("Jobs_Registration_Page_GlassSubstitution"), "\uEB42", 21, s => new GlassSubstitutionPanel(s)));
+        InspectorPages.Add(new("tolerance", Loc.S("Jobs_Registration_Page_Tolerance"), "\uE9E9", 22, s => new TolerancePanel(s)));
+        InspectorPages.Add(new("solves", Loc.S("Jobs_Registration_Page_Solves"), "\uE943", 23, s => new SolvesPanel(s)));
 
         AppHooks.WindowCreated += w => w.Closed += (_, _) => DesignJobs.Of(w.Session).CancelAll();
 
@@ -96,7 +96,7 @@ static class JobsRegistration
             var s = Open(w, "tolerance").Tolerance;
             await WaitSnapshot(w);
             await Task.Delay(1500); // the layout's semi-diameters and the glasses' Abbe numbers
-            if (int.TryParse(arg, out var trials)) s.Edit("Change Trials", x => x.Trials = trials);
+            if (int.TryParse(arg, out var trials)) s.Edit(Loc.S("Jobs_Tolerance_Panel_Undo_ChangeTrials"), x => x.Trials = trials);
             s.Start();
             await WaitUntil(() => !s.IsRunning, 300);
         };
@@ -115,7 +115,7 @@ static class JobsRegistration
         {
             var doc = w.Session.Document;
             var target = new Model.ParamPath.Thickness(doc.System.Surfaces[doc.System.ImageIndex - 1].Id);
-            doc.Edit("Add Solve", s => s with { Solves = s.Solves.Add(new Model.Solve(target, new Model.SolveKind.MarginalRayHeight(0))) });
+            doc.Edit(Loc.S("Jobs_Registration_AddSolve"), s => s with { Solves = s.Solves.Add(new Model.Solve(target, new Model.SolveKind.MarginalRayHeight(0))) });
             return Task.CompletedTask;
         };
         AppHooks.LaunchActions["solves-run"] = async (w, _) =>

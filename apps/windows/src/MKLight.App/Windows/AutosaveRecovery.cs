@@ -27,9 +27,9 @@ static class AutosaveRecovery
             if (await HostAsync() is not { } root) return;
             var dialog = new ContentDialog
             {
-                Title = "Recover unsaved changes?",
+                Title = Loc.S("Shell_Recover_Title"),
                 Content = Body(entry),
-                PrimaryButtonText = "Recover", SecondaryButtonText = "Discard", CloseButtonText = "Later",
+                PrimaryButtonText = Loc.S("Shell_Recover_Recover"), SecondaryButtonText = Loc.S("Shell_Recover_Discard"), CloseButtonText = Loc.S("Shell_Recover_Later"),
                 DefaultButton = ContentDialogButton.Primary, XamlRoot = root.XamlRoot, RequestedTheme = root.ActualTheme,
             };
             ContentDialogResult answer;
@@ -47,13 +47,13 @@ static class AutosaveRecovery
         text.Children.Add(new TextBlock
         {
             Text = entry.Original is null
-                ? $"An untitled design has changes from {when} that were never saved."
-                : $"“{entry.Title}” has changes from {when} that were not saved.",
+                ? Loc.F("Shell_Recover_UntitledBody", when)
+                : Loc.F("Shell_Recover_Body", entry.Title, when),
             Style = (Style)Application.Current.Resources["BodyText"], TextWrapping = TextWrapping.Wrap, TextTrimming = TextTrimming.None,
         });
         text.Children.Add(new TextBlock
         {
-            Text = entry.Original ?? "Recover opens it as a new untitled design.",
+            Text = entry.Original ?? Loc.S("Shell_Recover_UntitledNote"),
             Style = (Style)Application.Current.Resources["CaptionText"], TextWrapping = TextWrapping.Wrap, TextTrimming = TextTrimming.None,
         });
         return text;
@@ -79,10 +79,10 @@ static class AutosaveRecovery
         if (warnings.Count == 0) return null;
         var names = warnings.Select(w => System.Text.RegularExpressions.Regex.Match(w, "^glass catalog '(.+?)' could not be loaded"))
             .Where(m => m.Success).Select(m => m.Groups[1].Value).ToList();
-        if (names.Count != warnings.Count) return "Recovered. " + string.Join("; ", warnings);
+        if (names.Count != warnings.Count) return Loc.F("Shell_Recover_WithWarnings", string.Join("; ", warnings.Select(EngineText.T)));
         return names.Count == 1
-            ? $"Recovered. Glass catalog {names[0]} was not found; the design keeps its reference."
-            : $"Recovered. Glass catalogs {string.Join(", ", names)} were not found; the design keeps their references.";
+            ? Loc.F("Shell_Recover_CatalogMissingOne", names[0])
+            : Loc.F("Shell_Recover_CatalogMissingMany", string.Join(", ", names));
     }
 
     /// <summary>Opens the autosave: the design's file with the autosaved changes applied, or a new untitled design.</summary>
@@ -94,7 +94,7 @@ static class AutosaveRecovery
             var (recovered, warnings) = Autosaves.Read(engine, entry.Path);
             var original = entry.Original is { } o && File.Exists(o) ? o : null;
             var doc = new DesignDocument(Autosaves.RecoveryBase(entry with { Original = original }, recovered), original);
-            doc.EditProject("Recover Unsaved Changes", _ => recovered);
+            doc.EditProject(Loc.S("Shell_Action_RecoverUnsaved"), _ => recovered);
             // The window's layout is not undoable, so the edit kept the base's: take the autosave's panes and arrangement.
             if (recovered.Sections.TryGetValue("views", out var views)) doc.SetSection("views", views);
             var window = App.OpenDocument(doc);

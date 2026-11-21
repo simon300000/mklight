@@ -11,6 +11,7 @@ import { handleShortcut } from '@/state/commands'
 import { useArrangement } from '@/state/arrangement'
 import { useDocument } from '@/state/document'
 import { useWorkspace } from '@/state/workspace'
+import { useT } from '@/i18n'
 import { handleLayoutShortcut } from '@/views/layout/shortcuts'
 import { addPaneInWindow, dockWindow, syncPopups, windowTitle } from './actions'
 import { WindowContext } from './context'
@@ -20,15 +21,16 @@ import { usePopups, type Popup } from './windows'
 
 /** A separate window's toolbar: the design's name, Add Analysis and Move to Main Window. */
 function PopupToolbar({ id }: { id: string }) {
-  const name = useDocument((s) => s.project.system?.name || 'Untitled')
+  const t = useT()
+  const name = useDocument((s) => s.project.system?.name || t('app.untitled'))
   const descriptors = useWorkspace((s) => s.descriptors)
   return (
     <div className="flex h-10 shrink-0 items-center gap-2 border-b border-separator bg-window px-3">
       <span className="min-w-0 flex-1 truncate text-[12px] text-secondary">{name}</span>
       <Menu>
         <MenuTrigger asChild>
-          <Button variant="ghost" size="sm" aria-label="Add Analysis">
-            <Plus /> Add Analysis
+          <Button variant="ghost" size="sm" aria-label={t('app.menu.addAnalysis')}>
+            <Plus /> {t('app.menu.addAnalysis')}
           </Button>
         </MenuTrigger>
         <MenuContent align="end">
@@ -46,19 +48,20 @@ function PopupToolbar({ id }: { id: string }) {
           ))}
         </MenuContent>
       </Menu>
-      <Button variant="ghost" size="sm" onClick={() => dockWindow(id)} title="Move this window's panels back into the main window">
-        <PanelTopClose /> Move to Main Window
+      <Button variant="ghost" size="sm" onClick={() => dockWindow(id)} title={t('app.panels.dockHelp')}>
+        <PanelTopClose /> {t('app.menu.moveToMainWindow')}
       </Button>
     </div>
   )
 }
 
 function PopupContent({ popup }: { popup: Popup }) {
+  const t = useT()
   const title = useArrangement(() => windowTitle(popup.id))
   const name = useDocument((s) => s.project.system?.name)
   useEffect(() => {
     popup.win.document.title = title
-  }, [popup, title, name])
+  }, [popup, title, name, t])
   // The app's keyboard shortcuts work in every window of the design.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {

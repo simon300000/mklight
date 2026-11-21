@@ -8,25 +8,43 @@
 // run life cycle every panel builds its action bar from (`JobActions`).
 
 import { create } from 'zustand'
+import { engineText, t } from '@/i18n'
 import type { AnalysisJob, AnalysisResult, Json, JsonObject } from '@/engine/types'
 import { EngineError } from '@/engine/types'
 import { useWorkspace } from './workspace'
 
 export type JobKind = 'optimize' | 'glass' | 'tolerance' | 'solves'
 
+/** The job names in the current language (read when shown, not at load). */
 export const JOB_TITLES: Record<JobKind, string> = {
-  optimize: 'Optimize',
-  glass: 'Glass Substitution',
-  tolerance: 'Tolerance',
-  solves: 'Apply Solves',
+  get optimize() {
+    return t('optimize.jobs.titles.optimize')
+  },
+  get glass() {
+    return t('optimize.jobs.titles.glass')
+  },
+  get tolerance() {
+    return t('optimize.jobs.titles.tolerance')
+  },
+  get solves() {
+    return t('optimize.jobs.titles.solves')
+  },
 }
 
 /** The running verb for the status capsule ("Optimizing · 479"). */
 export const JOB_VERBS: Record<JobKind, string> = {
-  optimize: 'Optimizing',
-  glass: 'Substituting Glasses',
-  tolerance: 'Tolerancing',
-  solves: 'Solving',
+  get optimize() {
+    return t('optimize.jobs.verbs.optimize')
+  },
+  get glass() {
+    return t('optimize.jobs.verbs.glass')
+  },
+  get tolerance() {
+    return t('optimize.jobs.verbs.tolerance')
+  },
+  get solves() {
+    return t('optimize.jobs.verbs.solves')
+  },
 }
 
 export const JOB_ANALYSES: Record<JobKind, string> = {
@@ -99,7 +117,7 @@ interface JobsStore {
 const handles = new Map<JobKind, AnalysisJob>()
 
 function errorText(e: unknown): string {
-  if (e instanceof EngineError) return e.issues.length ? e.issues.join('\n') : e.message
+  if (e instanceof EngineError) return e.issues.length ? e.issues.map((i) => engineText(i)).join('\n') : engineText(e.message)
   return e instanceof Error ? e.message : String(e)
 }
 
@@ -116,7 +134,7 @@ export const useJobs = create<JobsStore>()((set, get) => {
       const engine = ws.engine
       const snap = ws.snapshot
       if (!engine || !snap) {
-        patch(kind, { phase: 'failed', error: ws.modelIssues.length ? 'The design has errors: ' + ws.modelIssues.map((i) => i.message).join('; ') : 'The engine is not ready.' })
+        patch(kind, { phase: 'failed', error: ws.modelIssues.length ? t('optimize.jobs.designErrors', { issues: ws.modelIssues.map((i) => engineText(i.message)).join('; ') }) : t('optimize.jobs.engineNotReady') })
         return
       }
       handles.get(kind)?.cancel()
@@ -175,7 +193,7 @@ export const useJobs = create<JobsStore>()((set, get) => {
 
     stop(kind) {
       handles.get(kind)?.stop()
-      patch(kind, { stopped: true, stage: 'Stopping' })
+      patch(kind, { stopped: true, stage: t('optimize.jobs.stopping') })
     },
 
     discard(kind) {

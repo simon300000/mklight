@@ -7,6 +7,7 @@ import { create } from 'zustand'
 import type { Json } from '@/engine/types'
 import { clone, type System } from '@/model/system'
 import { projectFromSystem, type Project } from '@/model/project'
+import { t } from '@/i18n'
 
 export interface UndoEntry {
   name: string
@@ -152,5 +153,5 @@ export const isDirty = (s: DocumentState) => s.revision !== s.savedRevision
 /** The document's display name: the file name without extension, else the system name. */
 export function documentTitle(s: DocumentState): string {
   if (s.file) return s.file.name.replace(/\.(mklight|zmx|seq)$/i, '')
-  return s.project.system?.name || 'Untitled'
+  return s.project.system?.name || t('app.untitled')
 }

@@ -1,7 +1,8 @@
-using System.Globalization;
 using System.Text.Json.Nodes;
+using MKLight.App.Support;
 using MKLight.App.Views.Analysis.Results.Readers;
 using MKLight.Engine;
+using MKLight.Model;
 
 namespace MKLight.App.Views;
 
@@ -53,7 +54,7 @@ public static class StatusCapsuleModel
         if (anamorphic && fo.Primary is { } p)
         {
             list.Add(("EFL y", Fmt.Value(p.EflY, "mm")));
-            list.Add(("Squeeze", Squeeze(p.Squeeze, 2)));
+            list.Add((Loc.S("Shell_Status_Squeeze"), Squeeze(p.Squeeze, 2)));
         }
         else if (Entry(fo, "efl") is { } e)
         {
@@ -64,62 +65,62 @@ public static class StatusCapsuleModel
         return list;
     }
 
-    /// <summary>The rows and the engine's <c>first_order</c> keys they show (the first one present).</summary>
+    /// <summary>The rows (their label's resource key) and the engine's <c>first_order</c> keys they show (the first one present).</summary>
     static readonly (string Label, string[] Keys)[] Keys =
     [
-        ("Effective focal length", ["efl"]), ("Back focal length", ["bfl"]), ("Working F/#", ["working_f_number", "image_f_number"]),
-        ("Entrance pupil diameter", ["entrance_pupil_diameter"]), ("Total track", ["total_track"]),
-        ("Image height", ["paraxial_image_height"]),
+        ("Shell_Status_Efl", ["efl"]), ("Shell_Status_Bfl", ["bfl"]), ("Shell_Status_WorkingFNumber", ["working_f_number", "image_f_number"]),
+        ("Shell_Status_Epd", ["entrance_pupil_diameter"]), ("Shell_Status_TotalTrack", ["total_track"]),
+        ("Shell_Status_ImageHeight", ["paraxial_image_height"]),
     ];
 
     /// <summary>The rows that are the y section's for an anamorphic design.</summary>
-    static readonly HashSet<string> YSection = ["Effective focal length", "Back focal length", "Working F/#", "Image height"];
+    static readonly HashSet<string> YSection = ["Shell_Status_Efl", "Shell_Status_Bfl", "Shell_Status_WorkingFNumber", "Shell_Status_ImageHeight"];
 
     /// <summary>The details' First Order section.</summary>
     public static IReadOnlyList<StatusDetail> FirstOrder(FirstOrderData? fo, bool anamorphic)
     {
-        var rows = new List<StatusDetail> { StatusDetail.Header("First Order") };
+        var rows = new List<StatusDetail> { StatusDetail.Header(Loc.S("Shell_Status_FirstOrder")) };
         if (fo is null)
         {
-            rows.Add(StatusDetail.Note("No first-order data yet."));
+            rows.Add(StatusDetail.Note(Loc.S("Shell_Status_NoFirstOrder")));
             return rows;
         }
         foreach (var (label, keys) in Keys)
             if (Entry(fo, keys) is { } e)
-                rows.Add(StatusDetail.Row(anamorphic && YSection.Contains(label) ? label + " (y)" : label, e.Formatted));
+                rows.Add(StatusDetail.Row(anamorphic && YSection.Contains(label) ? Loc.F("Shell_Status_YSection", Loc.S(label)) : Loc.S(label), e.Formatted));
         if (!anamorphic) return rows;
         if (fo.Primary is not { } p)
         {
-            rows.Add(StatusDetail.Note("This design is not rotationally symmetric. The engine's first-order data covers the y section."));
+            rows.Add(StatusDetail.Note(Loc.S("Shell_Status_NotRotational")));
             return rows;
         }
         rows.Add(new(StatusDetail.Kinds.XyHeader, "", "x (mm)", "y (mm)"));
-        rows.Add(new(StatusDetail.Kinds.Xy, "EFL", Fmt.Short(p.EflX), Fmt.Short(p.EflY), "Effective focal length"));
-        rows.Add(new(StatusDetail.Kinds.Xy, "BFL", Fmt.Short(p.BflX), Fmt.Short(p.BflY), "Back focal length"));
-        rows.Add(StatusDetail.Row("Squeeze", Squeeze(p.Squeeze, 4), "Squeeze: " + (fo.SqueezeDefinition ?? "signed EFL y / EFL x")));
-        if (fo.Symmetry is not null) rows.Add(StatusDetail.Row("Symmetry", fo.SymmetryTitle));
+        rows.Add(new(StatusDetail.Kinds.Xy, "EFL", Fmt.Short(p.EflX), Fmt.Short(p.EflY), Loc.S("Shell_Status_Efl")));
+        rows.Add(new(StatusDetail.Kinds.Xy, "BFL", Fmt.Short(p.BflX), Fmt.Short(p.BflY), Loc.S("Shell_Status_Bfl")));
+        rows.Add(StatusDetail.Row(Loc.S("Shell_Status_Squeeze"), Squeeze(p.Squeeze, 4),
+            Loc.F("Shell_Status_SqueezeHelp", fo.SqueezeDefinition is { } def ? EngineText.T(def) : Loc.S("Shell_Status_SqueezeDefault"))));
+        if (fo.Symmetry is not null) rows.Add(StatusDetail.Row(Loc.S("Shell_Status_Symmetry"), fo.SymmetryTitle));
         foreach (var d in p.Doe)
-            rows.Add(StatusDetail.Row("DOE power, surface " + d.Surface.ToString(CultureInfo.InvariantCulture), Fmt.Value(d.Power, "1/mm"),
-                "Phase power of the trace order (base refractive power excluded)"));
+            rows.Add(StatusDetail.Row(Loc.F("Shell_Status_DoePower", d.Surface), Fmt.Value(d.Power, "1/mm"), Loc.S("Shell_Status_DoePowerHelp")));
         if (p.Doe.Count > 0 && double.IsFinite(p.WavelengthUm))
-            rows.Add(StatusDetail.Note($"At λ = {p.WavelengthUm.ToString("0.0000", CultureInfo.InvariantCulture)} µm (primary)"));
-        foreach (var w in fo.Warnings) rows.Add(new(StatusDetail.Kinds.Warning, w));
+            rows.Add(StatusDetail.Note(Loc.F("Shell_Status_AtWavelength", p.WavelengthUm)));
+        foreach (var w in fo.Warnings) rows.Add(new(StatusDetail.Kinds.Warning, EngineText.T(w)));
         return rows;
     }
 
     /// <summary>The details' Engine section: version, snapshot, glass library and GPU kernels (with the cache note).</summary>
     public static IReadOnlyList<StatusDetail> Engine(string engine, ModelSnapshot? snapshot, GpuPreparation? gpu)
     {
-        var rows = new List<StatusDetail> { StatusDetail.Header("Engine"), StatusDetail.Row("Engine", engine) };
+        var rows = new List<StatusDetail> { StatusDetail.Header(Loc.S("Shell_Status_EngineHeader")), StatusDetail.Row(Loc.S("Shell_Status_Engine"), engine) };
         if (snapshot is not null)
         {
-            rows.Add(StatusDetail.Row("Snapshot", snapshot.Hash.Short, snapshot.Hash.Hex));
+            rows.Add(StatusDetail.Row(Loc.S("Shell_Status_Snapshot"), snapshot.Hash.Short, snapshot.Hash.Hex));
             if (snapshot.LibraryHash is { Length: > 0 } lib)
-                rows.Add(StatusDetail.Row("Glass library", lib.Length > 12 ? lib[..12] : lib, "Hash of the glass catalogs the design's results are computed with: " + lib));
+                rows.Add(StatusDetail.Row(Loc.S("Shell_Status_GlassLibrary"), lib.Length > 12 ? lib[..12] : lib, Loc.F("Shell_Status_GlassLibraryHelp", lib)));
         }
         if (gpu is not null && ViewModels.GpuPreparationMonitor.Summary(gpu) is { } summary)
         {
-            rows.Add(StatusDetail.Row("GPU kernels", summary));
+            rows.Add(StatusDetail.Row(Loc.S("Shell_Status_GpuKernels"), summary));
             if (ViewModels.GpuPreparationMonitor.Note(gpu) is { } note) rows.Add(StatusDetail.Note(note));
         }
         return rows;

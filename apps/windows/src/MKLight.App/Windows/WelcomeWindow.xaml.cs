@@ -22,13 +22,13 @@ public sealed partial class WelcomeWindow : Window
     public WelcomeWindow()
     {
         InitializeComponent();
-        Title = "Welcome to MKLight";
+        Title = Loc.S("Shell_Welcome_Title");
         ExtendsContentIntoTitleBar = true;
         SetTitleBar(DragRegion);
         AppWindow.SetIcon(Path.Combine(AppContext.BaseDirectory, "Assets", "MKLight.ico"));
         ThemeSwitch.Attach(this, Root);
         FileDrop.Attach(Root);
-        EngineText.Text = App.Engine is { } e ? $"{e.Info.Name} {e.Info.Version}" : "Engine unavailable";
+        EngineText.Text = App.Engine is { } e ? $"{e.Info.Name} {e.Info.Version}" : Loc.S("Shell_Welcome_EngineUnavailable");
         BuildRecent();
         BuildGallery();
     }
@@ -65,8 +65,8 @@ public sealed partial class WelcomeWindow : Window
     {
         var all = SampleSystems.Bundled.ToList();
         var extended = all.Where(s => !s.System.Surfaces.All(f => f.Shape.IsLegacy)).ToList();
-        Section("Sample Designs", all.Except(extended).ToList());
-        if (extended.Count > 0) Section("Surface Types", extended);
+        Section(Loc.S("Shell_Welcome_SampleDesigns"), all.Except(extended).ToList());
+        if (extended.Count > 0) Section(Loc.S("Shell_Welcome_SurfaceTypes"), extended);
     }
 
     void Section(string title, IReadOnlyList<SampleEntry> samples)
@@ -90,7 +90,9 @@ public sealed partial class WelcomeWindow : Window
             thumbBorder.Background = ThemeLookup.Brush(thumbBorder, "ContentSurfaceBrush");
         });
         var text = new StackPanel { Spacing = 1, Margin = new Thickness(4, 8, 4, 0) };
-        text.Children.Add(new TextBlock { Text = sample.System.Name, Style = (Style)Application.Current.Resources["PanelTitleText"], FontSize = 14 });
+        // The sample's name is engine text (the window's EngineText is the version line).
+        var name = MKLight.Model.EngineText.T(sample.System.Name);
+        text.Children.Add(new TextBlock { Text = name, Style = (Style)Application.Current.Resources["PanelTitleText"], FontSize = 14 });
         text.Children.Add(new TextBlock { Text = Detail(sample.System), Style = (Style)Application.Current.Resources["CaptionText"], FontSize = 12, TextWrapping = TextWrapping.Wrap, MaxLines = 2, TextTrimming = TextTrimming.CharacterEllipsis });
         var content = new StackPanel { Children = { thumbBorder, text } };
         var button = new Button
@@ -98,7 +100,7 @@ public sealed partial class WelcomeWindow : Window
             Content = content, Width = 202, Height = 204, Padding = new Thickness(0), VerticalContentAlignment = VerticalAlignment.Top,
             HorizontalContentAlignment = HorizontalAlignment.Stretch, Background = new SolidColorBrush(Microsoft.UI.Colors.Transparent), BorderThickness = new Thickness(0),
         };
-        ToolTipService.SetToolTip(button, $"New design from “{sample.System.Name}”");
+        ToolTipService.SetToolTip(button, Loc.F("Shell_Welcome_NewFromTip", name));
         button.Click += (_, _) => App.OpenDocument(new DesignDocument(new ProjectFile(sample.System)));
         return button;
     }
@@ -106,9 +108,11 @@ public sealed partial class WelcomeWindow : Window
     static string Detail(OpticalSystem s)
     {
         var n = s.Surfaces.Count - 2;
-        var kinds = s.Surfaces.Select(f => f.Shape).Where(sh => !sh.IsLegacy).Select(sh => CultureInfo.InvariantCulture.TextInfo.ToTitleCase(sh.TypeName.Replace('_', ' '))).Distinct().Order().ToList();
-        var notes = kinds.Count > 0 ? string.Join(", ", kinds) : s.Notes;
-        return $"{n} surfaces" + (string.IsNullOrEmpty(notes) ? "" : " · " + notes);
+        var kinds = s.Surfaces.Select(f => f.Shape).Where(sh => !sh.IsLegacy).Select(sh => CultureInfo.InvariantCulture.TextInfo.ToTitleCase(sh.TypeName.Replace('_', ' '))).Distinct().Order()
+            .Select(MKLight.Model.EngineText.T).ToList();
+        var notes = kinds.Count > 0 ? string.Join(Loc.S("Shell_Welcome_ListSeparator"), kinds) : string.IsNullOrEmpty(s.Notes) ? s.Notes : MKLight.Model.EngineText.T(s.Notes);
+        var surfaces = Loc.F(n == 1 ? "Shell_Import_SurfaceCountOne" : "Shell_Import_SurfaceCountMany", n);
+        return string.IsNullOrEmpty(notes) ? surfaces : Loc.F("Shell_Welcome_Detail", surfaces, notes);
     }
 
     void OnNew(object sender, RoutedEventArgs e) => App.OpenDocument(new DesignDocument(new ProjectFile(SampleSystems.Get("singlet") ?? SampleSystems.Singlet())));

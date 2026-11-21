@@ -1,4 +1,5 @@
 import { useState } from 'react'
+import { useT } from '@/i18n'
 import { exact, parseNumber, sig } from '@/model/format'
 import { cn } from '@/lib/utils'
 
@@ -24,17 +25,18 @@ export function NumberInput({
   ariaLabel?: string
   placeholder?: string
 }) {
+  const t = useT()
   const [text, setText] = useState<string | null>(null)
   const shown = text ?? (value == null ? '' : sig(value, 8).replace('−', '-'))
   const commit = () => {
     if (text == null) return
-    const t = text.trim()
+    const tt = text.trim()
     setText(null)
-    if (t === '' || t.toLowerCase() === 'auto') {
+    if (tt === '' || tt.toLowerCase() === 'auto' || tt.toLowerCase() === t('lens.settings.auto').toLowerCase()) {
       if (nullable) onCommit(null)
       return
     }
-    let v = parseNumber(t)
+    let v = parseNumber(tt)
     if (v == null) return
     if (integer) v = Math.round(v)
     if (min != null && v < min) v = min
@@ -50,7 +52,7 @@ export function NumberInput({
         className,
       )}
       value={shown}
-      placeholder={placeholder ?? (nullable ? 'Auto' : '')}
+      placeholder={placeholder ?? (nullable ? t('lens.settings.auto') : '')}
       onFocus={(e) => {
         setText(value == null ? '' : exact(value))
         requestAnimationFrame(() => e.target.select())

@@ -14,6 +14,7 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu'
+import { useT } from '@/i18n'
 import { cn } from '@/lib/utils'
 import { short } from '@/model/tolerance'
 
@@ -94,8 +95,12 @@ export function IndexChecklist({
   selected: number[] | null
   onChange: (v: number[] | null) => void
 }) {
+  const t = useT()
   const on = (k: number) => selected == null || selected.includes(k)
-  const label = selected == null ? `${title}: all` : `${title}: ${selected.length ? selected.map((k) => k + 1).join(', ') : 'none'}`
+  const label =
+    selected == null
+      ? t('tolerance.checklist.allOf', { title })
+      : t('tolerance.checklist.some', { title, list: selected.length ? selected.map((k) => k + 1).join(', ') : t('tolerance.checklist.none') })
   const toggle = (k: number) => {
     const cur = selected ?? items.map((_, i) => i)
     const next = cur.includes(k) ? cur.filter((x) => x !== k) : [...cur, k].sort((a, b) => a - b)
@@ -112,10 +117,10 @@ export function IndexChecklist({
       </DropdownMenuTrigger>
       <DropdownMenuContent align="start">
         <DropdownMenuItem disabled={selected == null} onSelect={() => onChange(null)}>
-          All
+          {t('tolerance.checklist.all')}
         </DropdownMenuItem>
         <DropdownMenuSeparator />
-        {items.map((t, k) => (
+        {items.map((item, k) => (
           <DropdownMenuCheckboxItem
             key={k}
             checked={on(k)}
@@ -124,7 +129,7 @@ export function IndexChecklist({
               toggle(k)
             }}
           >
-            {t}
+            {item}
           </DropdownMenuCheckboxItem>
         ))}
       </DropdownMenuContent>

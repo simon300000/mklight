@@ -8,6 +8,7 @@
 
 import { useEffect, useMemo, useRef, useState } from 'react'
 import type { AnalysisResult, JsonObject } from '@/engine/types'
+import { useT } from '@/i18n'
 import { fmt } from '@/model/format'
 import {
   deltaPgF,
@@ -85,6 +86,7 @@ export function GlassMapChart({
   height?: number
   className?: string
 }) {
+  const t = useT()
   const all = useMemo(() => readGlassMap(map), [map])
   const [ownSelection, setOwnSelection] = useState<string | null>(null)
   const sel = selection !== undefined ? selection : ownSelection
@@ -156,13 +158,13 @@ export function GlassMapChart({
     g.strokeStyle = secondary
     g.strokeRect(M.left + 0.5, M.top + 0.5, pw - 1, ph - 1)
     g.textBaseline = 'alphabetic'
-    subText(g, 'Abbe number V', 'd', M.left + pw / 2, h - 4, 'center')
+    subText(g, t('glass.chart.abbe') + ' V', 'd', M.left + pw / 2, h - 4, 'center')
     g.save()
     g.translate(11, M.top + ph / 2)
     g.rotate(-Math.PI / 2)
     g.textBaseline = 'middle'
-    if (plane === 'nd') subText(g, 'Refractive index n', 'd', 0, 0, 'center')
-    else subText(g, 'Partial dispersion P', 'g,F', 0, 0, 'center')
+    if (plane === 'nd') subText(g, t('glass.chart.index') + ' n', 'd', 0, 0, 'center')
+    else subText(g, t('glass.chart.partial') + ' P', 'g,F', 0, 0, 'center')
     g.restore()
 
     g.save()
@@ -281,7 +283,7 @@ export function GlassMapChart({
       g.arc(x, y, labels.has(f.id) ? 12 : 8, 0, 2 * Math.PI)
       g.stroke()
     }
-  }, [plotted, labels, sel, dark, w, h, plane, xd, yd, all, focused, focusId])
+  }, [plotted, labels, sel, dark, w, h, plane, xd, yd, all, focused, focusId, t])
 
   const nearest = (e: React.MouseEvent): string | null => {
     const r = (e.currentTarget as HTMLElement).getBoundingClientRect()
@@ -357,9 +359,14 @@ export function GlassMapChart({
       role="group"
       aria-roledescription="glass map"
       tabIndex={0}
-      aria-label={`Glass map, ${plane === 'nd' ? 'n_d' : 'P_g,F'} against Abbe number, ${plotted.length} glasses${system?.name ? ' for ' + system.name : ''}. ${
-        marked.filter(Boolean).length ? 'Marked: ' + marked.filter(Boolean).join('; ') + '. ' : ''
-      }${selectedGlass ? `Selected ${selectedGlass.name}. ` : ''}Arrow keys move between glasses, Return inspects one.`}
+      aria-label={[
+        t(system?.name ? 'glass.chart.labelFor' : 'glass.chart.label', { plane: plane === 'nd' ? 'n_d' : 'P_g,F', count: plotted.length, name: system?.name ?? '' }),
+        marked.filter(Boolean).length ? t('glass.chart.marked', { list: marked.filter(Boolean).join('; ') }) : '',
+        selectedGlass ? t('glass.chart.selected', { name: selectedGlass.name }) : '',
+        t('glass.chart.keys'),
+      ]
+        .filter(Boolean)
+        .join(' ')}
       data-testid="glass-map"
       onMouseMove={(e) => setHover(nearest(e))}
       onMouseLeave={() => setHover(null)}
@@ -380,7 +387,16 @@ export function GlassMapChart({
       <canvas ref={canvas} className="absolute inset-0" aria-hidden />
       <span className="sr-only" aria-live="polite" data-testid="glass-map-focus">
         {focusGlass
-          ? `${focusGlass.name}${focusGlass.catalog ? ', ' + focusGlass.catalog : ''}, n d ${Number.isFinite(focusGlass.nd) ? focusGlass.nd.toFixed(5) : 'unknown'}, V d ${Number.isFinite(focusGlass.vd) ? focusGlass.vd.toFixed(2) : 'unknown'}${focusGlass.surfaces.length ? ', surfaces ' + surfaceLabel(focusGlass) : ''}${focusGlass.id === sel ? ', selected' : ''}`
+          ? [
+              focusGlass.name,
+              focusGlass.catalog,
+              t('glass.chart.focusNd', { value: Number.isFinite(focusGlass.nd) ? focusGlass.nd.toFixed(5) : t('glass.chart.unknown') }),
+              t('glass.chart.focusVd', { value: Number.isFinite(focusGlass.vd) ? focusGlass.vd.toFixed(2) : t('glass.chart.unknown') }),
+              focusGlass.surfaces.length ? t('glass.chart.focusSurfaces', { list: surfaceLabel(focusGlass) }) : '',
+              focusGlass.id === sel ? t('glass.chart.focusSelected') : '',
+            ]
+              .filter(Boolean)
+              .join(t('glass.list.sep'))
           : ''}
       </span>
       {hovered && <Tooltip glass={hovered} x={at(hovered)[0]} y={at(hovered)[1]} w={w} h={h} />}
@@ -406,26 +422,27 @@ function Tooltip({ glass, x, y, w, h }: { glass: GlassMapPoint; x: number; y: nu
 /** A glass's data: name, catalogue, status, n_d, V_d, P_g,F (and, full, ΔP_g,F,
  *  its surfaces and whether substitution skips it). */
 export function GlassCard({ glass, compact }: { glass: GlassMapPoint; compact?: boolean }) {
+  const t = useT()
   const meta = [
-    glass.catalog ?? (glass.kind === 'model' ? 'Model glass' : ''),
-    glass.kind === 'offset' ? 'melt offset' : '',
-    glass.kind !== 'model' && glass.status !== 'unknown' ? glass.statusLabel : '',
+    glass.catalog ?? (glass.kind === 'model' ? t('glass.card.model') : ''),
+    glass.kind === 'offset' ? t('glass.card.meltOffset') : '',
+    glass.kind !== 'model' && glass.status !== 'unknown' ? statusTitle(glass.status) : '',
   ].filter(Boolean)
   const rows: [React.ReactNode, string][] = [
     [<Sub base="n" sub="d" />, Number.isFinite(glass.nd) ? glass.nd.toFixed(5) : '–'],
     [<Sub base="V" sub="d" />, Number.isFinite(glass.vd) ? glass.vd.toFixed(2) : '–'],
   ]
-  if (glass.offset && offsetText(glass.offset)) rows.push(['Offset', offsetText(glass.offset)])
+  if (glass.offset && offsetText(glass.offset)) rows.push([t('glass.card.offset'), offsetText(glass.offset)])
   rows.push([<Sub base="P" sub="g,F" />, Number.isFinite(glass.pgf) ? glass.pgf.toFixed(4) : '–'])
   if (!compact) {
     const d = deltaPgF(glass)
     rows.push([<Sub base="ΔP" sub="g,F" />, Number.isFinite(d) ? (d >= 0 ? '+' : '−') + Math.abs(d).toFixed(4) : '–'])
-    if (glass.status !== 'unknown') rows.push(['Status', glass.statusLabel])
-    if (glass.relativeCost != null) rows.push(['Relative cost', String(glass.relativeCost)])
-    if (glass.climate != null) rows.push(['Climate class', String(glass.climate)])
-    if (glass.stain != null) rows.push(['Stain class', String(glass.stain)])
-    if (glass.surfaces.length) rows.push(['Surfaces', surfaceLabel(glass)])
-    if (glass.excludeSubstitution) rows.push(['Substitution', 'Excluded'])
+    if (glass.status !== 'unknown') rows.push([t('glass.card.status'), statusTitle(glass.status)])
+    if (glass.relativeCost != null) rows.push([t('glass.card.cost'), String(glass.relativeCost)])
+    if (glass.climate != null) rows.push([t('glass.card.climate'), String(glass.climate)])
+    if (glass.stain != null) rows.push([t('glass.card.stain'), String(glass.stain)])
+    if (glass.surfaces.length) rows.push([t('glass.card.surfaces'), surfaceLabel(glass)])
+    if (glass.excludeSubstitution) rows.push([t('glass.card.substitution'), t('glass.card.excluded')])
   }
   return (
     <div className={cn('min-w-0', compact ? 'text-[11px]' : 'text-[12px]')} data-testid="glass-card">
@@ -445,6 +462,7 @@ export function GlassCard({ glass, compact }: { glass: GlassMapPoint; compact?: 
 
 /** The status legend of a glass map, for the statuses present. */
 export function GlassStatusLegend({ statuses, showsOffset }: { statuses: GlassStatus[]; showsOffset?: boolean }) {
+  const t = useT()
   const dark = useDark()
   const list: GlassStatus[] = statuses.length ? statuses : ['unknown']
   return (
@@ -455,19 +473,19 @@ export function GlassStatusLegend({ statuses, showsOffset }: { statuses: GlassSt
             className="inline-block size-[7px] rounded-full"
             style={statusHollow(s) ? { border: `1px solid ${statusColor(s, dark)}` } : { background: statusColor(s, dark) }}
           />
-          {list.length === 1 && s === 'unknown' ? 'Catalog glass' : statusTitle(s)}
+          {list.length === 1 && s === 'unknown' ? t('glass.legend.catalogGlass') : statusTitle(s)}
         </span>
       ))}
       <span className="inline-flex items-center gap-1">
         <span className="inline-flex size-3 items-center justify-center rounded-full border-2 border-accent">
           <span className="size-[5px] rounded-full bg-secondary" />
         </span>
-        In the design
+        {t('glass.legend.inDesign')}
       </span>
       {showsOffset && (
-        <span className="inline-flex items-center gap-1" title="A design glass with a melt offset, dotted from its catalog position">
+        <span className="inline-flex items-center gap-1" title={t('glass.legend.meltOffsetHelp')}>
           <span className="inline-block w-3.5 border-t-[1.5px] border-dotted border-accent" />
-          Melt offset
+          {t('glass.legend.meltOffset')}
         </span>
       )}
     </div>

@@ -4,6 +4,7 @@ using Microsoft.UI.Xaml.Automation;
 using Microsoft.UI.Xaml.Automation.Peers;
 using Microsoft.UI.Xaml.Automation.Provider;
 using Microsoft.UI.Xaml.Controls;
+using MKLight.App.Support;
 using MKLight.App.ViewModels;
 
 namespace MKLight.App.Views;
@@ -62,11 +63,11 @@ sealed partial class LensCellView : Grid
         Column = column;
         Actions = actions;
         AutomationProperties.SetAutomationId(this, AutomationId(row.Index, column));
-        AutomationProperties.SetName(this, $"{Title(row, column)}, {RowName(row)}");
+        AutomationProperties.SetName(this, Loc.F("Lens_Cell_Name", Title(row, column), RowName(row)));
         var status = new List<string>();
-        if (column == LensColumn.SemiDiameter && row.SemiDiameterIsAuto) status.Add("automatic");
-        if (row.IsFlatSection(column)) status.Add("flat section");
-        if (row.Notes.TryGetValue(column, out var note)) status.Add("melt offset " + note);
+        if (column == LensColumn.SemiDiameter && row.SemiDiameterIsAuto) status.Add(Loc.S("Lens_Cell_Automatic"));
+        if (row.IsFlatSection(column)) status.Add(Loc.S("Lens_Cell_FlatSection"));
+        if (row.Notes.TryGetValue(column, out var note)) status.Add(Loc.F("Lens_Cell_MeltOffset", note));
         if (status.Count > 0) AutomationProperties.SetItemStatus(this, string.Join(", ", status));
     }
 
@@ -82,15 +83,15 @@ sealed partial class LensCellView : Grid
     /// <summary>The row as a screen reader names it.</summary>
     public static string RowName(LensRow row) => row.Role switch
     {
-        LensRowRole.Object => "Object",
-        LensRowRole.Image => "Image",
-        LensRowRole.Stop => $"Surface {row.Index}, aperture stop",
-        _ => $"Surface {row.Index}",
+        LensRowRole.Object => Loc.S("Lens_Row_Object"),
+        LensRowRole.Image => Loc.S("Lens_Row_Image"),
+        LensRowRole.Stop => Loc.F("Lens_Row_SurfaceStop", row.Index),
+        _ => Loc.F("Lens_Row_Surface", row.Index),
     };
 
     /// <summary>The value's title: "Radius", or "Radius y" / "Radius x" for the sections of an anamorphic surface.</summary>
     static string Title(LensRow row, LensColumn c) =>
-        row.Hints.TryGetValue(c, out var hint) ? $"{c.Base().Title()} {hint}" : c.Title();
+        row.Hints.TryGetValue(c, out var hint) ? Loc.F("Lens_Cell_SectionTitle", c.Base().Title(), hint) : c.Title();
 
     protected override AutomationPeer OnCreateAutomationPeer() => new LensCellAutomationPeer(this);
 }
@@ -110,7 +111,7 @@ sealed partial class LensCellAutomationPeer(LensCellView owner) : FrameworkEleme
         Cell.IsEditable ? AutomationControlType.Edit : AutomationControlType.Text;
 
     protected override string GetClassNameCore() => nameof(LensCellView);
-    protected override string GetLocalizedControlTypeCore() => "cell";
+    protected override string GetLocalizedControlTypeCore() => Loc.S("Lens_Cell_ControlType");
     protected override bool IsControlElementCore() => true;
     protected override bool IsContentElementCore() => true;
 
@@ -163,8 +164,8 @@ sealed partial class LensColumnDivider : Grid
         Column = column;
         ProtectedCursor = InputSystemCursor.Create(InputSystemCursorShape.SizeWestEast);
         AutomationProperties.SetAutomationId(this, $"LensTable.Divider.{LensColumnWidths.Key(column)}");
-        AutomationProperties.SetName(this, $"Resize the {column.Title()} column");
-        AutomationProperties.SetHelpText(this, "Drag to resize the column; double-click to fit it to its content.");
+        AutomationProperties.SetName(this, Loc.F("Lens_Divider_Name", column.Title()));
+        AutomationProperties.SetHelpText(this, Loc.S("Lens_Divider_Help"));
     }
 
     public LensColumn Column { get; }

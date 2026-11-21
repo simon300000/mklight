@@ -9,23 +9,24 @@ import { useDocument } from '@/state/document'
 import { useView } from '@/state/view'
 import { descriptorFor, useWorkspace } from '@/state/workspace'
 import { analysisTitle } from '@/model/catalog'
+import { t } from '@/i18n'
 import { closePopup, focusWindow, openPopup, setPopupHandlers, usePopups, windowOf } from './windows'
 
 const arrangement = () => useArrangement.getState()
 const ws = () => useWorkspace.getState()
 
 export function panelTitle(panel: PanelKey): string {
-  if (panel === LENS_DATA) return 'Lens Data'
-  if (panel === LAYOUT_PANEL) return 'Layout'
+  if (panel === LENS_DATA) return t('app.panels.lensData')
+  if (panel === LAYOUT_PANEL) return t('app.panels.layout')
   const p = ws().panes.find((x) => x.key === panel)
-  return p ? analysisTitle(p.analysis, descriptorFor(ws().descriptors, p.analysis)) : 'Analysis'
+  return p ? analysisTitle(p.analysis, descriptorFor(ws().descriptors, p.analysis)) : t('app.panels.analysis')
 }
 
 export function windowTitle(windowId: string): string {
   const w = A.windowById(arrangement().arr, windowId)
-  const name = useDocument.getState().project.system?.name || 'Untitled'
+  const name = useDocument.getState().project.system?.name || t('app.untitled')
   const panels = A.panelsOf(w?.root ?? null).map(panelTitle)
-  return `${panels.join(', ') || 'Panels'} — ${name}`
+  return t('app.panels.windowTitle', { panels: panels.join(t('app.panels.listSeparator')) || t('app.panels.panels'), name })
 }
 
 export const isDetached = (panel: PanelKey) => {
@@ -60,10 +61,10 @@ export function syncPopups() {
   })
   const n = blocked.length
   useView.getState().toast(
-    `The browser blocked ${n === 1 ? 'a separate window' : `${n} separate windows`}; ${n === 1 ? 'its panels are' : 'their panels are'} in this window.`,
+    t('app.panels.blocked', { count: n }),
     'warning',
     {
-      label: n === 1 ? 'Open Window' : 'Open Windows',
+      label: t('app.panels.openWindows', { count: n }),
       run: () => {
         arrangement().update((a) => {
           for (const s of saved) {
@@ -115,8 +116,8 @@ export function movePanel(panel: PanelKey, target: DropTarget, frame: Frame | nu
     const id = A.move(next, panel, target, frame ?? defaultFrame(panel))
     if (!id) return
     const w = next.windows.find((x) => x.id === id)!
-    if (!openPopup(id, w.frame, `${panelTitle(panel)} — ${useDocument.getState().project.system?.name || 'Untitled'}`)) {
-      useView.getState().toast('The browser blocked the new window. Allow pop-ups for MKLight to open panels in windows of their own.', 'warning')
+    if (!openPopup(id, w.frame, t('app.panels.windowTitle', { panels: panelTitle(panel), name: useDocument.getState().project.system?.name || t('app.untitled') }))) {
+      useView.getState().toast(t('app.panels.blockedNew'), 'warning')
       return
     }
     A.select(next, panel)

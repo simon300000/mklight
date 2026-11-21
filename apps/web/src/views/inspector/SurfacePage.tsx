@@ -6,6 +6,7 @@ import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigge
 import { Segmented } from '@/components/ui/segmented'
 import { Select } from '@/components/ui/select'
 import { Switch } from '@/components/ui/switch'
+import { t as tNow, tMaybe, useT } from '@/i18n'
 import { nf, sig } from '@/model/format'
 import { materialCompletions } from '@/model/materials'
 import type { ParamPath } from '@/model/params'
@@ -28,6 +29,7 @@ import {
   changeShapeType,
   descriptorFor,
   getPath,
+  groupTitle,
   makeCylinder,
   setDiffractiveBase,
   setPath,
@@ -62,13 +64,14 @@ function useSurfaceEdit(id: number): SurfaceEdit {
 
 /** The surface type, grouped by family, cylinder presets under Anamorphic. */
 export function TypeSelect({ shape, onChange, disabled, className }: { shape: Shape; onChange: (choice: string) => void; disabled?: boolean; className?: string }) {
+  const t = useT()
   return (
-    <Select aria-label="Surface type" className={className} value={typeChoice(shape)} disabled={disabled} onChange={(e) => onChange(e.target.value)}>
+    <Select aria-label={t('inspector.surface.typeLabel')} className={className} value={typeChoice(shape)} disabled={disabled} onChange={(e) => onChange(e.target.value)}>
       {GROUPS.map((g) => (
-        <optgroup key={g} label={g}>
-          {SURFACE_TYPES.filter((t) => t.group === g).map((t) => (
-            <option key={t.id} value={t.id}>
-              {t.title}
+        <optgroup key={g} label={groupTitle(g)}>
+          {SURFACE_TYPES.filter((ty) => ty.group === g).map((ty) => (
+            <option key={ty.id} value={ty.id}>
+              {ty.title}
             </option>
           ))}
           {g === 'Anamorphic' &&
@@ -85,7 +88,7 @@ export function TypeSelect({ shape, onChange, disabled, className }: { shape: Sh
 
 /** Applies a type-menu choice (a type, or a cylinder preset) as one step. */
 export function applyTypeChoice(index: number, choice: string) {
-  useDocument.getState().edit('Change Surface Type', (s) => {
+  useDocument.getState().edit(tNow('inspector.surface.undoType'), (s) => {
     if (choice === 'cylinder_x' || choice === 'cylinder_y') {
       changeShapeType(s, index, 'biconic')
       makeCylinder(s, index, choice === 'cylinder_x' ? 'x' : 'y')
@@ -94,8 +97,9 @@ export function applyTypeChoice(index: number, choice: string) {
 }
 
 function ParamControl({ surface, param, edit }: { surface: Surface; param: ShapeParam; edit: SurfaceEdit }) {
+  const t = useT()
   const raw = getPath(surface.shape, param.key)
-  const commit = (v: Json) => edit(`Change ${param.title}`, (s) => void (s.shape = setPath(s.shape, param.key, v)))
+  const commit = (v: Json) => edit(t('inspector.surface.changeNamed', { name: param.title }), (s) => void (s.shape = setPath(s.shape, param.key, v)))
   if (param.options) {
     return (
       <FormRow label={param.title} help={param.help}>
@@ -127,6 +131,7 @@ function ParamControl({ surface, param, edit }: { surface: Surface; param: Shape
  *  its meaning and a variable toggle. Long lists (XY, Zernike) show their
  *  nonzero terms and add any term from a menu. */
 function Coefficients({ surface, list, edit }: { surface: Surface; list: CoefficientList; edit: SurfaceEdit }) {
+  const t = useT()
   const shape = surface.shape
   const values = ((getPath(shape, list.key) as number[] | undefined) ?? []).map((v) => Number(v) || 0)
   const max = list.max(shape)
@@ -142,7 +147,7 @@ function Coefficients({ surface, list, edit }: { surface: Surface; list: Coeffic
     const a = values.slice()
     while (a.length <= k) a.push(0)
     setRevealed((r) => new Set(r).add(k))
-    write(`Add ${list.term(k, shape)}`, a)
+    write(t('inspector.surface.addNamed', { name: list.term(k, shape) }), a)
   }
   const remove = (k: number) => {
     let a = values.slice()
@@ -155,7 +160,7 @@ function Coefficients({ surface, list, edit }: { surface: Surface; list: Coeffic
       n.delete(k)
       return n
     })
-    write(`Remove ${list.term(k, shape)}`, a)
+    write(t('inspector.surface.removeNamed', { name: list.term(k, shape) }), a)
   }
   return (
     <div className="mt-1" data-testid={`coefficients-${list.key}`}>
@@ -173,7 +178,7 @@ function Coefficients({ surface, list, edit }: { surface: Surface; list: Coeffic
                 <NumberInput
                   ariaLabel={list.term(k, shape)}
                   value={values[k]}
-                  onCommit={(v) => v != null && write(`Change ${list.term(k, shape)}`, values.map((x, i) => (i === k ? v : x)))}
+                  onCommit={(v) => v != null && write(t('inspector.surface.changeNamed', { name: list.term(k, shape) }), values.map((x, i) => (i === k ? v : x)))}
                 />
                 {path && <SolveBadge path={path} />}
                 {path && <VariableToggle path={path} />}
@@ -181,8 +186,8 @@ function Coefficients({ surface, list, edit }: { surface: Surface; list: Coeffic
               <span className="truncate text-[11px] text-secondary">{list.unit?.(k) ?? ''}</span>
               <button
                 type="button"
-                aria-label={`Remove ${list.term(k, shape)}`}
-                title={k === values.length - 1 ? 'Remove this term' : 'Set this term to zero'}
+                aria-label={t('inspector.surface.removeNamed', { name: list.term(k, shape) })}
+                title={k === values.length - 1 ? t('inspector.surface.removeTerm') : t('inspector.surface.zeroTerm')}
                 disabled={!removable}
                 className="text-secondary hover:text-label disabled:invisible"
                 onClick={() => remove(k)}
@@ -199,7 +204,7 @@ function Coefficients({ surface, list, edit }: { surface: Surface; list: Coeffic
             <DropdownMenu>
               <DropdownMenuTrigger asChild>
                 <Button variant="ghost" size="sm" className="-ml-1.5">
-                  <Plus /> Add Term
+                  <Plus /> {t('inspector.surface.addTerm')}
                 </Button>
               </DropdownMenuTrigger>
               <DropdownMenuContent align="start" className="max-h-72">
@@ -215,172 +220,159 @@ function Coefficients({ surface, list, edit }: { surface: Surface; list: Coeffic
             </DropdownMenu>
           ) : (
             <Button variant="ghost" size="sm" className="-ml-1.5" onClick={() => add(values.length)}>
-              <Plus /> Add {list.term(values.length, shape)}
+              <Plus /> {t('inspector.surface.addNamed', { name: list.term(values.length, shape) })}
               {list.meaning && <span className="text-[11px] text-tertiary">{list.meaning(values.length, shape)}</span>}
             </Button>
           ))}
         <span className="flex-1" />
         {list.sparse && values.slice(0, -1).includes(0) && (
-          <Button variant="ghost" size="sm" aria-pressed={showAll} className={showAll ? 'text-accent' : ''} onClick={() => setShowAll((v) => !v)} title="Show the terms that are zero">
-            Zero Terms
+          <Button variant="ghost" size="sm" aria-pressed={showAll} className={showAll ? 'text-accent' : ''} onClick={() => setShowAll((v) => !v)} title={t('inspector.surface.zeroTermsHelp')}>
+            {t('inspector.surface.zeroTerms')}
           </Button>
         )}
       </div>
-      {values.length >= max && <p className="text-[11px] text-secondary">{max} terms, the most this type allows.</p>}
+      {values.length >= max && <p className="text-[11px] text-secondary">{t('inspector.surface.maxTerms', { max })}</p>}
     </div>
   )
 }
 
-const PLACEMENT_KEYS: [string, string, string][] = [
-  ['decenter_x', 'Decenter X', 'mm'],
-  ['decenter_y', 'Decenter Y', 'mm'],
-  ['tilt_x', 'Tilt X', '°'],
-  ['tilt_y', 'Tilt Y', '°'],
-  ['tilt_z', 'Tilt Z', '°'],
+const PLACEMENT_KEYS: [string, 'decenterX' | 'decenterY' | 'tiltX' | 'tiltY' | 'tiltZ', string][] = [
+  ['decenter_x', 'decenterX', 'mm'],
+  ['decenter_y', 'decenterY', 'mm'],
+  ['tilt_x', 'tiltX', '°'],
+  ['tilt_y', 'tiltY', '°'],
+  ['tilt_z', 'tiltZ', '°'],
 ]
 const IDENTITY = { decenter_x: 0, decenter_y: 0, tilt_x: 0, tilt_y: 0, tilt_z: 0, order: 'decenter_then_tilt', restore_after: false }
 
 function PlacementSection({ surface, edit }: { surface: Surface; edit: SurfaceEdit }) {
+  const t = useT()
   const [expanded, setExpanded] = useState(false)
   useEffect(() => setExpanded(false), [surface.id])
   const cb = surface.shape.type === 'coordinate_break'
   const p = { ...IDENTITY, ...((surface.placement as JsonObject | null) ?? {}) }
   const identity = PLACEMENT_KEYS.every(([k]) => Number(p[k as keyof typeof p] ?? 0) === 0)
   const set = (patch: JsonObject) =>
-    edit('Change Placement', (s) => {
+    edit(t('inspector.placement.undo'), (s) => {
       const next = { ...IDENTITY, ...((s.placement as JsonObject | null) ?? {}), ...patch }
       const id = PLACEMENT_KEYS.every(([k]) => Number(next[k as keyof typeof next] ?? 0) === 0)
       s.placement = id && s.shape.type !== 'coordinate_break' && next.order === 'decenter_then_tilt' && !next.restore_after ? null : next
     })
   return (
-    <Section title="Placement" testId="placement-section">
+    <Section title={t('inspector.placement.title')} testId="placement-section">
       {expanded || cb || !identity ? (
         <>
           {PLACEMENT_KEYS.map(([k, title, unit]) => (
             <NumberRow
               key={k}
-              label={title}
+              label={t(`inspector.placement.${title}`)}
               unit={unit}
               value={Number(p[k as keyof typeof p] ?? 0)}
               param={{ param: k, surface: surface.id }}
               onCommit={(v) => v != null && set({ [k]: v })}
             />
           ))}
-          <FormRow label="Order">
-            <Select aria-label="Placement order" className="w-full" value={String(p.order)} onChange={(e) => set({ order: e.target.value })}>
-              <option value="decenter_then_tilt">Decenter, then tilt</option>
-              <option value="tilt_then_decenter">Tilt, then decenter</option>
+          <FormRow label={t('inspector.placement.order')}>
+            <Select aria-label={t('inspector.placement.orderLabel')} className="w-full" value={String(p.order)} onChange={(e) => set({ order: e.target.value })}>
+              <option value="decenter_then_tilt">{t('inspector.placement.decenterThenTilt')}</option>
+              <option value="tilt_then_decenter">{t('inspector.placement.tiltThenDecenter')}</option>
             </Select>
           </FormRow>
-          <FormRow label="Return after surface">
-            <Switch aria-label="Return after surface" checked={!!p.restore_after} onCheckedChange={(v) => set({ restore_after: v })} />
+          <FormRow label={t('inspector.placement.restore')}>
+            <Switch aria-label={t('inspector.placement.restore')} checked={!!p.restore_after} onCheckedChange={(v) => set({ restore_after: v })} />
           </FormRow>
         </>
       ) : (
         <Button variant="ghost" size="sm" className="-ml-1.5 text-accent" onClick={() => setExpanded(true)}>
-          Add Decenter or Tilt…
+          {t('inspector.placement.add')}
         </Button>
       )}
     </Section>
   )
 }
 
-const APERTURE_SHAPES = [
-  { value: 'none', title: 'Semi-diameter' },
-  { value: 'circular', title: 'Circular' },
-  { value: 'annular', title: 'Annular' },
-  { value: 'rectangular', title: 'Rectangular' },
-  { value: 'elliptical', title: 'Elliptical' },
-]
-const APERTURE_FIELDS: Record<string, [string, string][]> = {
-  circular: [['radius', 'Radius']],
-  annular: [
-    ['inner_radius', 'Inner radius'],
-    ['outer_radius', 'Outer radius'],
-  ],
-  rectangular: [
-    ['half_x', 'Half width x'],
-    ['half_y', 'Half width y'],
-  ],
-  elliptical: [
-    ['semi_x', 'Semi-axis x'],
-    ['semi_y', 'Semi-axis y'],
-  ],
+const APERTURE_SHAPES = ['none', 'circular', 'annular', 'rectangular', 'elliptical']
+const APERTURE_FIELDS: Record<string, string[]> = {
+  circular: ['radius'],
+  annular: ['inner_radius', 'outer_radius'],
+  rectangular: ['half_x', 'half_y'],
+  elliptical: ['semi_x', 'semi_y'],
 }
 
 /** Clear aperture: automatic or fixed semi-diameter, and an optional explicit
  *  aperture shape. */
 function ApertureSection({ surface, autoValue, edit }: { surface: Surface; autoValue: number | null; edit: SurfaceEdit }) {
+  const t = useT()
   const ap = surface.aperture as JsonObject | null
   const shape = ap ? String(ap.type) : 'none'
   const fixed = surface.semi_diameter.mode === 'fixed'
-  const positive = (v: number) => (v > 0 && Number.isFinite(v) ? null : 'The value must be positive.')
-  const setShape = (t: string) => {
+  const positive = (v: number) => (v > 0 && Number.isFinite(v) ? null : t('inspector.aperture.positive'))
+  const setShape = (kind: string) => {
     const r = (fixed ? Number(surface.semi_diameter.value) : autoValue) || 5
     const next: JsonObject | null =
-      t === 'circular'
-        ? { type: t, radius: r }
-        : t === 'annular'
-          ? { type: t, inner_radius: r / 3, outer_radius: r }
-          : t === 'rectangular'
-            ? { type: t, half_x: r, half_y: r }
-            : t === 'elliptical'
-              ? { type: t, semi_x: r, semi_y: r }
+      kind === 'circular'
+        ? { type: kind, radius: r }
+        : kind === 'annular'
+          ? { type: kind, inner_radius: r / 3, outer_radius: r }
+          : kind === 'rectangular'
+            ? { type: kind, half_x: r, half_y: r }
+            : kind === 'elliptical'
+              ? { type: kind, semi_x: r, semi_y: r }
               : null
-    edit('Change Aperture', (s) => void (s.aperture = next))
+    edit(t('inspector.aperture.undo'), (s) => void (s.aperture = next))
   }
   return (
-    <Section title="Aperture">
-      <FormRow label="Semi-diameter">
+    <Section title={t('inspector.aperture.title')}>
+      <FormRow label={t('inspector.aperture.semiDiameter')}>
         <Segmented
-          label="Semi-diameter"
+          label={t('inspector.aperture.semiDiameter')}
           value={fixed ? 'fixed' : 'auto'}
           onChange={(m) =>
-            edit('Change Semi-Diameter', (s) => {
+            edit(t('inspector.aperture.undoSemiDiameter'), (s) => {
               s.semi_diameter = m === 'auto' ? { mode: 'auto' } : { mode: 'fixed', value: Number(s.semi_diameter.value) || (autoValue != null && autoValue > 0 ? Math.round(autoValue * 1e4) / 1e4 : 1) }
             })
           }
           options={[
-            { value: 'auto', title: 'Automatic' },
-            { value: 'fixed', title: 'Fixed' },
+            { value: 'auto', title: t('common.auto') },
+            { value: 'fixed', title: t('inspector.aperture.fixed') },
           ]}
         />
       </FormRow>
       {fixed ? (
         <NumberRow
-          label="Value"
+          label={t('inspector.aperture.value')}
           unit="mm"
           value={Number(surface.semi_diameter.value)}
           param={{ param: 'semi_diameter', surface: surface.id }}
           validate={positive}
-          onCommit={(v) => v != null && edit('Change Semi-Diameter', (s) => void (s.semi_diameter = { mode: 'fixed', value: v }))}
+          onCommit={(v) => v != null && edit(t('inspector.aperture.undoSemiDiameter'), (s) => void (s.semi_diameter = { mode: 'fixed', value: v }))}
         />
       ) : (
         autoValue != null &&
         Number.isFinite(autoValue) && (
-          <FormRow label="Computed" unit="mm">
+          <FormRow label={t('inspector.aperture.computed')} unit="mm">
             <span className="num text-secondary">{sig(autoValue, 6)}</span>
           </FormRow>
         )
       )}
-      <FormRow label="Clipping">
-        <Select aria-label="Clipping" className="w-full" value={APERTURE_SHAPES.some((a) => a.value === shape) ? shape : 'none'} onChange={(e) => setShape(e.target.value)}>
+      <FormRow label={t('inspector.aperture.clipping')}>
+        <Select aria-label={t('inspector.aperture.clipping')} className="w-full" value={APERTURE_SHAPES.includes(shape) ? shape : 'none'} onChange={(e) => setShape(e.target.value)}>
           {APERTURE_SHAPES.map((a) => (
-            <option key={a.value} value={a.value}>
-              {a.title}
+            <option key={a} value={a}>
+              {tMaybe(`inspector.aperture.shapes.${a}`)}
             </option>
           ))}
         </Select>
       </FormRow>
       {ap &&
-        (APERTURE_FIELDS[shape] ?? []).map(([k, title]) => (
+        (APERTURE_FIELDS[shape] ?? []).map((k) => (
           <NumberRow
             key={k}
-            label={title}
+            label={tMaybe(`inspector.aperture.fields.${k}`) ?? k}
             unit="mm"
             value={Number(ap[k] ?? 0)}
             validate={positive}
-            onCommit={(v) => v != null && edit('Change Aperture', (s) => void (s.aperture = { ...((s.aperture as JsonObject) ?? ap), [k]: v }))}
+            onCommit={(v) => v != null && edit(t('inspector.aperture.undo'), (s) => void (s.aperture = { ...((s.aperture as JsonObject) ?? ap), [k]: v }))}
           />
         ))}
     </Section>
@@ -391,6 +383,7 @@ function ApertureSection({ surface, autoValue, edit }: { surface: Surface; autoV
  *  menu, the type's summary and preview, then the data-driven sections,
  *  spacing and medium, aperture, placement, coating and solves. */
 export function SurfacePage() {
+  const t = useT()
   const system = useDocument((s) => s.project.system)
   const i = useView((s) => s.selection)
   const toast = useView((s) => s.toast)
@@ -403,8 +396,8 @@ export function SurfacePage() {
     return (
       <div className="flex flex-col items-center gap-1 py-10 text-center text-secondary" data-testid="surface-page">
         <MousePointerClick className="size-6" />
-        <span className="font-medium text-label">No Surface Selected</span>
-        <span className="text-[12px]">Select a row in the lens data to edit its surface.</span>
+        <span className="font-medium text-label">{t('inspector.surface.noneSelected')}</span>
+        <span className="text-[12px]">{t('inspector.surface.noneHelp')}</span>
       </div>
     )
   }
@@ -423,29 +416,29 @@ export function SurfacePage() {
     <div data-testid="surface-page">
       <div className="mb-2 flex items-center gap-2 px-1">
         <h2 className="text-[15px] font-semibold">{surfaceTitle(system, i)}</h2>
-        {i === system.stop && <span className="rounded-full bg-accent-soft px-1.5 py-[1px] text-[11px] font-medium text-accent">Stop</span>}
+        {i === system.stop && <span className="rounded-full bg-accent-soft px-1.5 py-[1px] text-[11px] font-medium text-accent">{t('inspector.surface.stop')}</span>}
         <span className="flex-1" />
         {!isEnd && i !== system.stop && (
           <Button size="sm" onClick={() => makeStop(i)}>
-            Make Stop
+            {t('inspector.surface.makeStop')}
           </Button>
         )}
       </div>
       <Section>
-        <FormRow label="Type">
+        <FormRow label={t('inspector.surface.type')}>
           <TypeSelect className="w-full" shape={s.shape} disabled={isEnd} onChange={(c) => applyTypeChoice(i, c)} />
         </FormRow>
         {d && <p className="py-1 text-[12px] text-secondary">{d.summary}</p>}
         {!isEnd && previewKind(s.shape.type) !== 'none' && <ShapePreview shape={s.shape} semiDiameter={semi} primaryUm={primaryUm} />}
-        <FormRow label="Comment">
-          <TextInput ariaLabel="Comment" value={s.label ?? ''} placeholder="none" onCommit={(v) => edit('Change Label', (sf) => void (sf.label = v))} />
+        <FormRow label={t('inspector.surface.comment')}>
+          <TextInput ariaLabel={t('inspector.surface.comment')} value={s.label ?? ''} placeholder={t('inspector.surface.none')} onCommit={(v) => edit(t('inspector.surface.undoLabel'), (sf) => void (sf.label = v))} />
         </FormRow>
       </Section>
 
       {placementFirst && <PlacementSection surface={s} edit={edit} />}
 
       {s.shape.type === 'diffractive' && (s.shape.base as Shape | undefined)?.type === 'plane' && (
-        <Section title="Base Shape">
+        <Section title={t('inspector.sections.baseShape')}>
           <BasePicker surface={s} edit={edit} />
         </Section>
       )}
@@ -457,8 +450,8 @@ export function SurfacePage() {
           const list = sec.coefficients
           if (!params.length && !list) return null
           return (
-            <Section key={sec.title} title={sec.title} footer={sec.footer}>
-              {s.shape.type === 'diffractive' && sec.title === 'Base Shape' && <BasePicker surface={s} edit={edit} />}
+            <Section key={sec.id} title={sec.title} footer={sec.footer}>
+              {s.shape.type === 'diffractive' && sec.id === 'baseShape' && <BasePicker surface={s} edit={edit} />}
               {params.map((p) => (
                 <ParamControl key={p.key} surface={s} param={p} edit={edit} />
               ))}
@@ -470,65 +463,65 @@ export function SurfacePage() {
       {s.shape.type === 'diffractive' && <DiffractionEfficiencySection surface={s} index={i} />}
 
       {s.shape.type === 'biconic' && (
-        <Section footer="A cylinder is a biconic with one section plane.">
+        <Section footer={t('inspector.surface.cylinderFooter')}>
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
               <Button variant="ghost" size="sm" className="-ml-1.5 text-accent">
-                Make Cylinder
+                {t('inspector.surface.makeCylinder')}
               </Button>
             </DropdownMenuTrigger>
             <DropdownMenuContent align="start">
-              <DropdownMenuItem onSelect={() => applyTypeChoice(i, 'cylinder_x')}>Power in x (plane in y)</DropdownMenuItem>
-              <DropdownMenuItem onSelect={() => applyTypeChoice(i, 'cylinder_y')}>Power in y (plane in x)</DropdownMenuItem>
+              <DropdownMenuItem onSelect={() => applyTypeChoice(i, 'cylinder_x')}>{t('inspector.surface.powerInX')}</DropdownMenuItem>
+              <DropdownMenuItem onSelect={() => applyTypeChoice(i, 'cylinder_y')}>{t('inspector.surface.powerInY')}</DropdownMenuItem>
             </DropdownMenuContent>
           </DropdownMenu>
         </Section>
       )}
 
       {i !== img && (
-        <Section title="Spacing and Medium">
+        <Section title={t('inspector.surface.spacing')}>
           <NumberRow
-            label={i === 0 ? 'Object distance' : 'Thickness'}
+            label={i === 0 ? t('inspector.surface.objectDistance') : t('inspector.surface.thickness')}
             unit="mm"
-            help="Distance to the next vertex."
+            help={t('inspector.surface.thicknessHelp')}
             value={nf(s.thickness)}
             param={i === 0 ? undefined : thicknessPath}
             onCommit={(v) => {
               if (v == null) return
-              if (!Number.isFinite(v) && i !== 0) return toast('Only the object distance can be infinite.', 'warning')
-              edit('Change Thickness', (sf) => void (sf.thickness = Number.isFinite(v) ? v : 'inf'))
+              if (!Number.isFinite(v) && i !== 0) return toast(t('inspector.surface.onlyObjectInfinite'), 'warning')
+              edit(t('inspector.surface.undoThickness'), (sf) => void (sf.thickness = Number.isFinite(v) ? v : 'inf'))
             }}
           />
           {!cb && i !== 0 && (
-            <FormRow label="Interaction">
+            <FormRow label={t('inspector.surface.interaction')}>
               <Segmented
-                label="Interaction"
+                label={t('inspector.surface.interaction')}
                 value={(s.interaction as 'refract' | 'reflect' | 'dummy') ?? 'refract'}
                 onChange={(v) =>
-                  edit('Change Interaction', (sf) => {
+                  edit(t('inspector.surface.undoInteraction'), (sf) => {
                     sf.interaction = v
                   })
                 }
                 options={[
-                  { value: 'refract', title: 'Refract' },
-                  { value: 'reflect', title: 'Mirror' },
-                  { value: 'dummy', title: 'Dummy' },
+                  { value: 'refract', title: t('inspector.surface.refract') },
+                  { value: 'reflect', title: t('inspector.surface.mirror') },
+                  { value: 'dummy', title: t('inspector.surface.dummy') },
                 ]}
               />
             </FormRow>
           )}
           {!cb && s.interaction === 'refract' && (
             <>
-              <FormRow label="Material">
+              <FormRow label={t('inspector.surface.material')}>
                 <TextInput
-                  ariaLabel="Material"
+                  ariaLabel={t('inspector.surface.material')}
                   value={materialText(s) || 'AIR'}
                   placeholder="AIR"
-                  suggestions={(t) => materialCompletions(t, materials)}
-                  onCommit={(t) => {
-                    const m = parseMaterial(t, materials)
+                  suggestions={(q) => materialCompletions(q, materials)}
+                  onCommit={(text) => {
+                    const m = parseMaterial(text, materials)
                     if ('error' in m) return toast(m.error, 'warning')
-                    edit('Change Material', (sf) => setMaterial(sf, m))
+                    edit(t('inspector.surface.undoMaterial'), (sf) => setMaterial(sf, m))
                   }}
                 />
               </FormRow>
@@ -539,15 +532,15 @@ export function SurfacePage() {
                     label="n_d"
                     value={Number(s.material.nd)}
                     param={{ param: 'model_nd', surface: s.id }}
-                    validate={(v) => (v >= 1 ? null : 'n_d must be at least 1.')}
-                    onCommit={(v) => v != null && edit('Change n_d', (sf) => void (sf.material = { ...sf.material, nd: v }))}
+                    validate={(v) => (v >= 1 ? null : t('inspector.surface.ndMin'))}
+                    onCommit={(v) => v != null && edit(t('inspector.surface.undoNd'), (sf) => void (sf.material = { ...sf.material, nd: v }))}
                   />
                   <NumberRow
                     label="V_d"
                     value={Number(s.material.vd)}
                     param={{ param: 'model_vd', surface: s.id }}
-                    validate={(v) => (v > 0 ? null : 'V_d must be positive.')}
-                    onCommit={(v) => v != null && edit('Change V_d', (sf) => void (sf.material = { ...sf.material, vd: v }))}
+                    validate={(v) => (v > 0 ? null : t('inspector.surface.vdPositive'))}
+                    onCommit={(v) => v != null && edit(t('inspector.surface.undoVd'), (sf) => void (sf.material = { ...sf.material, vd: v }))}
                   />
                 </>
               )}
@@ -568,20 +561,21 @@ export function SurfacePage() {
 }
 
 function CoatingSection({ surface, edit }: { surface: Surface; edit: SurfaceEdit }) {
+  const t = useT()
   const coatings = useDocument((s) => s.project.system.coatings as JsonObject | undefined)
   const names = Object.keys(coatings ?? {}).sort()
   const current = typeof surface.coating === 'string' ? surface.coating : ''
   return (
-    <Section title="Coating">
-      <FormRow label="Coating" help={names.length ? undefined : 'The design defines no coatings.'}>
-        <Select aria-label="Coating" className="w-full" value={current} onChange={(e) => edit('Change Coating', (s) => void (s.coating = e.target.value || null))}>
-          <option value="">Uncoated</option>
+    <Section title={t('inspector.coating.title')}>
+      <FormRow label={t('inspector.coating.title')} help={names.length ? undefined : t('inspector.coating.none')}>
+        <Select aria-label={t('inspector.coating.title')} className="w-full" value={current} onChange={(e) => edit(t('inspector.coating.undo'), (s) => void (s.coating = e.target.value || null))}>
+          <option value="">{t('inspector.coating.uncoated')}</option>
           {names.map((n) => (
             <option key={n} value={n}>
               {n}
             </option>
           ))}
-          {current && !names.includes(current) && <option value={current}>{current} (missing)</option>}
+          {current && !names.includes(current) && <option value={current}>{t('inspector.coating.missing', { name: current })}</option>}
         </Select>
       </FormRow>
     </Section>
@@ -590,17 +584,18 @@ function CoatingSection({ surface, edit }: { surface: Surface; edit: SurfaceEdit
 
 /** A DOE's base: plane, sphere / conic or even asphere ("Change Base Shape"). */
 function BasePicker({ surface, edit }: { surface: Surface; edit: SurfaceEdit }) {
+  const t = useT()
   return (
-    <FormRow label="Base">
+    <FormRow label={t('inspector.surface.base')}>
       <Select
-        aria-label="Base shape"
+        aria-label={t('inspector.surface.baseLabel')}
         className="w-full"
         value={String((surface.shape.base as Shape | undefined)?.type ?? 'plane')}
-        onChange={(e) => edit('Change Base Shape', (sf) => void (sf.shape = setDiffractiveBase(sf.shape, e.target.value)))}
+        onChange={(e) => edit(t('inspector.surface.undoBase'), (sf) => void (sf.shape = setDiffractiveBase(sf.shape, e.target.value)))}
       >
-        <option value="plane">Plane</option>
-        <option value="conic">Sphere / Conic</option>
-        <option value="even_asphere">Even Asphere</option>
+        <option value="plane">{t('inspector.types.plane.title')}</option>
+        <option value="conic">{t('inspector.types.conic.title')}</option>
+        <option value="even_asphere">{t('inspector.types.even_asphere.title')}</option>
       </Select>
     </FormRow>
   )

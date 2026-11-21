@@ -5,6 +5,7 @@
 // with the camera of camera.ts; positions are relative to the scene's centre
 // so float32 keeps them precise.
 
+import { t } from '@/i18n'
 import { seriesColor } from '@/lib/theme'
 import { rotation, type Camera, type Size } from './camera'
 import { doeColor, rayColor, rgba } from './draw'
@@ -73,7 +74,7 @@ export class Gl3D {
   /** Throws when the browser has no WebGL2. */
   constructor(canvas: HTMLCanvasElement) {
     const gl = canvas.getContext('webgl2', { antialias: true, premultipliedAlpha: true, alpha: true })
-    if (!gl) throw new Error('This browser has no WebGL2.')
+    if (!gl) throw new Error(t('lens.layout.noWebGL'))
     this.gl = gl
     this.line = compile(gl, LINE_VS, LINE_FS)
     this.mesh = compile(gl, MESH_VS, LINE_FS)

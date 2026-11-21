@@ -16,6 +16,8 @@
     <WindowsAppSDKSelfContained>true</WindowsAppSDKSelfContained>
     <SelfContained>true</SelfContained>
     <ApplicationIcon>Assets\MKLight.ico</ApplicationIcon>
+    <!-- UI text: Strings/<language>/Resources.resw (MRT Core), English the source and fallback. -->
+    <DefaultLanguage>en-US</DefaultLanguage>
   </PropertyGroup>
   <ItemGroup>
     <PackageReference Include="Microsoft.WindowsAppSDK" Version="2.7.0" />
@@ -33,5 +35,7 @@
     <!-- The engine DLL, when scripts/build-windows.ps1 has built it. -->
     <None Include="$(MKLightNativeDir)mklight_ffi.dll" Condition="Exists('$(MKLightNativeDir)mklight_ffi.dll')" Link="mklight_ffi.dll" CopyToOutputDirectory="PreserveNewest" />
     <Content Include="Assets\**" CopyToOutputDirectory="PreserveNewest" />
+    <!-- The engine text catalogs shared by every app (locales/<language>/engine.json at the repo root). -->
+    <Content Include="$(MSBuildThisFileDirectory)..\..\..\..\locales\**\engine.json" Link="locales\%(RecursiveDir)%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 </Project>

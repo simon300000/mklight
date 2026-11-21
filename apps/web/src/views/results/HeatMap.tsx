@@ -1,5 +1,6 @@
 // A square heat-map canvas with axes and an optional colour bar.
 import { useEffect, useRef, useState } from 'react'
+import { useT } from '@/i18n'
 import { cssVar } from '@/lib/theme'
 import { sig } from '@/model/format'
 import { FONT, niceTicks, rgbCss, setupCanvas, useSize } from './common'
@@ -36,6 +37,7 @@ function frameOf(W: number, H: number, bar: boolean) {
 }
 
 export function HeatMap(p: HeatMapProps) {
+  const t = useT()
   const [box, size] = useSize<HTMLDivElement>()
   const ref = useRef<HTMLCanvasElement>(null)
   const [hover, setHover] = useState<{ ix: number; iy: number; X: number; Y: number } | null>(null)
@@ -155,7 +157,7 @@ export function HeatMap(p: HeatMapProps) {
         y={hover.Y}
         width={size.w}
         title={`${name(p.xLabel)} ${sig(x, 3)}  ${name(p.yLabel)} ${sig(y, 3)}`}
-        rows={[{ label: p.colorBar?.label, value: Number.isFinite(v) ? sig(v, 4) : 'No value' }]}
+        rows={[{ label: p.colorBar?.label, value: Number.isFinite(v) ? sig(v, 4) : t('analysis.results.noValue') }]}
       />
     )
   }

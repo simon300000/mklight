@@ -4,6 +4,7 @@ using Microsoft.UI.Xaml.Automation;
 using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Controls.Primitives;
 using Microsoft.UI.Xaml.Media;
+using MKLight.App.Support;
 using MKLight.App.ViewModels;
 using MKLight.App.Views.Analysis.Results.Readers;
 using MKLight.App.Views.Analysis.Settings;
@@ -71,7 +72,7 @@ public sealed partial class ImageSimulationView
         var pattern = Json.Str(Json.At(src, "pattern")) ?? "grid";
         var title = file ?? kind switch
         {
-            "buffer" => "Image buffer",
+            "buffer" => Loc.S("Results_ImageSim_ImageBuffer"),
             "path" => Path.GetFileName(Json.Str(Json.At(src, "path")) ?? ""),
             _ => ImageSourcePatterns.Title(pattern),
         };
@@ -80,14 +81,13 @@ public sealed partial class ImageSimulationView
             menu.Items.Add(Radio(t, "source", file is null && kind == "pattern" && pattern == id, () => pane.SetSettings(ImageSourceImport.WithPattern(pane.Settings, id))));
         if (file is not null) menu.Items.Add(Radio(file, "source", true, () => { }));
         menu.Items.Add(new MenuFlyoutSeparator());
-        var choose = new MenuFlyoutItem { Text = "Choose Image…", Icon = new FontIcon { Glyph = "\uEB9F" } };
+        var choose = new MenuFlyoutItem { Text = Loc.S("Results_ImageSim_ChooseImage"), Icon = new FontIcon { Glyph = "\uEB9F" } };
         choose.Click += async (_, _) =>
         {
             if (await ImageSimulationFiles.PickAsync(this) is { } path) await UseFileAsync(pane, path);
         };
         menu.Items.Add(choose);
-        return MenuButton("Source: " + title, "Source", title,
-            "The scene: a built-in test pattern, or an image file (choose one, or drop it on the images); it is cropped to the field and resampled in linear light, at most 512 px a side.", menu);
+        return MenuButton(Loc.F("Results_ImageSim_SourceButton", title), Loc.S("Results_ImageSim_Source"), title, Loc.S("Results_ImageSim_SourceToolTip"), menu);
     }
 
     /// <summary>The field of view: a square around the patch centre, as a fraction of the field.</summary>
@@ -101,8 +101,8 @@ public sealed partial class ImageSimulationView
             menu.Items.Add(Radio(ImageSimulationSettings.ExtentLabel(e, k, size), "extent", Math.Abs(e - extent) < 1e-9,
                 () => pane.SetSettings(ImageSimulationSettings.WithFieldExtent(pane.Settings, e))));
         var title = ImageSimulationSettings.ExtentTitle(extent);
-        return MenuButton("View " + title, "Field of view", ImageSimulationSettings.ExtentLabel(extent, k, size),
-            "The simulated part of the field: a square around the patch center, as a fraction of the field. A smaller patch has finer pixels, so the blur shows.", menu);
+        return MenuButton(Loc.F("Results_ImageSim_ViewButton", title), Loc.S("Results_ImageSim_FieldOfView"), ImageSimulationSettings.ExtentLabel(extent, k, size),
+            Loc.S("Results_ImageSim_FieldOfViewToolTip"), menu);
     }
 
     /// <summary>The patch centre: the axis, a design field point, or a point picked on the field diagram.</summary>
@@ -122,11 +122,10 @@ public sealed partial class ImageSimulationView
         }
         if (!known) menu.Items.Add(Radio(ImageSimulationSettings.CenterTitle(center, points), "center", true, () => { }));
         menu.Items.Add(new MenuFlyoutSeparator());
-        var pick = new MenuFlyoutItem { Text = "Pick on the Field…", Icon = new FontIcon { Glyph = "\uE81D" } };
+        var pick = new MenuFlyoutItem { Text = Loc.S("Results_ImageSim_PickOnField"), Icon = new FontIcon { Glyph = "\uE81D" } };
         menu.Items.Add(pick);
         var title = ImageSimulationSettings.CenterTitle(center, points);
-        var b = MenuButton("At " + title, "Patch center", title,
-            "Where the patch is centered: on the axis, at a design field point, or anywhere you pick on the field.", menu);
+        var b = MenuButton(center.X == 0 && center.Y == 0 ? Loc.S("Results_ImageSim_AtAxis") : Loc.F("Results_ImageSim_At", title), Loc.S("Results_ImageSim_PatchCenter"), title, Loc.S("Results_ImageSim_PatchCenterToolTip"), menu);
         _centerButton = b;
         _picker = new Flyout
         {
@@ -143,7 +142,7 @@ public sealed partial class ImageSimulationView
         var size = ImageSimulationSettings.Size(s);
         var menu = new MenuFlyout { Placement = FlyoutPlacementMode.BottomEdgeAlignedLeft };
         foreach (var n in ImageSimulationSettings.Sizes)
-            menu.Items.Add(Radio(Kit.Inv($"{n} × {n} px"), "size", n == size, async () => pane.SetSettings(await ImageSimulationFiles.WithSizeAsync(pane, n))));
-        return MenuButton(Kit.Inv($"{size} px"), "Resolution", Kit.Inv($"{size} pixels"), "Output pixels per side", menu);
+            menu.Items.Add(Radio(Loc.F("Results_ImageSim_SizeItem", n), "size", n == size, async () => pane.SetSettings(await ImageSimulationFiles.WithSizeAsync(pane, n))));
+        return MenuButton(Loc.F("Results_ImageSim_SizeButton", size), Loc.S("Results_ImageSim_Resolution"), Loc.F("Results_ImageSim_Pixels", size), Loc.S("Results_ImageSim_ResolutionToolTip"), menu);
     }
 }

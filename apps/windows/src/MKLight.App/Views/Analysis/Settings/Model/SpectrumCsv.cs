@@ -1,4 +1,5 @@
 using System.Globalization;
+using MKLight.App.Support;
 
 namespace MKLight.App.Views.Analysis.Settings;
 
@@ -25,7 +26,7 @@ public sealed record SpectrumCsv(IReadOnlyList<SpectrumSample> Table, bool Nanom
     public (double Lo, double Hi)? RangeUm => Table.Count >= 2 && Table[^1].Um > Table[0].Um ? (Table[0].Um, Table[^1].Um) : null;
 
     /// <summary>A file that could not be read at all.</summary>
-    public static SpectrumCsv Unreadable(string name) => new([], false, null, [new BadRow(0, name, "cannot be read")]);
+    public static SpectrumCsv Unreadable(string name) => new([], false, null, [new BadRow(0, name, Loc.S("Analysis_Csv_CannotRead"))]);
 
     static readonly string[] NmWords = ["nm", "nanometer", "nanometers", "nanometre", "nanometres"];
     static readonly string[] UmWords = ["um", "µm", "micron", "microns", "micrometer", "micrometers", "micrometre", "micrometres"];
@@ -50,11 +51,11 @@ public sealed record SpectrumCsv(IReadOnlyList<SpectrumSample> Table, bool Nanom
             if (a is not double x || b is not double y)
             {
                 if (rows.Count == 0 && bad.Count == 0 && header is null && cells.Any(c => Number(c) is null)) header = line;
-                else bad.Add(new(k + 1, line, cells.Length < 2 ? "needs two columns" : "not a number"));
+                else bad.Add(new(k + 1, line, cells.Length < 2 ? Loc.S("Analysis_Csv_TwoColumns") : Loc.S("Analysis_Csv_NotNumber")));
                 continue;
             }
-            if (!(double.IsFinite(x) && x > 0)) bad.Add(new(k + 1, line, "wavelength must be positive"));
-            else if (!(double.IsFinite(y) && y >= 0)) bad.Add(new(k + 1, line, "response must not be negative"));
+            if (!(double.IsFinite(x) && x > 0)) bad.Add(new(k + 1, line, Loc.S("Analysis_Csv_WavelengthPositive")));
+            else if (!(double.IsFinite(y) && y >= 0)) bad.Add(new(k + 1, line, Loc.S("Analysis_Csv_ResponseNegative")));
             else rows.Add((k + 1, line, x, y));
         }
         // Units: a header that names them wins; otherwise wavelengths above
@@ -68,7 +69,7 @@ public sealed record SpectrumCsv(IReadOnlyList<SpectrumSample> Table, bool Nanom
             var um = r.Um * scale;
             if (table.Count > 0 && Math.Abs(table[^1].Um - um) < 1e-12)
             {
-                bad.Add(new(r.Line, r.Text, "repeats a wavelength"));
+                bad.Add(new(r.Line, r.Text, Loc.S("Analysis_Csv_RepeatsWavelength")));
                 continue;
             }
             table.Add(new(um, r.Value));

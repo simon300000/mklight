@@ -66,12 +66,12 @@ public sealed class GlassDetailView : UserControl
         var stack = new StackPanel { Spacing = 14, Padding = new Thickness(4, 4, 8, 20) };
         stack.Children.Add(Header(d));
         stack.Children.Add(Actions(d));
-        stack.Children.Add(Section("Availability", Availability(d)));
-        if (Index(d) is { } index) stack.Children.Add(Section("Index", index));
-        stack.Children.Add(Section("Optical Data", Optical(d)));
-        stack.Children.Add(Section("Dispersion", Dispersion(d)));
-        stack.Children.Add(Section("Physical and Catalog Data", Physical(d)));
-        if (Notes(d) is { } notes) stack.Children.Add(Section("Catalog Notes", notes));
+        stack.Children.Add(Section(Loc.S("Glass_Detail_Availability"), Availability(d)));
+        if (Index(d) is { } index) stack.Children.Add(Section(Loc.S("Glass_Detail_Index"), index));
+        stack.Children.Add(Section(Loc.S("Glass_Detail_OpticalData"), Optical(d)));
+        stack.Children.Add(Section(Loc.S("Glass_Detail_Dispersion"), Dispersion(d)));
+        stack.Children.Add(Section(Loc.S("Glass_Detail_PhysicalData"), Physical(d)));
+        if (Notes(d) is { } notes) stack.Children.Add(Section(Loc.S("Glass_Detail_CatalogNotes"), notes));
         if (d.Comment.Length > 0)
             stack.Children.Add(new TextBlock { Text = d.Comment, Style = S("SecondaryText"), TextWrapping = TextWrapping.Wrap, IsTextSelectionEnabled = true });
         _scroll.Content = stack;
@@ -82,8 +82,8 @@ public sealed class GlassDetailView : UserControl
     {
         var p = new StackPanel { Spacing = 6, HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(16, 160, 16, 0) };
         p.Children.Add(new FontIcon { Glyph = "\uEA3A", FontSize = 28, Foreground = ThemeLookup.Brush(this, "TextFillColorTertiaryBrush") });
-        p.Children.Add(new TextBlock { Text = "No Glass Selected", Style = S("PanelTitleText"), FontSize = 15, HorizontalAlignment = HorizontalAlignment.Center });
-        p.Children.Add(new TextBlock { Text = "Select a glass to see its data and use it.", Style = S("SecondaryText"), HorizontalAlignment = HorizontalAlignment.Center, TextWrapping = TextWrapping.Wrap, TextAlignment = TextAlignment.Center });
+        p.Children.Add(new TextBlock { Text = Loc.S("Glass_Detail_NoGlass"), Style = S("PanelTitleText"), FontSize = 15, HorizontalAlignment = HorizontalAlignment.Center });
+        p.Children.Add(new TextBlock { Text = Loc.S("Glass_Detail_NoGlassText"), Style = S("SecondaryText"), HorizontalAlignment = HorizontalAlignment.Center, TextWrapping = TextWrapping.Wrap, TextAlignment = TextAlignment.Center });
         return p;
     }
 
@@ -109,11 +109,11 @@ public sealed class GlassDetailView : UserControl
             Width = 7, Height = 7, VerticalAlignment = VerticalAlignment.Center, StrokeThickness = 1.2,
             Fill = new SolidColorBrush(obsolete ? Microsoft.UI.Colors.Transparent : color), Stroke = new SolidColorBrush(color),
         });
-        p.Children.Add(new TextBlock { Text = row.Status.Title, Style = S("BodyText") });
+        p.Children.Add(new TextBlock { Text = GlassFormat.StatusTitle(row.Status), Style = S("BodyText") });
         if (row.Overridden)
         {
             var mark = new FontIcon { Glyph = "\uE77B", FontSize = 11, Foreground = ThemeLookup.Brush(this, "TextFillColorSecondaryBrush") };
-            ToolTipService.SetToolTip(mark, "Your setting (the catalog says otherwise)");
+            ToolTipService.SetToolTip(mark, Loc.S("Glass_Detail_OverriddenTip"));
             p.Children.Add(mark);
         }
         return p;
@@ -127,20 +127,20 @@ public sealed class GlassDetailView : UserControl
         var use = new Button
         {
             Style = S("AccentButtonStyle"), HorizontalAlignment = HorizontalAlignment.Stretch, Height = 34, CornerRadius = new CornerRadius(17),
-            IsEnabled = index is not null, Content = IconText("\uE8B0", index is int i ? $"Use for Surface {i}" : "Use for Surface"),
+            IsEnabled = index is not null, Content = IconText("\uE8B0", index is int i ? Loc.F("Glass_Menu_UseForSurface", i) : Loc.S("Glass_Detail_UseForSurface")),
         };
-        ToolTipService.SetToolTip(use, why ?? "Make the selected surface's following medium this glass");
+        ToolTipService.SetToolTip(use, why ?? Loc.S("Glass_Detail_UseTip"));
         use.Click += (_, _) => _model.UseSelected();
         p.Children.Add(use);
         if (why is not null) p.Children.Add(new TextBlock { Text = why, Style = S("CaptionText"), TextWrapping = TextWrapping.Wrap });
         var buttons = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 6 };
-        buttons.Children.Add(Capsule("Copy Name", "\uE8C8", Copy));
+        buttons.Children.Add(Capsule(Loc.S("Glass_Menu_CopyName"), "\uE8C8", Copy));
         if (user)
         {
-            buttons.Children.Add(Capsule("Edit…", "\uE70F", Edit));
-            buttons.Children.Add(Capsule("Delete", "\uE74D", Delete));
+            buttons.Children.Add(Capsule(Loc.S("Glass_Detail_Edit"), "\uE70F", Edit));
+            buttons.Children.Add(Capsule(Loc.S("Glass_Delete_Button"), "\uE74D", Delete));
         }
-        else buttons.Children.Add(Capsule("Duplicate…", "\uE8F4", Duplicate, "Copy this glass into a user catalog to edit it"));
+        else buttons.Children.Add(Capsule(Loc.S("Glass_Menu_Duplicate"), "\uE8F4", Duplicate, Loc.S("Glass_Detail_DuplicateTip")));
         p.Children.Add(buttons);
         return p;
     }
@@ -170,8 +170,8 @@ public sealed class GlassDetailView : UserControl
         for (var i = 0; i < 3; i++) g.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
 
         var status = new ComboBox { MinWidth = 150, HorizontalAlignment = HorizontalAlignment.Right };
-        status.Items.Add(new ComboBoxItem { Content = $"Catalog ({d.CatalogStatus.Title})", Tag = -1 });
-        foreach (var s in GlassStatus.Choices) status.Items.Add(new ComboBoxItem { Content = s.Title, Tag = s.Code });
+        status.Items.Add(new ComboBoxItem { Content = Loc.F("Glass_Detail_CatalogStatus", GlassFormat.StatusTitle(d.CatalogStatus)), Tag = -1 });
+        foreach (var s in GlassStatus.Choices) status.Items.Add(new ComboBoxItem { Content = GlassFormat.StatusTitle(s), Tag = s.Code });
         var own = _model.Library.OverrideFor(row.Catalog, row.Name)?.Status;
         status.SelectedIndex = own is { } o ? 1 + GlassStatus.Choices.ToList().IndexOf(o) : 0;
         status.SelectionChanged += (_, _) =>
@@ -179,7 +179,7 @@ public sealed class GlassDetailView : UserControl
             if (_building || status.SelectedItem is not ComboBoxItem { Tag: int code }) return;
             _model.SetStatus(code < 0 ? null : new GlassStatus(code), row);
         };
-        AddRow(g, 0, "Status", status);
+        AddRow(g, 0, Loc.S("Glass_Label_Status"), status);
 
         var use = new ToggleSwitch { IsOn = !row.ExcludeSubstitution, OnContent = "", OffContent = "", HorizontalAlignment = HorizontalAlignment.Right };
         // Only the switch itself: no room for On / Off text.
@@ -192,11 +192,11 @@ public sealed class GlassDetailView : UserControl
             var excluded = !use.IsOn;
             _model.SetExcluded(excluded == d.CatalogExcludeSubstitution ? null : excluded, row);
         };
-        AddRow(g, 1, "Use in glass substitution", use);
+        AddRow(g, 1, Loc.S("Glass_Detail_UseInSubstitution"), use);
 
         var note = new TextBlock
         {
-            Text = "Your settings apply to every design and are not saved in projects. Glass substitution skips obsolete, special and excluded glasses by default.",
+            Text = Loc.S("Glass_Detail_SettingsNote"),
             Style = S("CaptionText"), TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0, 2, 0, 0),
         };
         Grid.SetRow(note, 2);
@@ -226,16 +226,16 @@ public sealed class GlassDetailView : UserControl
         var tip = GlassFormat.IrTip(r);
         g.Add("nd", GlassFormat.Fixed(r.Nd, 6), tip);
         g.Add("Vd", GlassFormat.Fixed(r.Vd, 3), tip);
-        if (tip is not null && GlassFormat.CatalogListed(r) is { } listed) g.Add("Catalog lists", listed, tip);
+        if (tip is not null && GlassFormat.CatalogListed(r) is { } listed) g.Add(Loc.S("Glass_Detail_CatalogLists"), listed, tip);
         if (r.Pgf is { } pgf) g.Add("Pg,F", GlassFormat.Fixed(pgf, 4));
         if (r.Dpgf is { } dp) g.Add("ΔPg,F", GlassFormat.Signed(dp));
         // An IR glass's file lists ΔPg,F 0 as a placeholder (its g, F, C lines are outside the range).
-        if (d.CatalogDpgf is { } cdp && !(cdp == 0 && r.Pgf is null)) g.Add("ΔPg,F (catalog)", GlassFormat.Signed(cdp));
-        g.Add("Range", r.UnrestrictedRange ? "unrestricted" : $"{GlassFormat.Fixed(r.MinUm, 3)} – {GlassFormat.Fixed(r.MaxUm, 3)} µm");
+        if (d.CatalogDpgf is { } cdp && !(cdp == 0 && r.Pgf is null)) g.Add(Loc.S("Glass_Detail_DpgfCatalog"), GlassFormat.Signed(cdp));
+        g.Add(Loc.S("Glass_Detail_Range"), r.UnrestrictedRange ? Loc.S("Glass_Detail_Unrestricted") : $"{GlassFormat.Fixed(r.MinUm, 3)} – {GlassFormat.Fixed(r.MaxUm, 3)} µm");
         foreach (var l in d.Lines) g.Add($"n{l.Line}  ({GlassFormat.Fixed(l.Um * 1000, 1)} nm)", GlassFormat.Fixed(l.N, 6));
         if (tip is not null) g.Note(r.Nd is null
-            ? "No nd or Vd: the d line (587.6 nm) is outside this glass's range."
-            : "No Vd: the F or C line is outside this glass's range.");
+            ? Loc.S("Glass_Detail_NoNdVd")
+            : Loc.S("Glass_Detail_NoVd"));
         return g.Grid;
     }
 
@@ -243,8 +243,8 @@ public sealed class GlassDetailView : UserControl
     {
         var p = new StackPanel { Spacing = 8 };
         string title = d.AbbeModel is { } m
-            ? $"Model glass: nd {GlassFormat.Fixed(m.Nd, 5)}, Vd {GlassFormat.Fixed(m.Vd, 2)}, ΔPg,F {GlassFormat.Signed(m.Dpgf)}"
-            : d.Formula is int f ? $"Formula {f}: {d.FormulaName}" : d.FormulaName;
+            ? Loc.F("Glass_Detail_ModelGlass", GlassFormat.Fixed(m.Nd, 5), GlassFormat.Fixed(m.Vd, 2), GlassFormat.Signed(m.Dpgf))
+            : d.Formula is int f ? Loc.F("Glass_Detail_Formula", f, d.FormulaName) : d.FormulaName;
         p.Children.Add(new TextBlock { Text = title, Style = S("BodyText"), TextWrapping = TextWrapping.Wrap });
         if (d.AbbeModel is null && d.Coefficients.Count > 0 && d.Formula is int formula)
         {
@@ -261,20 +261,20 @@ public sealed class GlassDetailView : UserControl
     {
         var g = new Rows();
         var r = d.Row;
-        if (r.Density is { } density) g.Add("Density", GlassFormat.Fixed(density, 3) + " g/cm³");
+        if (r.Density is { } density) g.Add(Loc.S("Glass_Detail_Density"), GlassFormat.Fixed(density, 3) + " g/cm³");
         if (r.Tce is { } tce) g.Add("TCE −30…70 °C", GlassFormat.Fixed(tce, 2) + " ·10⁻⁶/K");
         if (d.Tce100To300 is { } tce2) g.Add("TCE 100…300 °C", GlassFormat.Fixed(tce2, 2) + " ·10⁻⁶/K");
-        if (r.RelativeCost is { } cost) g.Add("Relative cost", GlassFormat.Fixed(cost, 2));
-        if (r.ClimateResistance is { } cr) g.Add("Climate (CR)", GlassFormat.Fixed(cr, 0));
-        if (r.StainResistance is { } fr) g.Add("Stain (FR)", GlassFormat.Fixed(fr, 0));
-        if (d.AcidResistance is { } sr) g.Add("Acid (SR)", GlassFormat.Fixed(sr, 1));
-        if (d.AlkaliResistance is { } ar) g.Add("Alkali (AR)", GlassFormat.Fixed(ar, 1));
-        if (d.PhosphateResistance is { } pr) g.Add("Phosphate (PR)", GlassFormat.Fixed(pr, 1));
-        if (r.TransmissionMinUm is { } lo && r.TransmissionMaxUm is { } hi) g.Add("Transmission data", $"{GlassFormat.Fixed(lo, 3)} – {GlassFormat.Fixed(hi, 3)} µm");
-        if (r.Lambda80Um is { } l80) g.Add("λ for 80 % (10 mm)", GlassFormat.Fixed(l80 * 1000, 0) + " nm");
-        g.Add("Thermal dn/dT data", d.HasThermalData ? "yes" : "none");
-        if (d.MeltFrequency is int mf) g.Add("Melt frequency", mf.ToString(CultureInfo.InvariantCulture));
-        if (d.MilCode is { Length: > 0 } mil) g.Add("Glass code", mil);
+        if (r.RelativeCost is { } cost) g.Add(Loc.S("Glass_Detail_RelativeCost"), GlassFormat.Fixed(cost, 2));
+        if (r.ClimateResistance is { } cr) g.Add(Loc.S("Glass_Detail_Climate"), GlassFormat.Fixed(cr, 0));
+        if (r.StainResistance is { } fr) g.Add(Loc.S("Glass_Detail_Stain"), GlassFormat.Fixed(fr, 0));
+        if (d.AcidResistance is { } sr) g.Add(Loc.S("Glass_Detail_Acid"), GlassFormat.Fixed(sr, 1));
+        if (d.AlkaliResistance is { } ar) g.Add(Loc.S("Glass_Detail_Alkali"), GlassFormat.Fixed(ar, 1));
+        if (d.PhosphateResistance is { } pr) g.Add(Loc.S("Glass_Detail_Phosphate"), GlassFormat.Fixed(pr, 1));
+        if (r.TransmissionMinUm is { } lo && r.TransmissionMaxUm is { } hi) g.Add(Loc.S("Glass_Detail_Transmission"), $"{GlassFormat.Fixed(lo, 3)} – {GlassFormat.Fixed(hi, 3)} µm");
+        if (r.Lambda80Um is { } l80) g.Add(Loc.S("Glass_Detail_Lambda80"), GlassFormat.Fixed(l80 * 1000, 0) + " nm");
+        g.Add(Loc.S("Glass_Detail_Thermal"), d.HasThermalData ? Loc.S("Glass_Detail_Yes") : Loc.S("Glass_Value_None"));
+        if (d.MeltFrequency is int mf) g.Add(Loc.S("Glass_Detail_MeltFrequency"), mf.ToString(CultureInfo.InvariantCulture));
+        if (d.MilCode is { Length: > 0 } mil) g.Add(Loc.S("Glass_Detail_GlassCode"), mil);
         return g.Grid;
     }
 
@@ -290,7 +290,7 @@ public sealed class GlassDetailView : UserControl
             line.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
             line.ColumnDefinitions.Add(new ColumnDefinition());
             line.Children.Add(new FontIcon { Glyph = "\uE7BA", FontSize = 12, Foreground = ThemeLookup.Brush(this, "WarningBrush"), VerticalAlignment = VerticalAlignment.Top, Margin = new Thickness(0, 3, 0, 0) });
-            var text = new TextBlock { Text = (w.Line is int n ? $"Line {n}: " : "") + w.Message, Style = S("BodyText"), TextWrapping = TextWrapping.Wrap };
+            var text = new TextBlock { Text = GlassFormat.Note(w), Style = S("BodyText"), TextWrapping = TextWrapping.Wrap };
             Grid.SetColumn(text, 1);
             line.Children.Add(text);
             p.Children.Add(line);

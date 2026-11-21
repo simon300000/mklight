@@ -1,5 +1,6 @@
-using System.Globalization;
+using MKLight.App.Support;
 using MKLight.Engine;
+using MKLight.Model;
 
 namespace MKLight.App.ViewModels;
 
@@ -95,29 +96,28 @@ public sealed class GpuPreparationMonitor
     /// <summary>The capsule's text: "Preparing GPU 42%", "GPU ready", or null (nothing shown).</summary>
     public static string? BadgeText(GpuPreparation state, Display shown) => shown switch
     {
-        Display.Preparing => "Preparing GPU " + Math.Round(state.Fraction * 100).ToString("0", CultureInfo.InvariantCulture) + "%",
-        Display.Finished => "GPU ready",
+        Display.Preparing => Loc.F("Shell_Gpu_BadgePreparing", Math.Round(state.Fraction * 100)),
+        Display.Finished => Loc.S("Shell_Gpu_BadgeReady"),
         _ => null,
     };
 
-    public const string BadgeHelp =
-        "Compiling the GPU's compute kernels, once after installing or updating MKLight or the graphics driver. A GPU analysis started now waits only for the kernels it needs.";
+    public static string BadgeHelp => Loc.S("Shell_Gpu_BadgeHelp");
 
     /// <summary>The details' "GPU kernels" row; null when there is nothing to say (idle).</summary>
     public static string? Summary(GpuPreparation state) => state switch
     {
         GpuPreparation.Preparing p => p.Total > 0
-            ? $"Preparing ({p.Done.ToString(CultureInfo.InvariantCulture)} of {p.Total.ToString(CultureInfo.InvariantCulture)})"
-            : "Preparing",
+            ? Loc.F("Shell_Gpu_PreparingCount", p.Done, p.Total)
+            : Loc.S("Shell_Gpu_Preparing"),
         GpuPreparation.Ready r => r.FromCache == r.Kernels
-            ? $"Ready ({r.Kernels.ToString(CultureInfo.InvariantCulture)}, loaded from cache)"
-            : $"Ready ({r.Kernels.ToString(CultureInfo.InvariantCulture)}, prepared in {r.Seconds.ToString("0.0", CultureInfo.InvariantCulture)} s)",
-        GpuPreparation.Unavailable u => "No GPU: " + u.Reason,
-        GpuPreparation.Failed f => $"Compiled on first use ({f.Message})",
+            ? Loc.F("Shell_Gpu_ReadyFromCache", r.Kernels)
+            : Loc.F("Shell_Gpu_ReadyPrepared", r.Kernels, r.Seconds),
+        GpuPreparation.Unavailable u => Loc.F("Shell_Gpu_NoGpu", EngineText.T(u.Reason)),
+        GpuPreparation.Failed f => Loc.F("Shell_Gpu_CompiledOnFirstUse", f.Message),
         _ => null,
     };
 
     /// <summary>A second line under the row: the kernels are ready, but the saved ones could not be read or written.</summary>
     public static string? Note(GpuPreparation state) =>
-        state is GpuPreparation.Ready { Warning: { } w } ? $"Kernel cache unavailable: the next launch compiles again ({w})" : null;
+        state is GpuPreparation.Ready { Warning: { } w } ? Loc.F("Shell_Gpu_CacheUnavailable", w) : null;
 }

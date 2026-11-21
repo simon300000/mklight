@@ -3,13 +3,39 @@
 
 import { create } from 'zustand'
 import type { BackendRequest, EngineInfo } from '@/engine/types'
+import { t } from '@/i18n'
 
 export type BackendPreference = 'auto' | 'cpu_reference' | 'gpu'
 
-export const BACKEND_CHOICES: { value: BackendPreference; title: string; help: string }[] = [
-  { value: 'auto', title: 'Automatic', help: 'The GPU where the engine has a path and it pays off, else the CPU.' },
-  { value: 'cpu_reference', title: 'CPU reference (f64)', help: 'The double-precision reference path for every analysis.' },
-  { value: 'gpu', title: 'GPU', help: 'The GPU (f32) where the engine has a path; others fall back to the CPU.' },
+/** The choices, their texts in the current language (read when shown). */
+export const BACKEND_CHOICES: { value: BackendPreference; readonly title: string; readonly help: string }[] = [
+  {
+    value: 'auto',
+    get title() {
+      return t('app.backend.auto.title')
+    },
+    get help() {
+      return t('app.backend.auto.help')
+    },
+  },
+  {
+    value: 'cpu_reference',
+    get title() {
+      return t('app.backend.cpu_reference.title')
+    },
+    get help() {
+      return t('app.backend.cpu_reference.help')
+    },
+  },
+  {
+    value: 'gpu',
+    get title() {
+      return t('app.backend.gpu.title')
+    },
+    get help() {
+      return t('app.backend.gpu.help')
+    },
+  },
 ]
 
 const KEY = 'mklight.backend'

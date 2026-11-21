@@ -1,6 +1,7 @@
 using System.Globalization;
 using System.Text.Json;
 using System.Text.Json.Nodes;
+using MKLight.App.Support;
 using MKLight.Engine;
 using MKLight.Model;
 
@@ -69,6 +70,26 @@ public static class ToleranceKinds
 
     public static string Title(this ToleranceKind k) => k switch
     {
+        ToleranceKind.Radius => Loc.S("Jobs_Tolerance_Model_Kind_Radius"),
+        ToleranceKind.IrregularityAstigmatism => Loc.S("Jobs_Tolerance_Model_Kind_IrregularityAstigmatism"),
+        ToleranceKind.IrregularitySpherical => Loc.S("Jobs_Tolerance_Model_Kind_IrregularitySpherical"),
+        ToleranceKind.Thickness => Loc.S("Jobs_Tolerance_Model_Kind_Thickness"),
+        ToleranceKind.DecenterX => Loc.S("Jobs_Tolerance_Model_Kind_DecenterX"),
+        ToleranceKind.DecenterY => Loc.S("Jobs_Tolerance_Model_Kind_DecenterY"),
+        ToleranceKind.TiltX => Loc.S("Jobs_Tolerance_Model_Kind_TiltX"),
+        ToleranceKind.TiltY => Loc.S("Jobs_Tolerance_Model_Kind_TiltY"),
+        ToleranceKind.ElementDecenterX => Loc.S("Jobs_Tolerance_Model_Kind_ElementDecenterX"),
+        ToleranceKind.ElementDecenterY => Loc.S("Jobs_Tolerance_Model_Kind_ElementDecenterY"),
+        ToleranceKind.ElementTiltX => Loc.S("Jobs_Tolerance_Model_Kind_ElementTiltX"),
+        ToleranceKind.ElementTiltY => Loc.S("Jobs_Tolerance_Model_Kind_ElementTiltY"),
+        ToleranceKind.Index => Loc.S("Jobs_Tolerance_Model_Kind_Index"),
+        ToleranceKind.Abbe => Loc.S("Jobs_Tolerance_Model_Kind_Abbe"),
+        _ => Loc.S("Jobs_Tolerance_Model_Kind_Parameter"),
+    };
+
+    /// <summary>The title in English whatever the UI language: the engine's operand labels and the exported files.</summary>
+    public static string EnglishTitle(this ToleranceKind k) => k switch
+    {
         ToleranceKind.Radius => "Radius",
         ToleranceKind.IrregularityAstigmatism => "Astig. irregularity",
         ToleranceKind.IrregularitySpherical => "Sph. irregularity",
@@ -89,12 +110,12 @@ public static class ToleranceKinds
     /// <summary>The title in the tolerance table, where the surface column tells a surface (<c>S3</c>) from an element (<c>L2</c>).</summary>
     public static string ShortTitle(this ToleranceKind k) => k switch
     {
-        ToleranceKind.IrregularityAstigmatism => "Irreg. astig.",
-        ToleranceKind.IrregularitySpherical => "Irreg. sph.",
-        ToleranceKind.DecenterX or ToleranceKind.ElementDecenterX => "Decenter x",
-        ToleranceKind.DecenterY or ToleranceKind.ElementDecenterY => "Decenter y",
-        ToleranceKind.TiltX or ToleranceKind.ElementTiltX => "Tilt x",
-        ToleranceKind.TiltY or ToleranceKind.ElementTiltY => "Tilt y",
+        ToleranceKind.IrregularityAstigmatism => Loc.S("Jobs_Tolerance_Model_KindShort_IrregularityAstigmatism"),
+        ToleranceKind.IrregularitySpherical => Loc.S("Jobs_Tolerance_Model_KindShort_IrregularitySpherical"),
+        ToleranceKind.DecenterX or ToleranceKind.ElementDecenterX => Loc.S("Jobs_Tolerance_Model_KindShort_DecenterX"),
+        ToleranceKind.DecenterY or ToleranceKind.ElementDecenterY => Loc.S("Jobs_Tolerance_Model_KindShort_DecenterY"),
+        ToleranceKind.TiltX or ToleranceKind.ElementTiltX => Loc.S("Jobs_Tolerance_Model_KindShort_TiltX"),
+        ToleranceKind.TiltY or ToleranceKind.ElementTiltY => Loc.S("Jobs_Tolerance_Model_KindShort_TiltY"),
         _ => k.Title(),
     };
 
@@ -177,15 +198,15 @@ public static class ToleranceUnits
 
     public static string Title(this ToleranceUnit u) => u switch
     {
-        ToleranceUnit.Fringes => "Test fringes",
+        ToleranceUnit.Fringes => Loc.S("Jobs_Tolerance_Model_Unit_TestFringes"),
         ToleranceUnit.RadiusMM => "ΔR (mm)",
-        ToleranceUnit.Percent => "Percent",
+        ToleranceUnit.Percent => Loc.S("Jobs_Tolerance_Model_Unit_Percent"),
         ToleranceUnit.Mm => "mm",
-        ToleranceUnit.Arcmin => "Arc minutes",
-        ToleranceUnit.Degrees => "Degrees",
+        ToleranceUnit.Arcmin => Loc.S("Jobs_Tolerance_Model_Unit_ArcMinutes"),
+        ToleranceUnit.Degrees => Loc.S("Jobs_Tolerance_Model_Unit_Degrees"),
         ToleranceUnit.Index => "Δn",
         ToleranceUnit.Abbe => "ΔV_d",
-        _ => "Parameter units",
+        _ => Loc.S("Jobs_Tolerance_Model_Unit_ParameterUnits"),
     };
 
     /// <summary>The unit after a number: <c>" fr"</c>, <c>"′"</c> (no space), <c>""</c>.</summary>
@@ -228,10 +249,10 @@ public readonly record struct ToleranceDistribution(ToleranceDistributionKind Ki
 
     public string Title => Kind switch
     {
-        ToleranceDistributionKind.Normal => $"Normal (limits at ±{MeritFormat.Short(Sigmas)} σ)",
-        ToleranceDistributionKind.EndPoint => "End points",
-        ToleranceDistributionKind.Parabolic => "Parabolic (mostly near the limits)",
-        _ => "Uniform",
+        ToleranceDistributionKind.Normal => Loc.F("Jobs_Tolerance_Model_Distribution_Normal", MeritFormat.Short(Sigmas)),
+        ToleranceDistributionKind.EndPoint => Loc.S("Jobs_Tolerance_Model_Distribution_EndPoints"),
+        ToleranceDistributionKind.Parabolic => Loc.S("Jobs_Tolerance_Model_Distribution_Parabolic"),
+        _ => Loc.S("Jobs_Tolerance_Model_Distribution_Uniform"),
     };
 }
 
@@ -402,62 +423,62 @@ public sealed class ToleranceRow
     /// <summary>The engine's limits <c>(minus, plus)</c> in parameter units, or why the row cannot be expanded.</summary>
     public ToleranceLimits EngineLimits(ToleranceContext c)
     {
-        if (!(double.IsFinite(Minus) && double.IsFinite(Plus) && Minus >= 0 && Plus >= 0)) return ToleranceLimits.Fail("Limits must be zero or positive numbers.");
-        if (!(Minus > 0 || Plus > 0)) return ToleranceLimits.Fail("Both limits are zero.");
+        if (!(double.IsFinite(Minus) && double.IsFinite(Plus) && Minus >= 0 && Plus >= 0)) return ToleranceLimits.Fail(Loc.S("Jobs_Tolerance_Model_Issue_LimitsNotPositive"));
+        if (!(Minus > 0 || Plus > 0)) return ToleranceLimits.Fail(Loc.S("Jobs_Tolerance_Model_Issue_BothZero"));
         var s = c.System;
-        if (s.SurfaceIndexOf(Surface) is not { } i) return ToleranceLimits.Fail("The surface no longer exists.");
+        if (s.SurfaceIndexOf(Surface) is not { } i) return ToleranceLimits.Fail(Loc.S("Jobs_Tolerance_Model_Issue_SurfaceGone"));
         var sf = s.Surfaces[i];
         switch (Kind)
         {
             case ToleranceKind.Radius:
-                if (s.ValueAt(new ParamPath.Curvature(Surface)) is not { } curv) return ToleranceLimits.Fail($"Surface {i} has no radius.");
+                if (s.ValueAt(new ParamPath.Curvature(Surface)) is not { } curv) return ToleranceLimits.Fail(Loc.F("Jobs_Tolerance_Model_Issue_NoRadius", i));
                 switch (Unit)
                 {
                     case ToleranceUnit.Fringes:
                         if (c.SemiDiameter(Surface) is not { } h || !(h > 0))
-                            return ToleranceLimits.Fail($"Fringes need the clear aperture of surface {i}; run the layout or set a semi-diameter.");
+                            return ToleranceLimits.Fail(Loc.F("Jobs_Tolerance_Model_Issue_FringesNeedAperture", i));
                         if (CurvaturePerFringe(curv, h, c.TestWavelengthUm) is not { } k)
-                            return ToleranceLimits.Fail($"The clear aperture of surface {i} is wider than its sphere.");
+                            return ToleranceLimits.Fail(Loc.F("Jobs_Tolerance_Model_Issue_ApertureWiderThanSphere", i));
                         return ToleranceLimits.Of(Minus * k, Plus * k);
                     case ToleranceUnit.RadiusMM or ToleranceUnit.Percent:
-                        if (curv == 0) return ToleranceLimits.Fail($"Surface {i} is flat: give its power in fringes.");
+                        if (curv == 0) return ToleranceLimits.Fail(Loc.F("Jobs_Tolerance_Model_Issue_FlatSurface", i));
                         var r = 1 / curv;
                         var dm = Unit == ToleranceUnit.Percent ? Math.Abs(r) * Minus / 100 : Minus;
                         var dp = Unit == ToleranceUnit.Percent ? Math.Abs(r) * Plus / 100 : Plus;
                         // R in [R − ΔR−, R + ΔR+]: c in [1/(R + ΔR+), 1/(R − ΔR−)].
                         double lo = r + dp, hi = r - dm;
                         if (lo == 0 || hi == 0 || (lo > 0) != (r > 0) || (hi > 0) != (r > 0))
-                            return ToleranceLimits.Fail($"ΔR must stay below |R| = {MeritFormat.Short(Math.Abs(r))} mm.");
+                            return ToleranceLimits.Fail(Loc.F("Jobs_Tolerance_Model_Issue_DeltaRTooLarge", MeritFormat.Short(Math.Abs(r))));
                         return ToleranceLimits.Of(curv - 1 / lo, 1 / hi - curv);
                     default:
-                        return ToleranceLimits.Fail("Radius tolerances are in fringes, mm or %.");
+                        return ToleranceLimits.Fail(Loc.S("Jobs_Tolerance_Model_Issue_RadiusUnits"));
                 }
             case ToleranceKind.Thickness:
-                return i < s.ImageIndex ? ToleranceLimits.Of(Minus, Plus) : ToleranceLimits.Fail("The image surface has no thickness.");
+                return i < s.ImageIndex ? ToleranceLimits.Of(Minus, Plus) : ToleranceLimits.Fail(Loc.S("Jobs_Tolerance_Model_Issue_ImageThickness"));
             case ToleranceKind.DecenterX or ToleranceKind.DecenterY:
-                return i > 0 && i < s.ImageIndex ? ToleranceLimits.Of(Minus, Plus) : ToleranceLimits.Fail("Decenter a surface between the object and the image.");
+                return i > 0 && i < s.ImageIndex ? ToleranceLimits.Of(Minus, Plus) : ToleranceLimits.Fail(Loc.S("Jobs_Tolerance_Model_Issue_DecenterRange"));
             case ToleranceKind.TiltX or ToleranceKind.TiltY or ToleranceKind.ElementTiltX or ToleranceKind.ElementTiltY
                 or ToleranceKind.ElementDecenterX or ToleranceKind.ElementDecenterY:
                 if (Kind.IsElement() && ElementProblem(s, i) is { } why) return ToleranceLimits.Fail(why);
-                if (!Kind.IsElement() && (i == 0 || i >= s.ImageIndex)) return ToleranceLimits.Fail("Tilt a surface between the object and the image.");
+                if (!Kind.IsElement() && (i == 0 || i >= s.ImageIndex)) return ToleranceLimits.Fail(Loc.S("Jobs_Tolerance_Model_Issue_TiltRange"));
                 var tk = Unit == ToleranceUnit.Arcmin ? 1.0 / 60 : 1;
                 return ToleranceLimits.Of(Minus * tk, Plus * tk);
             case ToleranceKind.IrregularityAstigmatism or ToleranceKind.IrregularitySpherical:
                 if (!(i > 0 && i < s.ImageIndex && !sf.IsCoordinateBreak && sf.Shape.Kind != ShapeKind.Paraxial))
-                    return ToleranceLimits.Fail($"Surface {i} has no form to make irregular.");
+                    return ToleranceLimits.Fail(Loc.F("Jobs_Tolerance_Model_Issue_NoFormForIrregularity", i));
                 return ToleranceLimits.Of(Minus, Plus);
             case ToleranceKind.Index or ToleranceKind.Abbe:
                 if (!HasGlass(sf.Material))
                 {
-                    var name = sf.Material.IsAir ? "air" : sf.Material.DisplayName;
-                    return ToleranceLimits.Fail($"Surface {i} is followed by {name}, not a glass with n_d and V_d.");
+                    var name = sf.Material.IsAir ? Loc.S("Jobs_Tolerance_Model_Issue_Air") : sf.Material.DisplayName;
+                    return ToleranceLimits.Fail(Loc.F("Jobs_Tolerance_Model_Issue_NotAGlass", i, name));
                 }
                 var (lm, lp) = (Minus, Plus);
                 if (Kind == ToleranceKind.Abbe && Unit == ToleranceUnit.Percent)
                 {
                     if (c.AbbeNumber(Surface) is not { } vd || !(vd > 0))
                         return ToleranceLimits.Fail(
-                            $"The Abbe number of {sf.Material.DisplayName} is not known yet: give the limit as ΔV_d, or wait for the glass data.");
+                            Loc.F("Jobs_Tolerance_Model_Issue_AbbeUnknown", sf.Material.DisplayName));
                     (lm, lp) = (vd * Minus / 100, vd * Plus / 100);
                 }
                 if (sf.Material is MaterialRef.CatalogGlass { Offset: var o })
@@ -465,11 +486,11 @@ public sealed class ToleranceRow
                     // A tolerance adds to the saved melt offset, which stays within the engine's bounds.
                     var (b, cap, what) = Kind == ToleranceKind.Index ? (o.DnD, MaterialOffset.MaxDnD, "Δn_d") : (o.DvD, MaterialOffset.MaxDvD, "ΔV_d");
                     if (Math.Abs(b - lm) > cap + 1e-12 || Math.Abs(b + lp) > cap + 1e-12)
-                        return ToleranceLimits.Fail($"With the melt offset ({MeritFormat.Short(b)}), {what} would pass ±{MeritFormat.Short(cap)}, the engine's limit.");
+                        return ToleranceLimits.Fail(Loc.F("Jobs_Tolerance_Model_Issue_MeltOffsetLimit", MeritFormat.Short(b), what, MeritFormat.Short(cap)));
                 }
                 return ToleranceLimits.Of(lm, lp);
             default:
-                if (Param is not { } p || !p.Resolves(s) || s.ValueAt(p) is null) return ToleranceLimits.Fail("The parameter no longer exists.");
+                if (Param is not { } p || !p.Resolves(s) || s.ValueAt(p) is null) return ToleranceLimits.Fail(Loc.S("Jobs_Tolerance_Model_Issue_ParameterGone"));
                 return ToleranceLimits.Of(Minus, Plus);
         }
     }
@@ -477,14 +498,14 @@ public sealed class ToleranceRow
     /// <summary>Why an element row's range or pivot cannot be moved, if it cannot.</summary>
     string? ElementProblem(OpticalSystem s, int i)
     {
-        if (s.SurfaceIndexOf(Last ?? Surface) is not { } l) return "The element's last surface no longer exists.";
-        if (!(i > 0 && l >= i && l < s.ImageIndex)) return "An element moves surfaces between the object and the image, first to last.";
-        if (Pivot is { } p && s.SurfaceIndexOf(p) is null) return "The pivot surface no longer exists.";
+        if (s.SurfaceIndexOf(Last ?? Surface) is not { } l) return Loc.S("Jobs_Tolerance_Model_Issue_ElementLastGone");
+        if (!(i > 0 && l >= i && l < s.ImageIndex)) return Loc.S("Jobs_Tolerance_Model_Issue_ElementRange");
+        if (Pivot is { } p && s.SurfaceIndexOf(p) is null) return Loc.S("Jobs_Tolerance_Model_Issue_PivotGone");
         if (s.Surfaces[i].ElementPlacement is { } e && (e.Last != (Last ?? Surface) || e.Pivot != Pivot))
         {
             var el = s.SurfaceIndexOf(e.Last) is { } a ? a.ToString(CultureInfo.InvariantCulture) : "?";
             var ep = s.SurfaceIndexOf(e.Pivot ?? Surface) is { } b ? b.ToString(CultureInfo.InvariantCulture) : "?";
-            return $"The design already moves S{i}–{el} as an element about S{ep}: use that range and pivot.";
+            return Loc.F("Jobs_Tolerance_Model_Issue_ElementInDesign", i, el, ep);
         }
         return null;
     }
@@ -501,12 +522,20 @@ public sealed class ToleranceRow
         };
     }
 
-    /// <summary><c>Radius S3</c>, <c>Thickness S3–4</c>, <c>Element tilt x L2</c>, <c>Index S5</c>.</summary>
-    public string Label(OpticalSystem system)
+    /// <summary>
+    /// <c>Radius S3</c>, <c>Thickness S3–4</c>, <c>Element tilt x L2</c>, <c>Index S5</c>, in English whatever the UI
+    /// language: the engine's operand label and the exported files. The panel shows <see cref="DisplayLabel"/>.
+    /// </summary>
+    public string Label(OpticalSystem system) => Label(system, Kind.EnglishTitle(), english: true);
+
+    /// <summary><see cref="Label"/> in the UI language.</summary>
+    public string DisplayLabel(OpticalSystem system) => Label(system, Kind.Title(), english: false);
+
+    string Label(OpticalSystem system, string title, bool english)
     {
-        if (Kind == ToleranceKind.Other) return Path(system).Label(system);
-        if (Kind.IsElement() && ElementTitle(system) is { } e) return $"{Kind.Title()} {e}";
-        return $"{Kind.Title()} {SurfaceLabel(system)}";
+        if (Kind == ToleranceKind.Other) return english ? Path(system).EnglishLabel(system) : Path(system).Label(system);
+        if (Kind.IsElement() && ElementTitle(system) is { } e) return $"{title} {e}";
+        return $"{title} {SurfaceLabel(system)}";
     }
 
     /// <summary>The limits as text: <c>±3 fr</c>, <c>−0.02 / +0.05 mm</c>.</summary>
@@ -672,9 +701,9 @@ public static class ToleranceGeneratorPresets
 
     public static string Title(this ToleranceGeneratorPreset p) => p switch
     {
-        ToleranceGeneratorPreset.Commercial => "Commercial",
-        ToleranceGeneratorPreset.Precision => "Precision",
-        _ => "High precision",
+        ToleranceGeneratorPreset.Commercial => Loc.S("Jobs_Tolerance_Model_Preset_Commercial"),
+        ToleranceGeneratorPreset.Precision => Loc.S("Jobs_Tolerance_Model_Preset_Precision"),
+        _ => Loc.S("Jobs_Tolerance_Model_Preset_HighPrecision"),
     };
 }
 
@@ -852,17 +881,26 @@ public static class LensElements
         return output;
     }
 
-    /// <summary>The group a row belongs to: its element (an air space goes with the element before it), else the surface itself.</summary>
-    public static string GroupTitle(ToleranceRow row, OpticalSystem s, IReadOnlyList<Group> groups)
+    /// <summary>
+    /// The group a row belongs to: its element (an air space goes with the element before it), else the surface itself.
+    /// English whatever the UI language (it is the group's key); <see cref="GroupName"/> is what the table shows.
+    /// </summary>
+    public static string GroupTitle(ToleranceRow row, OpticalSystem s, IReadOnlyList<Group> groups) => GroupTitle(row, s, groups, display: false);
+
+    /// <summary><see cref="GroupTitle(ToleranceRow, OpticalSystem, IReadOnlyList{Group})"/> in the UI language.</summary>
+    public static string GroupName(ToleranceRow row, OpticalSystem s, IReadOnlyList<Group> groups) => GroupTitle(row, s, groups, display: true);
+
+    static string GroupTitle(ToleranceRow row, OpticalSystem s, IReadOnlyList<Group> groups, bool display)
     {
-        if (s.SurfaceIndexOf(row.Surface) is not { } i) return "Other";
+        if (s.SurfaceIndexOf(row.Surface) is not { } i) return display ? Loc.S("Jobs_Tolerance_Model_Group_Other") : "Other";
         if (groups.FirstOrDefault(g => g.Surfaces.Contains(i)) is { } g)
         {
             // The thickness after an element's last surface is the air space after it.
-            if (row.Kind == ToleranceKind.Thickness && g.Surfaces[^1] == i) return $"Air after {g.Title}";
+            if (row.Kind == ToleranceKind.Thickness && g.Surfaces[^1] == i) return display ? Loc.F("Jobs_Tolerance_Model_Group_AirAfter", g.Title) : $"Air after {g.Title}";
             return g.Title;
         }
-        return i == s.Stop ? $"Stop S{i}" : $"S{i}";
+        if (i != s.Stop) return $"S{i}";
+        return display ? Loc.F("Jobs_Tolerance_Model_Group_Stop", i) : $"Stop S{i}";
     }
 }
 
@@ -888,7 +926,10 @@ public sealed class ToleranceCompensator(ParamPath param, double? range = null)
         p is ParamPath.Thickness t && s.ImageIndex >= 1 && s.Surfaces[s.ImageIndex - 1].Id == t.Surface;
 
     /// <summary>"Back focus" or the parameter's label.</summary>
-    public string Title(OpticalSystem s) => IsBackFocus(Param, s) ? "Back focus" : Param.Label(s);
+    public string Title(OpticalSystem s) => IsBackFocus(Param, s) ? Loc.S("Jobs_Tolerance_Model_BackFocus") : Param.Label(s);
+
+    /// <summary><see cref="Title"/> in English whatever the UI language (the exported summary).</summary>
+    public string EnglishTitle(OpticalSystem s) => IsBackFocus(Param, s) ? "Back focus" : Param.EnglishLabel(s);
 
     public JsonObject ToJson() => new() { ["param"] = Param.ToJson(), ["range"] = Range is { } r ? r : null };
 
@@ -909,7 +950,7 @@ public sealed class ToleranceCompensator(ParamPath param, double? range = null)
         var bf = BackFocus(s) is { } b ? [b.Param] : Array.Empty<ParamPath>();
         var air = Enumerable.Range(1, Math.Max(Math.Max(s.ImageIndex - 1, 1) - 1, 0)).Where(i => s.Surfaces[i].Material.IsAir)
             .Select(i => (ParamPath)new ParamPath.Thickness(s.Surfaces[i].Id));
-        var output = new List<(string, IReadOnlyList<ParamPath>)> { ("Back focus", Fresh(bf)), ("Air spaces", Fresh(air)), ("Design variables", Fresh(variables)) };
+        var output = new List<(string, IReadOnlyList<ParamPath>)> { (Loc.S("Jobs_Tolerance_Model_Candidates_BackFocus"), Fresh(bf)), (Loc.S("Jobs_Tolerance_Model_Candidates_AirSpaces"), Fresh(air)), (Loc.S("Jobs_Tolerance_Model_Candidates_DesignVariables"), Fresh(variables)) };
         var other = new List<ParamPath>();
         for (var i = 1; i < Math.Max(s.ImageIndex, 1); i++)
         {
@@ -917,7 +958,7 @@ public sealed class ToleranceCompensator(ParamPath param, double? range = null)
             other.AddRange([new ParamPath.DecenterX(id), new ParamPath.DecenterY(id), new ParamPath.TiltX(id), new ParamPath.TiltY(id), new ParamPath.Thickness(id)]);
             if (s.Surfaces[i].Shape.HasCurvature) other.Add(new ParamPath.Curvature(id));
         }
-        output.Add(("Surfaces", Fresh(other.Where(p => s.ValueAt(p) is not null))));
+        output.Add((Loc.S("Jobs_Tolerance_Model_Candidates_Surfaces"), Fresh(other.Where(p => s.ValueAt(p) is not null))));
         return [.. output.Where(g => g.Item2.Count > 0)];
     }
 }
@@ -939,10 +980,10 @@ public static class ToleranceCriterionKinds
 
     public static string Title(this ToleranceCriterionKind k) => k switch
     {
-        ToleranceCriterionKind.RmsSpot => "RMS spot radius",
-        ToleranceCriterionKind.Wavefront => "RMS wavefront",
+        ToleranceCriterionKind.RmsSpot => Loc.S("Jobs_Tolerance_Model_Criterion_RmsSpotRadius"),
+        ToleranceCriterionKind.Wavefront => Loc.S("Jobs_Tolerance_Model_Criterion_RmsWavefront"),
         ToleranceCriterionKind.Mtf => "MTF",
-        _ => "Optimizer's merit",
+        _ => Loc.S("Jobs_Tolerance_Model_Criterion_OptimizerMerit"),
     };
 }
 
@@ -1026,6 +1067,15 @@ public static class CriterionDisplays
 
     public static string Title(this CriterionDisplay d) => d switch
     {
+        CriterionDisplay.Spot => Loc.S("Jobs_Tolerance_Model_Display_RmsSpot"),
+        CriterionDisplay.Wavefront => Loc.S("Jobs_Tolerance_Model_Display_RmsWavefront"),
+        CriterionDisplay.Mtf => "MTF",
+        _ => Loc.S("Jobs_Tolerance_Model_Display_Merit"),
+    };
+
+    /// <summary><see cref="Title"/> in English whatever the UI language (the exported summary).</summary>
+    public static string EnglishTitle(this CriterionDisplay d) => d switch
+    {
         CriterionDisplay.Spot => "RMS spot",
         CriterionDisplay.Wavefront => "RMS wavefront",
         CriterionDisplay.Mtf => "MTF",
@@ -1104,9 +1154,9 @@ public static class ToleranceModes
 
     public static string Title(this ToleranceMode m) => m switch
     {
-        ToleranceMode.Sensitivity => "Sensitivity",
-        ToleranceMode.MonteCarlo => "Monte Carlo",
-        _ => "Both",
+        ToleranceMode.Sensitivity => Loc.S("Jobs_Tolerance_Model_Mode_Sensitivity"),
+        ToleranceMode.MonteCarlo => Loc.S("Jobs_Tolerance_Model_Mode_MonteCarlo"),
+        _ => Loc.S("Jobs_Tolerance_Model_Mode_Both"),
     };
 }
 
@@ -1346,9 +1396,9 @@ public sealed class ToleranceSettings
         {
             var first = group.Key;
             if (group.Select(r => (r.Last ?? first, r.Pivot ?? first)).Distinct().Count() <= 1) continue;
-            var at = c.System.SurfaceIndexOf(first) is { } i ? $"S{i}" : "one surface";
+            var at = c.System.SurfaceIndexOf(first) is { } i ? $"S{i}" : Loc.S("Jobs_Tolerance_Model_Issue_OneSurface");
             foreach (var r in group)
-                output[r.Id] = new ToleranceIssue($"Element tolerances starting at {at} move one group: give them the same last surface and pivot.");
+                output[r.Id] = new ToleranceIssue(Loc.F("Jobs_Tolerance_Model_Issue_ElementGroupDisagrees", at));
         }
         return output;
     }

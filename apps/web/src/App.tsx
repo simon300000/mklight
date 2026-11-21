@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import { TooltipProvider } from '@/components/ui/tooltip'
+import { useT } from '@/i18n'
 import { MAIN } from '@/state/arrangement'
 import { handleShortcut } from '@/state/commands'
 import { openFile } from '@/state/files'
@@ -22,6 +23,7 @@ export function App() {
   const inspector = useView((s) => s.inspectorVisible)
   const narrow = useView((s) => s.narrow)
   const [dropping, setDropping] = useState(false)
+  const t = useT()
 
   // Below 900 px the sidebar and the inspector float over the content, closed
   // at first; back at full width they come back as they were.
@@ -104,7 +106,7 @@ export function App() {
         )}
         {dropping && (
           <div className="pointer-events-none fixed inset-2 z-50 flex items-center justify-center rounded-2xl border-2 border-dashed border-accent bg-accent-soft text-[15px] font-medium text-accent">
-            Drop a .mklight, .zmx or .seq file to open it
+            {t('app.dropToOpen')}
           </div>
         )}
       </div>

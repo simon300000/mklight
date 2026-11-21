@@ -19,6 +19,8 @@ first. Scheme and file formats: `docs/I18N.md`.
   in tables. The object is 物面, the image is 像面.
 * `null` and `0` in setting descriptions are values a user types; keep them
   (`null 表示主波长`).
+* Address the user as 你, not 您.
+* Waves as a unit are shown as λ.
 
 ## Never translate
 
@@ -57,6 +59,10 @@ BFL, NA, DOE, AGF, GPU, CPU, FFT, RGB, PNG, sRGB, CRA.
 | aperture (clipping, on a surface) | 孔径 | `固定孔径` |
 | conic, conic constant | 圆锥系数 | k; 二次曲面系数 is the textbook synonym, not used |
 | sphere, spherical surface | 球面 | |
+| conic surface (surface type) | 二次曲面 | `球面 / 二次曲面`; not 圆锥曲面, which reads as a cone |
+| surface type | 面型 | |
+| kinoform | 连续闪耀 | |
+| anamorphic squeeze | 压缩比 | |
 | asphere, aspheric surface | 非球面 | |
 | even asphere, odd asphere | 偶次非球面, 奇次非球面 | |
 | Forbes Q-type (Qcon, Qbfs) | Forbes Q 型非球面 (Qcon, Qbfs) | |
@@ -253,3 +259,10 @@ BFL, NA, DOE, AGF, GPU, CPU, FFT, RGB, PNG, sRGB, CRA.
 | sampling, samples | 采样, 采样数 |
 | index (position in a list) | 序号 |
 | buffer | 缓冲区 |
+| library | 资料库; the glass library is 玻璃库 |
+| load | 载入 |
+| placement (decentre and tilt section) | 位姿 |
+| margin | 裕量 |
+| pivot | 枢轴 |
+| melt offset | 熔炼偏差 |
+| build (a Monte Carlo trial lens) | 成品 |

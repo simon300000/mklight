@@ -1,3 +1,4 @@
+using MKLight.App.Support;
 using System.Numerics;
 using System.Runtime.InteropServices;
 using Microsoft.UI.Xaml;
@@ -84,13 +85,13 @@ public sealed partial class Viewport3DView : UserControl
             var now = DateTime.UtcNow;
             _losses.RemoveAll(t => now - t > TimeSpan.FromSeconds(10));
             _losses.Add(now);
-            if (_losses.Count >= 3) SetError("The graphics device stopped responding. The 3-D view will draw again when it is available.");
+            if (_losses.Count >= 3) SetError(Loc.S("Shell_Viewport_DeviceLost"));
             else Invalidate();
         }
         catch (Exception ex)
         {
             Release();
-            SetError("The 3-D view could not start: " + ex.Message);
+            SetError(Loc.F("Shell_Viewport_StartFailed", ex.Message));
         }
     }
 

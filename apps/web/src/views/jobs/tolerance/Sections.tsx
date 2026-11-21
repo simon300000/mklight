@@ -5,6 +5,7 @@
 
 import { Clock, MinusCircle, Plus } from 'lucide-react'
 import { Button } from '@/components/ui/button'
+import { useT } from '@/i18n'
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -56,6 +57,7 @@ import { Hint, IndexChecklist, ListInput } from './controls'
 // MARK: Compensators
 
 export function CompensatorSection({ settings, system }: { settings: ToleranceSettings; system: System }) {
+  const t = useT()
   const variablesSection = useDocument((s) => s.project.variables)
   const variables = variablesOf({ variables: variablesSection })
   const groups = compensatorCandidates(system, variables.map((v) => v.param))
@@ -65,7 +67,7 @@ export function CompensatorSection({ settings, system }: { settings: ToleranceSe
       const c = t.compensators.find((x) => x.id === id)
       if (c) change(c)
     })
-  const add = (p: ParamPath) => editTolerances('Add Compensator', (t) => void t.compensators.push(makeCompensator(p, defaultCompensatorRange(p))))
+  const add = (p: ParamPath) => editTolerances(t('tolerance.undo.addCompensator'), (x) => void x.compensators.push(makeCompensator(p, defaultCompensatorRange(p))))
   const item = (p: ParamPath) => (
     <DropdownMenuItem key={paramKey(p)} disabled={used.has(paramKey(p))} onSelect={() => add(p)}>
       {compensatorTitle(p, system)}
@@ -75,14 +77,14 @@ export function CompensatorSection({ settings, system }: { settings: ToleranceSe
     const out = new Map<string, ParamPath[]>()
     for (const p of ps) {
       const i = typeof p.surface === 'number' ? surfaceIndexOfId(system, p.surface) : -1
-      const t = i >= 0 ? `Surface ${i}` : 'Other'
-      out.set(t, [...(out.get(t) ?? []), p])
+      const label = i >= 0 ? t('tolerance.compensators.surfaceN', { n: i }) : t('tolerance.compensators.other')
+      out.set(label, [...(out.get(label) ?? []), p])
     }
     return [...out]
   }
   return (
-    <Section title="Compensators" footer="Re-optimized for every trial within ± the range around its nominal value; empty is free.">
-      {!settings.compensators.length && <p className="py-1 text-[12px] text-secondary">None: every trial is judged as built, without refocusing.</p>}
+    <Section title={t('tolerance.compensatorSection.title')} footer={t('tolerance.compensatorSection.footer')}>
+      {!settings.compensators.length && <p className="py-1 text-[12px] text-secondary">{t('tolerance.compensatorSection.none')}</p>}
       {settings.compensators.map((c) => {
         const v = getParam(system, c.param)
         const title = compensatorTitle(c.param, system)
@@ -92,14 +94,14 @@ export function CompensatorSection({ settings, system }: { settings: ToleranceSe
             {v != null && <span className="num truncate text-[12px] text-secondary">{sig(v, 6)}</span>}
             <span className="flex-1" />
             <span className="text-secondary">±</span>
-            <NumberInput className="w-[4.5rem]" ariaLabel={`${title} range`} value={c.range} nullable placeholder="free" onCommit={(r) => setC(c.id, 'Change Compensator Range', (x) => void (x.range = r == null ? null : Math.abs(r)))} />
+            <NumberInput className="w-[4.5rem]" ariaLabel={t('tolerance.compensatorSection.range', { title })} value={c.range} nullable placeholder={t('tolerance.compensatorSection.free')} onCommit={(r) => setC(c.id, t('tolerance.undo.changeCompensatorRange'), (x) => void (x.range = r == null ? null : Math.abs(r)))} />
             <span className="w-6 truncate text-[11px] text-secondary">{paramUnit(c.param)}</span>
             <Button
               variant="ghost"
               size="iconSm"
-              aria-label={`Remove ${title}`}
-              title="Remove this compensator"
-              onClick={() => editTolerances('Remove Compensator', (t) => void (t.compensators = t.compensators.filter((x) => x.id !== c.id)))}
+              aria-label={t('tolerance.compensatorSection.remove', { title })}
+              title={t('tolerance.compensatorSection.removeHelp')}
+              onClick={() => editTolerances(t('tolerance.undo.removeCompensator'), (x) => void (x.compensators = x.compensators.filter((y) => y.id !== c.id)))}
             >
               <MinusCircle />
             </Button>
@@ -110,18 +112,18 @@ export function CompensatorSection({ settings, system }: { settings: ToleranceSe
         <DropdownMenuTrigger asChild>
           <Button variant="ghost" size="sm" className="my-1">
             <Plus className="size-3.5" />
-            Add Compensator
+            {t('tolerance.compensatorSection.add')}
           </Button>
         </DropdownMenuTrigger>
         <DropdownMenuContent align="start">
           {groups.map((g, k) => (
             <div key={g.group}>
               {k > 0 && <DropdownMenuSeparator />}
-              <DropdownMenuLabel>{g.group}</DropdownMenuLabel>
+              <DropdownMenuLabel>{g.title}</DropdownMenuLabel>
               {g.group === 'Surfaces'
-                ? bySurface(g.params).map(([t, ps]) => (
-                    <DropdownMenuSub key={t}>
-                      <DropdownMenuSubTrigger>{t}</DropdownMenuSubTrigger>
+                ? bySurface(g.params).map(([label, ps]) => (
+                    <DropdownMenuSub key={label}>
+                      <DropdownMenuSubTrigger>{label}</DropdownMenuSubTrigger>
                       <DropdownMenuSubContent>{ps.map(item)}</DropdownMenuSubContent>
                     </DropdownMenuSub>
                   ))
@@ -137,22 +139,23 @@ export function CompensatorSection({ settings, system }: { settings: ToleranceSe
 // MARK: Criterion
 
 export function CriterionSection({ settings, system, merit }: { settings: ToleranceSettings; system: System; merit: MeritInfo }) {
+  const t = useT()
   const c = settings.criterion
   const d = c.defaults
   const display = criterionDisplay(c, merit)
-  const setC = (name: string, change: (c: Criterion) => void) => editTolerances(name, (t) => change(t.criterion))
+  const setC = (name: string, change: (c: Criterion) => void) => editTolerances(name, (x) => change(x.criterion))
   const setD = <K extends keyof CriterionDefaults>(name: string, key: K, v: CriterionDefaults[K]) => setC(name, (x) => void (x.defaults[key] = v))
   const fUnit = fieldUnit(system.fields.kind) || (system.fields.kind === 'object_angle' ? '°' : 'mm')
   const unit = DISPLAY.unit(display)
   return (
-    <Section title="Criterion" footer={criterionCaption(display)}>
-      <FormRow label="Criterion">
+    <Section title={t('tolerance.criterionSection.title')} footer={criterionCaption(display)}>
+      <FormRow label={t('tolerance.criterionSection.criterion')}>
         <Select
           className="w-full"
-          aria-label="Criterion"
+          aria-label={t('tolerance.criterionSection.criterion')}
           value={c.kind}
           onChange={(e) =>
-            setC('Change Criterion', (x) => {
+            setC(t('tolerance.undo.changeCriterion'), (x) => {
               x.kind = e.target.value as CriterionKind
               x.threshold = null
             })
@@ -166,66 +169,66 @@ export function CriterionSection({ settings, system, merit }: { settings: Tolera
         </Select>
       </FormRow>
       {(c.kind === 'rms_spot' || c.kind === 'wavefront') && (
-        <FormRow label="Reference">
-          <Select className="w-full" aria-label="Reference" value={d.reference} onChange={(e) => setD('Change Reference', 'reference', e.target.value)}>
-            <option value="centroid">{c.kind === 'wavefront' ? 'Centroid (piston and tilt removed)' : 'Centroid'}</option>
-            <option value="chief">{c.kind === 'wavefront' ? 'Chief ray (piston removed)' : 'Chief ray'}</option>
+        <FormRow label={t('tolerance.criterionSection.reference')}>
+          <Select className="w-full" aria-label={t('tolerance.criterionSection.reference')} value={d.reference} onChange={(e) => setD(t('tolerance.undo.changeReference'), 'reference', e.target.value)}>
+            <option value="centroid">{c.kind === 'wavefront' ? t('tolerance.criterionSection.centroidWavefront') : t('tolerance.criterionSection.centroid')}</option>
+            <option value="chief">{c.kind === 'wavefront' ? t('tolerance.criterionSection.chiefWavefront') : t('tolerance.criterionSection.chief')}</option>
           </Select>
         </FormRow>
       )}
       {c.kind === 'mtf' && (
         <>
-          <FormRow label="Frequencies" unit="cyc/mm">
+          <FormRow label={t('tolerance.criterionSection.frequencies')} unit="cyc/mm">
             <ListInput
               className="w-full"
-              ariaLabel="MTF frequencies"
+              ariaLabel={t('tolerance.criterionSection.mtfFrequencies')}
               values={d.mtfFrequencies}
               parse={parseNumberList}
-              invalidNote="positive numbers"
+              invalidNote={t('tolerance.criterionSection.invalidList')}
               placeholder="20"
-              onCommit={(v) => setD('Change MTF Frequencies', 'mtfFrequencies', v)}
+              onCommit={(v) => setD(t('tolerance.undo.changeMtfFrequencies'), 'mtfFrequencies', v)}
             />
           </FormRow>
-          <FormRow label="Method">
-            <Select className="w-full" aria-label="MTF method" value={d.mtfMethod} onChange={(e) => setD('Change MTF Method', 'mtfMethod', e.target.value)}>
-              <option value="diffraction">Diffraction</option>
-              <option value="geometric">Geometric</option>
+          <FormRow label={t('tolerance.criterionSection.method')}>
+            <Select className="w-full" aria-label={t('tolerance.criterionSection.mtfMethod')} value={d.mtfMethod} onChange={(e) => setD(t('tolerance.undo.changeMtfMethod'), 'mtfMethod', e.target.value)}>
+              <option value="diffraction">{t('tolerance.criterionSection.diffraction')}</option>
+              <option value="geometric">{t('tolerance.criterionSection.geometric')}</option>
             </Select>
           </FormRow>
-          <FormRow label="Weakest field" help="Judge by the weakest field and direction at each frequency instead of the weighted mean.">
-            <Switch aria-label="Weakest field" checked={d.worstField} onCheckedChange={(v) => setD('Change MTF Field Rule', 'worstField', v)} />
+          <FormRow label={t('tolerance.criterionSection.weakestField')} help={t('tolerance.criterionSection.weakestFieldHelp')}>
+            <Switch aria-label={t('tolerance.criterionSection.weakestField')} checked={d.worstField} onCheckedChange={(v) => setD(t('tolerance.undo.changeMtfFieldRule'), 'worstField', v)} />
           </FormRow>
         </>
       )}
       {c.kind === 'design_merit' && <Hint className="py-1 text-[12px]">{meritInfoSummary(merit)}</Hint>}
       {c.kind !== 'design_merit' && (
         <>
-          <FormRow label="Pupil">
+          <FormRow label={t('tolerance.criterionSection.pupil')}>
             <span className="flex items-center gap-1 text-[12px] text-secondary">
-              <NumberInput className="w-10" ariaLabel="Rings" value={d.rings} integer min={1} max={12} onCommit={(v) => v != null && setD('Change Pupil Rings', 'rings', v)} />
-              rings ×
-              <NumberInput className="w-10" ariaLabel="Arms" value={d.arms} integer min={3} max={24} onCommit={(v) => v != null && setD('Change Pupil Arms', 'arms', v)} />
-              arms
+              <NumberInput className="w-10" ariaLabel={t('tolerance.criterionSection.rings')} value={d.rings} integer min={1} max={12} onCommit={(v) => v != null && setD(t('tolerance.undo.changePupilRings'), 'rings', v)} />
+              {t('tolerance.criterionSection.ringsUnit')}
+              <NumberInput className="w-10" ariaLabel={t('tolerance.criterionSection.arms')} value={d.arms} integer min={3} max={24} onCommit={(v) => v != null && setD(t('tolerance.undo.changePupilArms'), 'arms', v)} />
+              {t('tolerance.criterionSection.armsUnit')}
             </span>
           </FormRow>
           <div className="flex flex-wrap gap-1.5 py-1">
             <IndexChecklist
-              title="Fields"
+              title={t('tolerance.criterionSection.fields')}
               items={system.fields.fields.map((f, k) => fieldMenuLabel(k, f, fUnit))}
               selected={d.fields}
-              onChange={(v) => setD('Change Criterion Fields', 'fields', v)}
+              onChange={(v) => setD(t('tolerance.undo.changeCriterionFields'), 'fields', v)}
             />
             <IndexChecklist
-              title="Wavelengths"
+              title={t('tolerance.criterionSection.wavelengths')}
               items={system.wavelengths.wavelengths.map((w) => `${w.um.toFixed(4)} µm`)}
               selected={d.wavelengths}
-              onChange={(v) => setD('Change Criterion Wavelengths', 'wavelengths', v)}
+              onChange={(v) => setD(t('tolerance.undo.changeCriterionWavelengths'), 'wavelengths', v)}
             />
           </div>
         </>
       )}
-      <FormRow label={DISPLAY.higherIsBetter(display) ? 'Pass at or above' : 'Pass at or below'} unit={unit} help="The yield is the share of Monte Carlo trials that pass.">
-        <NumberInput ariaLabel="Pass limit" value={c.threshold} nullable placeholder="none" onCommit={(v) => setC('Change Pass Limit', (x) => void (x.threshold = v))} />
+      <FormRow label={DISPLAY.higherIsBetter(display) ? t('tolerance.criterionSection.passAbove') : t('tolerance.criterionSection.passBelow')} unit={unit} help={t('tolerance.criterionSection.passHelp')}>
+        <NumberInput ariaLabel={t('tolerance.criterionSection.passLimit')} value={c.threshold} nullable placeholder={t('tolerance.criterionSection.none')} onCommit={(v) => setC(t('tolerance.undo.changePassLimit'), (x) => void (x.threshold = v))} />
       </FormRow>
     </Section>
   )
@@ -234,63 +237,57 @@ export function CriterionSection({ settings, system, merit }: { settings: Tolera
 // MARK: Analysis
 
 export function AnalysisSection({ settings }: { settings: ToleranceSettings }) {
-  const t = settings
+  const t = useT()
+  const ts = settings
   const last = useTolerance((s) => s.lastSecondsPerTrial)
   return (
-    <Section title="Analysis">
+    <Section title={t('tolerance.analysisSection.title')}>
       <Segmented<Mode>
-        label="Run"
+        label={t('tolerance.analysisSection.run')}
         className="my-1 flex w-full [&>button]:flex-1"
-        value={t.mode}
+        value={ts.mode}
         options={MODES}
-        onChange={(m) => editTolerances('Change Tolerance Analysis', (x) => void (x.mode = m))}
+        onChange={(m) => editTolerances(t('tolerance.undo.changeToleranceAnalysis'), (x) => void (x.mode = m))}
       />
-      {t.mode !== 'monte_carlo' && (
-        <Hint className="py-1">
-          Sensitivity: each tolerance at its − and + limit alone ({2 * t.rows.length + 1} evaluations), ranked, with the root-sum-square prediction.
-        </Hint>
-      )}
-      {t.mode !== 'sensitivity' && (
+      {ts.mode !== 'monte_carlo' && <Hint className="py-1">{t('tolerance.analysisSection.sensitivityHint', { count: 2 * ts.rows.length + 1 })}</Hint>}
+      {ts.mode !== 'sensitivity' && (
         <>
-          <FormRow label="Trials">
-            <NumberInput ariaLabel="Trials" value={t.trials} integer min={1} max={MAX_TRIALS} placeholder="200" onCommit={(v) => v != null && v >= 1 && editTolerances('Change Trials', (x) => void (x.trials = v))} />
+          <FormRow label={t('tolerance.analysisSection.trials')}>
+            <NumberInput ariaLabel={t('tolerance.analysisSection.trials')} value={ts.trials} integer min={1} max={MAX_TRIALS} placeholder="200" onCommit={(v) => v != null && v >= 1 && editTolerances(t('tolerance.undo.changeTrials'), (x) => void (x.trials = v))} />
           </FormRow>
-          <FormRow label="Seed">
-            <NumberInput ariaLabel="Seed" value={t.seed} integer min={0} placeholder="0" onCommit={(v) => v != null && v >= 0 && editTolerances('Change Seed', (x) => void (x.seed = v))} />
+          <FormRow label={t('tolerance.analysisSection.seed')}>
+            <NumberInput ariaLabel={t('tolerance.analysisSection.seed')} value={ts.seed} integer min={0} placeholder="0" onCommit={(v) => v != null && v >= 0 && editTolerances(t('tolerance.undo.changeSeed'), (x) => void (x.seed = v))} />
           </FormRow>
-          <FormRow label="Levels" unit="%" help="The percentiles of the builds the results report, e.g. 50, 90, 97.7">
+          <FormRow label={t('tolerance.analysisSection.levels')} unit="%" help={t('tolerance.analysisSection.levelsHelp')}>
             <ListInput
               className="w-full"
-              ariaLabel="Levels"
-              values={t.percentiles}
+              ariaLabel={t('tolerance.analysisSection.levels')}
+              values={ts.percentiles}
               parse={parsePercentiles}
-              invalidNote="0 to 100"
+              invalidNote={t('tolerance.analysisSection.levelsInvalid')}
               placeholder="50, 90, 97.7"
-              onCommit={(v) => editTolerances('Change Percentiles', (x) => void (x.percentiles = v))}
+              onCommit={(v) => editTolerances(t('tolerance.undo.changePercentiles'), (x) => void (x.percentiles = v))}
             />
           </FormRow>
-          <FormRow
-            label="Keep"
-            help="The first trials keep their perturbations and compensator values for the trial list and the CSV export (at most 10 000). Any trial can be previewed."
-          >
+          <FormRow label={t('tolerance.analysisSection.keep')} help={t('tolerance.analysisSection.keepHelp')}>
             <span className="flex items-center gap-1.5">
               <NumberInput
                 className="w-[4.5rem]"
-                ariaLabel="Recorded trials"
-                value={t.recordTrials}
+                ariaLabel={t('tolerance.analysisSection.recordedTrials')}
+                value={ts.recordTrials}
                 integer
                 min={0}
                 max={MAX_RECORD_TRIALS}
-                onCommit={(v) => v != null && v >= 0 && editTolerances('Change Recorded Trials', (x) => void (x.recordTrials = v))}
+                onCommit={(v) => v != null && v >= 0 && editTolerances(t('tolerance.undo.changeRecordedTrials'), (x) => void (x.recordTrials = v))}
               />
-              <span className="whitespace-nowrap text-[11px] text-secondary">trials’ perturbations</span>
+              <span className="whitespace-nowrap text-[11px] text-secondary">{t('tolerance.analysisSection.trialsPerturbations')}</span>
             </span>
           </FormRow>
-          <Hint className="py-1">Monte Carlo: every tolerance drawn at random per trial; the same seed gives the same trials.</Hint>
+          <Hint className="py-1">{t('tolerance.analysisSection.monteCarloHint')}</Hint>
           {last != null && (
             <Hint className="flex items-center gap-1 pb-1">
               <Clock className="size-3" />
-              {estimateText(last, t.trials)}
+              {estimateText(last, ts.trials)}
             </Hint>
           )}
         </>

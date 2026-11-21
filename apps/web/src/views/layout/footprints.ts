@@ -3,6 +3,7 @@
 
 import { useEffect, useState } from 'react'
 import type { AnalysisJob } from '@/engine/types'
+import { t } from '@/i18n'
 import { activeSnapshot, useWorkspace } from '@/state/workspace'
 import { readFootprints, type Footprint } from './scene'
 
@@ -29,7 +30,7 @@ export function useFootprints(enabled: boolean): { footprints: Footprint[]; runn
           const f = readFootprints(r)
           cache.set(key, f)
           if (cache.size > 8) cache.delete(cache.keys().next().value!)
-          if (live) setState({ key, footprints: f, error: f.length ? null : 'The engine drew no footprints.' })
+          if (live) setState({ key, footprints: f, error: f.length ? null : t('lens.layout.noFootprints') })
         },
         (e) => live && setState({ key, footprints: [], error: (e as Error).message }),
       )

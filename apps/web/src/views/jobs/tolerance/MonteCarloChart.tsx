@@ -5,6 +5,7 @@
 // under the axis. Drawn on a canvas in the theme's colours.
 
 import { useEffect, useMemo, useRef } from 'react'
+import { useT } from '@/i18n'
 import { cssVar, seriesColor, useDark } from '@/lib/theme'
 import { DISPLAY, histogramBins, labelledLevels, short, type Bin, type ToleranceResult } from '@/model/tolerance'
 import { FONT, niceTicks, setupCanvas, useSize } from '../../results/common'
@@ -23,6 +24,7 @@ export function MonteCarloChart({
   /** The shown value of the previewed trial. */
   marked: number | null
 }) {
+  const t = useT()
   const [box, size] = useSize<HTMLDivElement>()
   const canvas = useRef<HTMLCanvasElement>(null)
   const dark = useDark()
@@ -57,14 +59,14 @@ export function MonteCarloChart({
     ctx.fillStyle = secondary
     ctx.textAlign = 'right'
     ctx.textBaseline = 'middle'
-    for (const t of niceTicks(0, peak, 4).filter((t) => Number.isInteger(t))) {
-      const y = Math.round(Y(t)) + 0.5
+    for (const tick of niceTicks(0, peak, 4).filter((v) => Number.isInteger(v))) {
+      const y = Math.round(Y(tick)) + 0.5
       ctx.strokeStyle = separator
       ctx.beginPath()
       ctx.moveTo(PAD.left, y)
       ctx.lineTo(PAD.left + pw, y)
       ctx.stroke()
-      ctx.fillText(String(t), PAD.left - 5, y)
+      ctx.fillText(String(tick), PAD.left - 5, y)
     }
     // Right axis: cumulative share.
     ctx.textAlign = 'left'
@@ -72,14 +74,14 @@ export function MonteCarloChart({
     // Bottom axis.
     ctx.textAlign = 'center'
     ctx.textBaseline = 'top'
-    for (const t of niceTicks(domain[0], domain[1], Math.max(2, Math.floor(pw / 70)))) ctx.fillText(DISPLAY.format(d, t), X(t), PAD.top + ph + 4)
+    for (const tick of niceTicks(domain[0], domain[1], Math.max(2, Math.floor(pw / 70)))) ctx.fillText(DISPLAY.format(d, tick), X(tick), PAD.top + ph + 4)
     const unit = DISPLAY.unit(d)
     ctx.fillText(DISPLAY.title(d) + (unit ? ` (${unit})` : ''), PAD.left + pw / 2, PAD.top + ph + 16)
     ctx.save()
     ctx.translate(10, PAD.top + ph / 2)
     ctx.rotate(-Math.PI / 2)
     ctx.textBaseline = 'middle'
-    ctx.fillText('Trials', 0, 0)
+    ctx.fillText(t('tolerance.chart.trials'), 0, 0)
     ctx.restore()
     // Bars.
     const base = seriesColor(0, dark)
@@ -150,18 +152,18 @@ export function MonteCarloChart({
       ctx.closePath()
       ctx.fill()
     }
-  }, [size.w, size.h, bins, shown, domain, peak, selection, marked, nominal, result, d, dark])
+  }, [size.w, size.h, bins, shown, domain, peak, selection, marked, nominal, result, d, dark, t])
 
   const levelsText = result.percentiles
-    .map((p) => `${short(p.percentile)} percent of builds ${DISPLAY.higherIsBetter(d) ? 'at least' : 'at most'} ${DISPLAY.formatWithUnit(d, DISPLAY.value(d, p.value))}`)
+    .map((p) => t(DISPLAY.higherIsBetter(d) ? 'tolerance.chart.levelAtLeast' : 'tolerance.chart.levelAtMost', { p: short(p.percentile), value: DISPLAY.formatWithUnit(d, DISPLAY.value(d, p.value)) }))
     .join(', ')
 
   return (
-    <div ref={box} className="relative h-[190px] w-full" title="Click a bar to list its trials">
+    <div ref={box} className="relative h-[190px] w-full" title={t('tolerance.chart.clickBar')}>
       <canvas
         ref={canvas}
         role="img"
-        aria-label={`Distribution of ${shown.length} Monte Carlo trials of the ${DISPLAY.title(d)}. ${levelsText}`}
+        aria-label={t('tolerance.chart.aria', { count: shown.length, criterion: DISPLAY.title(d), levels: levelsText })}
         data-testid="tolerance-histogram"
         onClick={(e) => {
           const r = e.currentTarget.getBoundingClientRect()

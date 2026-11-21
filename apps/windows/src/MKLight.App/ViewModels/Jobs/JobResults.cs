@@ -1,5 +1,6 @@
 using System.Globalization;
 using System.Text.Json.Nodes;
+using MKLight.App.Support;
 using MKLight.Engine;
 using MKLight.Model;
 
@@ -61,18 +62,19 @@ public sealed record OptimizeResult(string Status, bool Stopped, bool Improved, 
     /// <summary>"7 iterations, 51 evaluations. Stopped early: …"</summary>
     public string StatusText()
     {
-        var s = $"{Iterations} iterations, {Evaluations} evaluations. ";
-        if (Stopped) s += "Stopped early: this is the best design found so far. ";
-        if (!Improved) s += "No better design was found; the result equals the start. ";
-        if (!Feasible) s += "Some constraints are not met. ";
-        return s.TrimEnd();
+        var s = new List<string> { Loc.F("Jobs_Results_Counts", Iterations, Evaluations) };
+        if (Stopped) s.Add(Loc.S("Jobs_Results_StoppedEarly"));
+        if (!Improved) s.Add(Loc.S("Jobs_Results_NotImproved"));
+        if (!Feasible) s.Add(Loc.S("Jobs_Results_Infeasible"));
+        return string.Join(" ", s);
     }
 
     /// <summary>The preview title, naming the candidate precisely: <c>Optimize result · merit 0.0123 (−42 %)</c>.</summary>
     public string PreviewTitle()
     {
-        var s = (Stopped ? "Optimize result (stopped)" : "Optimize result") + " · merit " + MeritFormat.Merit(FinalMerit);
-        if (double.IsFinite(Improvement)) s += " (" + (Improvement > 0 ? "−" : "+") + MeritFormat.Percent(Math.Abs(Improvement), 0) + ")";
+        var s = Loc.F(Stopped ? "Jobs_Results_PreviewTitleStopped" : "Jobs_Results_PreviewTitle", MeritFormat.Merit(FinalMerit));
+        if (double.IsFinite(Improvement))
+            s = Loc.F("Jobs_Results_PreviewTitleChange", s, (Improvement > 0 ? "−" : "+") + MeritFormat.Percent(Math.Abs(Improvement), 0));
         return s;
     }
 
@@ -100,7 +102,7 @@ public sealed record SolveOutcomeRow(int Index, string Target, string Kind, doub
                 previous = previous is { } pv ? RadiusDisplay.RadiusFromCurvature(pv) : null;
                 value = RadiusDisplay.RadiusFromCurvature(value);
             }
-            var title = Wire.Parse<SolveType>(kind) is { } st ? st.Title() : kind.Replace('_', ' ');
+            var title = Wire.Parse<SolveType>(kind) is { } st ? LensText.Solve(st) : kind.Replace('_', ' ');
             return new SolveOutcomeRow((int)(o?["index"].IntOrNull() ?? k), path is null ? "?" : system is null ? path.ToString() : path.Label(system),
                 title, previous, value, o?["residual"].Nf() ?? double.NaN);
         }).ToList();

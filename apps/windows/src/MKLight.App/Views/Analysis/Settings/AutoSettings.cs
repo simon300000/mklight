@@ -1,4 +1,5 @@
 using System.Text.Json.Nodes;
+using MKLight.App.Support;
 using MKLight.App.Views.Analysis.Results.Readers;
 
 namespace MKLight.App.Views.Analysis.Settings;
@@ -44,7 +45,7 @@ public static class AutoSettings
     };
 
     /// <summary>"Auto (282)", or "Auto" before a run has said what it used.</summary>
-    public static string Display(string? used) => string.IsNullOrEmpty(used) ? "Auto" : $"Auto ({used})";
+    public static string Display(string? used) => string.IsNullOrEmpty(used) ? Loc.S("Analysis_Settings_Auto") : Loc.F("Analysis_Settings_AutoUsed", used);
 
     /// <summary>The value the engine used for the automatic setting <paramref name="key"/>, read from the last result.</summary>
     public static string? Used(string key, string analysis, ResultData? result)
@@ -76,7 +77,7 @@ public static class AutoSettings
                     .Select(e => Json.Number(Json.At(e, "defocus"))).OfType<double>().Where(double.IsFinite).ToList();
                 if (planes.Count == 0) return null;
                 double lo = planes.Min(), hi = planes.Max();
-                return Math.Abs(lo + hi) <= 1e-9 * Math.Max(1, Math.Abs(hi)) ? "±" + Fmt.G3(hi) : $"{Fmt.G3(lo)} to {Fmt.G3(hi)}";
+                return Math.Abs(lo + hi) <= 1e-9 * Math.Max(1, Math.Abs(hi)) ? "±" + Fmt.G3(hi) : Loc.F("Analysis_Settings_Range", Fmt.G3(lo), Fmt.G3(hi));
             case (_, "pupil.grid"):
                 // Wavefront maps report their grids; other analyses report their pupil sampling per field.
                 var grids = (Json.Arr(Json.At(j, "maps")) ?? []).Select(m => Json.Number(Json.At(m, "grid"))).ToList();

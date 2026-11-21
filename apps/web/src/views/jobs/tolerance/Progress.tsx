@@ -4,6 +4,7 @@
 
 import { useEffect, useState } from 'react'
 import type { Json, JsonObject } from '@/engine/types'
+import { useT } from '@/i18n'
 import { stageText, timing, timingText, type Timing, type ToleranceSettings } from '@/model/tolerance'
 import type { JobState } from '@/state/jobs'
 import { useTolerance } from '@/state/tolerance'
@@ -47,24 +48,25 @@ export function useNow(ms = 1000): number {
 }
 
 export function ToleranceProgress({ job, settings }: { job: JobState; settings: ToleranceSettings }) {
+  const t = useT()
   const now = useNow()
-  const t = useToleranceTiming(job, settings, now)
+  const timing = useToleranceTiming(job, settings, now)
   const n = settings.rows.length, c = settings.compensators.length
+  const counts = { tolerances: t('tolerance.progress.tolerances', { count: n }), compensators: t('tolerance.progress.compensators', { count: c }) }
   return (
     <div className="flex flex-col gap-4" data-testid="tolerance-progress">
       <div className="grid grid-cols-2 gap-4">
-        <BigNumber label="Progress" value={`${Math.round(Math.min(Math.max(job.progress, 0), 1) * 100)} %`} />
-        <BigNumber label="Stage" value={stageText(job.stage, t.trialsDone, settings.trials)} />
+        <BigNumber label={t('tolerance.progress.progress')} value={`${Math.round(Math.min(Math.max(job.progress, 0), 1) * 100)} %`} />
+        <BigNumber label={t('tolerance.progress.stage')} value={stageText(job.stage, timing.trialsDone, settings.trials)} />
       </div>
       <div className="h-1.5 w-full overflow-hidden rounded-full bg-selected" role="progressbar" aria-valuemin={0} aria-valuemax={100} aria-valuenow={Math.round(job.progress * 100)}>
         <div className="h-full rounded-full bg-accent transition-[width]" style={{ width: `${Math.min(Math.max(job.progress, 0), 1) * 100}%` }} />
       </div>
-      {job.startedAt != null && <p className="num text-[12px] text-secondary">{timingText((now - job.startedAt) / 1000, t)}</p>}
+      {job.startedAt != null && <p className="num text-[12px] text-secondary">{timingText((now - job.startedAt) / 1000, timing)}</p>}
       <p className="text-[12px] text-secondary">
-        {n} tolerance{n === 1 ? '' : 's'} · {c} compensator{c === 1 ? '' : 's'}
-        {settings.mode === 'sensitivity' ? '' : ` · ${settings.trials} trials, seed ${settings.seed}`}
+        {settings.mode === 'sensitivity' ? t('tolerance.progress.counts', counts) : t('tolerance.progress.countsWithTrials', { ...counts, trials: settings.trials, seed: settings.seed })}
       </p>
-      <Hint>Stop keeps the sensitivities and trials completed so far. Cancel discards the run. You can close this panel; the job continues.</Hint>
+      <Hint>{t('tolerance.progress.hint')}</Hint>
     </div>
   )
 }

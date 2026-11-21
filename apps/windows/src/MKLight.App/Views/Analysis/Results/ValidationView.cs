@@ -23,7 +23,7 @@ public sealed partial class ValidationView : UserControl
         _d = d;
         IsTabStop = false;
         Content = d.Issues.Count == 0 ? NoIssues() : List();
-        AutomationProperties.SetName(this, "Validation: " + d.Summary());
+        AutomationProperties.SetName(this, Loc.F("Results_Validation_Name", d.Summary()));
         ActualThemeChanged += (_, _) => Paint();
         Loaded += (_, _) => Paint();
     }
@@ -33,13 +33,13 @@ public sealed partial class ValidationView : UserControl
         var s = new StackPanel { Spacing = 6, HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Center, Padding = new Thickness(16) };
         var icon = new FontIcon { Glyph = "\uE930", FontSize = 30, HorizontalAlignment = HorizontalAlignment.Center, Margin = new Thickness(0, 0, 0, 4) };
         s.Children.Add(icon);
-        var title = Kit.Text("No Issues", "PanelTitleText", 15);
+        var title = Kit.Text(Loc.S("Results_Validation_NoIssuesTitle"), "PanelTitleText", 15);
         title.HorizontalAlignment = HorizontalAlignment.Center;
         s.Children.Add(title);
-        var note = Kit.Caption("The design passed every check.");
+        var note = Kit.Caption(Loc.S("Results_Validation_Passed"));
         note.HorizontalAlignment = HorizontalAlignment.Center;
         s.Children.Add(note);
-        AutomationProperties.SetName(s, "No issues: the design passed every check");
+        AutomationProperties.SetName(s, Loc.S("Results_Validation_PassedName"));
         return s;
     }
 
@@ -67,11 +67,20 @@ public sealed partial class ValidationView : UserControl
         _icons.Add((icon, issue.Severity));
         g.Children.Add(icon);
         var text = new StackPanel { Spacing = 2 };
-        var message = Kit.Text(issue.Message, "BodyText", 12.5);
+        var message = Kit.Text(issue.Text, "BodyText", 12.5);
         message.TextWrapping = TextWrapping.Wrap;
         message.TextTrimming = TextTrimming.None;
         message.IsTextSelectionEnabled = true;
         text.Children.Add(message);
+        // A translated message: the engine's English below it, which holds the values the template leaves out.
+        if (issue.Detail is { } detail)
+        {
+            var english = Kit.Caption(detail);
+            english.TextWrapping = TextWrapping.Wrap;
+            english.TextTrimming = TextTrimming.None;
+            english.IsTextSelectionEnabled = true;
+            text.Children.Add(english);
+        }
         var meta = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 10 };
         if (issue.Code.Length > 0)
         {
@@ -81,17 +90,22 @@ public sealed partial class ValidationView : UserControl
         }
         if (issue.Surface is int s)
         {
-            var link = new HyperlinkButton { Content = Kit.Inv($"Surface {s}"), FontSize = 11.5, Padding = new Thickness(0), MinHeight = 0 };
+            var link = new HyperlinkButton { Content = Loc.F("Results_Validation_Surface", s), FontSize = 11.5, Padding = new Thickness(0), MinHeight = 0 };
             link.Click += (_, _) => Select(s);
-            ToolTipService.SetToolTip(link, Kit.Inv($"Select surface {s} in the lens data"));
+            ToolTipService.SetToolTip(link, Loc.F("Results_Validation_SelectSurface", s));
             meta.Children.Add(link);
         }
-        if (issue.Field is int f) meta.Children.Add(Kit.Caption(Kit.Inv($"Field {f + 1}")));
+        if (issue.Field is int f) meta.Children.Add(Kit.Caption(Loc.F("Results_Chart_FieldNumber", f + 1)));
         if (meta.Children.Count > 0) text.Children.Add(meta);
         Grid.SetColumn(text, 1);
         g.Children.Add(text);
-        var severity = issue.Severity.ToString().ToLowerInvariant();
-        AutomationProperties.SetName(g, $"{severity}: {issue.Message}" + (issue.Surface is int t ? Kit.Inv($", surface {t}") : ""));
+        var severity = issue.Severity switch
+        {
+            ValidationData.Severity.Error => Loc.S("Results_Validation_SeverityError"),
+            ValidationData.Severity.Warning => Loc.S("Results_Validation_SeverityWarning"),
+            _ => Loc.S("Results_Validation_SeverityInfo"),
+        };
+        AutomationProperties.SetName(g, issue.Surface is int t ? Loc.F("Results_Validation_IssueNameSurface", severity, issue.Text, t) : Loc.F("Results_Validation_IssueName", severity, issue.Text));
         return g;
     }
 

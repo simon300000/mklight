@@ -15,35 +15,35 @@
 
         <!-- Title bar: the window and the design it follows, the glass search in the centre,
              Filter and Add trailing (the Mac toolbar). -->
-        <TitleBar x:Name="AppTitleBar" Height="52" Title="Glass Catalogs"
+        <TitleBar x:Name="AppTitleBar" x:Uid="Glass_Window_TitleBar" Height="52" Title="Glass Catalogs"
                   IsBackButtonVisible="False" IsPaneToggleButtonVisible="False">
             <TitleBar.IconSource>
                 <ImageIconSource ImageSource="ms-appx:///Assets/AppIcon.png" />
             </TitleBar.IconSource>
             <TitleBar.Content>
-                <AutoSuggestBox x:Name="SearchBox" PlaceholderText="Search glasses" QueryIcon="Find" Width="340"
+                <AutoSuggestBox x:Name="SearchBox" x:Uid="Glass_Window_SearchBox" PlaceholderText="Search glasses" QueryIcon="Find" Width="340"
                                 VerticalAlignment="Center" TextChanged="OnSearchChanged" KeyDown="OnSearchKeyDown" />
             </TitleBar.Content>
             <TitleBar.RightHeader>
                 <StackPanel Orientation="Horizontal" Spacing="2" Margin="0,0,4,0" VerticalAlignment="Center">
-                    <DropDownButton x:Name="FilterButton" Height="30" CornerRadius="15" Padding="9,0,7,0"
+                    <DropDownButton x:Name="FilterButton" x:Uid="Glass_Window_FilterButton" Height="30" CornerRadius="15" Padding="9,0,7,0"
                                     Background="Transparent" BorderThickness="0" ToolTipService.ToolTip="Show only some glasses">
                         <FontIcon x:Name="FilterIcon" Glyph="&#xE71C;" FontSize="14" />
                         <DropDownButton.Flyout>
                             <MenuFlyout x:Name="FilterMenu" Placement="BottomEdgeAlignedRight" />
                         </DropDownButton.Flyout>
                     </DropDownButton>
-                    <DropDownButton x:Name="AddButton" Height="30" CornerRadius="15" Padding="9,0,7,0"
+                    <DropDownButton x:Name="AddButton" x:Uid="Glass_Window_AddButton" Height="30" CornerRadius="15" Padding="9,0,7,0"
                                     Background="Transparent" BorderThickness="0" ToolTipService.ToolTip="Add a glass or a catalog">
                         <FontIcon Glyph="&#xE710;" FontSize="14" />
                         <DropDownButton.Flyout>
                             <MenuFlyout x:Name="AddMenu" Placement="BottomEdgeAlignedRight" Opening="OnAddMenuOpening">
-                                <MenuFlyoutItem Text="New Glass…" Click="OnNewGlass"><MenuFlyoutItem.Icon><FontIcon Glyph="&#xE710;" /></MenuFlyoutItem.Icon></MenuFlyoutItem>
-                                <MenuFlyoutItem Text="New User Catalog" Click="OnNewUserCatalog"><MenuFlyoutItem.Icon><FontIcon Glyph="&#xE77B;" /></MenuFlyoutItem.Icon></MenuFlyoutItem>
+                                <MenuFlyoutItem x:Uid="Glass_Window_NewGlassItem" Text="New Glass…" Click="OnNewGlass"><MenuFlyoutItem.Icon><FontIcon Glyph="&#xE710;" /></MenuFlyoutItem.Icon></MenuFlyoutItem>
+                                <MenuFlyoutItem x:Uid="Glass_Window_NewUserCatalogItem" Text="New User Catalog" Click="OnNewUserCatalog"><MenuFlyoutItem.Icon><FontIcon Glyph="&#xE77B;" /></MenuFlyoutItem.Icon></MenuFlyoutItem>
                                 <MenuFlyoutSeparator />
-                                <MenuFlyoutItem Text="Add Catalog to Library…" Click="OnAddLibraryFiles"><MenuFlyoutItem.Icon><FontIcon Glyph="&#xE8F1;" /></MenuFlyoutItem.Icon></MenuFlyoutItem>
-                                <MenuFlyoutItem Text="Add Folder to Library…" Click="OnAddLibraryFolder"><MenuFlyoutItem.Icon><FontIcon Glyph="&#xE8B7;" /></MenuFlyoutItem.Icon></MenuFlyoutItem>
-                                <MenuFlyoutItem x:Name="AddToDesignItem" Text="Add Glass Catalog to Design…" Click="OnAddToDesign"><MenuFlyoutItem.Icon><FontIcon Glyph="&#xE8A5;" /></MenuFlyoutItem.Icon></MenuFlyoutItem>
+                                <MenuFlyoutItem x:Uid="Glass_Window_AddLibraryFilesItem" Text="Add Catalog to Library…" Click="OnAddLibraryFiles"><MenuFlyoutItem.Icon><FontIcon Glyph="&#xE8F1;" /></MenuFlyoutItem.Icon></MenuFlyoutItem>
+                                <MenuFlyoutItem x:Uid="Glass_Window_AddLibraryFolderItem" Text="Add Folder to Library…" Click="OnAddLibraryFolder"><MenuFlyoutItem.Icon><FontIcon Glyph="&#xE8B7;" /></MenuFlyoutItem.Icon></MenuFlyoutItem>
+                                <MenuFlyoutItem x:Name="AddToDesignItem" x:Uid="Glass_Window_AddToDesignItem" Text="Add Glass Catalog to Design…" Click="OnAddToDesign"><MenuFlyoutItem.Icon><FontIcon Glyph="&#xE8A5;" /></MenuFlyoutItem.Icon></MenuFlyoutItem>
                             </MenuFlyout>
                         </DropDownButton.Flyout>
                     </DropDownButton>

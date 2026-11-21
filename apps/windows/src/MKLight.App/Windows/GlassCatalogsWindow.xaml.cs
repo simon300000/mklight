@@ -57,7 +57,7 @@ public sealed partial class GlassCatalogsWindow : Window
             {
                 if (await GlassLibrarySync.SyncAsync(w.Session.Workspace.Engine, Library)) await w.Session.Workspace.CatalogsDidChangeAsync();
             }
-            catch (EngineException e) { w.Session.ShowToast(e.Message); }
+            catch (EngineException e) { w.Session.ShowToast(EngineText.T(e.Message)); }
         }
         if (Instance is { } g) await g._model.RefreshAsync();
     }
@@ -89,7 +89,7 @@ public sealed partial class GlassCatalogsWindow : Window
     GlassCatalogsWindow()
     {
         InitializeComponent();
-        Title = "Glass Catalogs — MKLight";
+        Title = Loc.S("Glass_Window_Title");
         ExtendsContentIntoTitleBar = true;
         SetTitleBar(AppTitleBar);
         AppWindow.TitleBar.PreferredHeightOption = TitleBarHeightOption.Tall;
@@ -164,11 +164,11 @@ public sealed partial class GlassCatalogsWindow : Window
             () => string.IsNullOrEmpty(doc.System.Name) ? doc.DisplayName : doc.System.Name,
             session.Workspace.Engine,
             () => session.SelectedSurface is int i && i > 0 && i < doc.System.ImageIndex ? i : null,
-            (i, catalog, name) => doc.Edit("Change Material", s => i < s.Surfaces.Count
+            (i, catalog, name) => doc.Edit(Loc.S("Glass_Undo_ChangeMaterial"), s => i < s.Surfaces.Count
                 ? s.WithSurface(i, f => f with { Material = LensValueParser.Replace(f.Material, new MaterialRef.CatalogGlass { Catalog = catalog, Name = name }) })
                 : null),
             path => AddCatalogAsync(session, path),
-            name => doc.EditProject("Remove Glass Catalog", p => p.WithCatalogs(p.Catalogs.Where(c => c.Name != name))),
+            name => doc.EditProject(Loc.S("Glass_Undo_RemoveCatalog"), p => p.WithCatalogs(p.Catalogs.Where(c => c.Name != name))),
             () => session.Workspace.CatalogsDidChangeAsync());
     }
 
@@ -178,7 +178,7 @@ public sealed partial class GlassCatalogsWindow : Window
         var info = await session.Workspace.Engine.LoadCatalogAsync(path);
         var format = Path.GetExtension(path).Equals(".json", StringComparison.OrdinalIgnoreCase) ? "json" : "agf";
         // The project section's change makes the session follow (DesignSession); a reference it already had needs a resnapshot only.
-        if (!session.Document.EditProject("Add Glass Catalog", p => p.AddCatalog(new CatalogReference(info.Name, path, null, format))))
+        if (!session.Document.EditProject(Loc.S("Glass_Undo_AddCatalog"), p => p.AddCatalog(new CatalogReference(info.Name, path, null, format))))
             await session.Workspace.CatalogsDidChangeAsync();
         return info;
     }
@@ -190,16 +190,16 @@ public sealed partial class GlassCatalogsWindow : Window
         try
         {
             var info = await AddCatalogAsync(owner.Session, path);
-            owner.Session.ShowToast($"Added {info.Name} ({info.GlassCount} glasses) to the design.");
+            owner.Session.ShowToast(Loc.F("Glass_Toast_AddedToDesign", info.Name, info.GlassCount));
         }
-        catch (EngineException e) { owner.Session.ShowToast($"{Path.GetFileName(path)} could not be loaded: {e.Message}"); }
+        catch (EngineException e) { owner.Session.ShowToast(Loc.F("Glass_Toast_LoadFailed", Path.GetFileName(path), EngineText.T(e.Message))); }
     }
 
     // ---- Chrome: title, sidebar, catalog bar ----
 
     void UpdateChrome()
     {
-        AppTitleBar.Subtitle = _model.DesignTitle is { } t ? $"Glasses of {t}" : "Library";
+        AppTitleBar.Subtitle = _model.DesignTitle is { } t ? Loc.F("Glass_Window_SubtitleDesign", t) : Loc.S("Glass_Sidebar_Library");
         if (!string.Equals(SearchBox.Text, _model.Search, StringComparison.Ordinal)) SearchBox.Text = _model.Search;
         FilterIcon.Glyph = _model.Filter == GlassFilter.All ? "\uE71C" : "\uE16E";
         if (_model.Filter == GlassFilter.All) FilterIcon.ClearValue(IconElement.ForegroundProperty);
@@ -221,28 +221,28 @@ public sealed partial class GlassCatalogsWindow : Window
         _buildingSidebar = true;
         Nav.MenuItems.Clear();
         var total = _model.Catalogs.Sum(c => c.GlassCount);
-        Nav.MenuItems.Add(Item("", "All Glasses", "\uF0E2", total, "Every glass the design can use"));
+        Nav.MenuItems.Add(Item("", Loc.S("Glass_Scope_AllGlasses"), "\uF0E2", total, Loc.S("Glass_Sidebar_AllGlassesTip")));
         foreach (var c in _model.BuiltinCatalogs)
-            Nav.MenuItems.Add(Item(c.Name, "Built-in Glasses", "\uE7B8", c.GlassCount, "The glasses built into MKLight", null));
+            Nav.MenuItems.Add(Item(c.Name, Loc.S("Glass_Scope_BuiltinGlasses"), "\uE7B8", c.GlassCount, Loc.S("Glass_Sidebar_BuiltinTip"), null));
 
-        Nav.MenuItems.Add(new NavigationViewItemHeader { Content = "Library" });
+        Nav.MenuItems.Add(new NavigationViewItemHeader { Content = Loc.S("Glass_Sidebar_Library") });
         foreach (var c in _model.LibraryCatalogs)
             Nav.MenuItems.Add(Item(c.Name, c.Name, "\uE8F1", c.GlassCount, Shown(c), LibraryMenu(c), c.Warnings.Count));
         if (!_model.LibraryCatalogs.Any())
-            Nav.MenuItems.Add(LinkItem("Add Catalog…", "Catalogs and folders in the library load into every design", () => _ = AddLibraryFilesAsync()));
+            Nav.MenuItems.Add(LinkItem(Loc.S("Glass_Sidebar_AddCatalog"), Loc.S("Glass_Sidebar_AddCatalogTip"), () => _ = AddLibraryFilesAsync()));
 
-        Nav.MenuItems.Add(new NavigationViewItemHeader { Content = "User Glasses" });
+        Nav.MenuItems.Add(new NavigationViewItemHeader { Content = Loc.S("Glass_Sidebar_UserGlasses") });
         foreach (var c in _model.UserCatalogs)
             Nav.MenuItems.Add(Item(c.Name, c.Name, "\uE77B", c.GlassCount, Shown(c), UserMenu(c)));
         if (!_model.UserCatalogs.Any())
-            Nav.MenuItems.Add(LinkItem("New User Catalog", "A catalog of your own glasses, kept with the library", () => { _model.NewUserCatalog(); }));
+            Nav.MenuItems.Add(LinkItem(Loc.S("Glass_Sidebar_NewUserCatalog"), Loc.S("Glass_Sidebar_NewUserCatalogTip"), () => { _model.NewUserCatalog(); }));
 
         if (_model.DesignTitle is { } title)
         {
             Nav.MenuItems.Add(new NavigationViewItemHeader { Content = title });
             foreach (var c in _model.DesignCatalogs)
                 Nav.MenuItems.Add(Item(c.Name, c.Name, "\uE8A5", c.GlassCount, Shown(c), DesignMenu(c), c.Warnings.Count));
-            Nav.MenuItems.Add(LinkItem("Add Catalog to Design…", "Record a catalog file in this design", () => _ = AddToDesignAsync()));
+            Nav.MenuItems.Add(LinkItem(Loc.S("Glass_Sidebar_AddToDesign"), Loc.S("Glass_Sidebar_AddToDesignTip"), () => _ = AddToDesignAsync()));
         }
 
         WarningsPanel.Children.Clear();
@@ -282,7 +282,7 @@ public sealed partial class GlassCatalogsWindow : Window
         if (warnings > 0)
         {
             var mark = new FontIcon { Glyph = "\uE7BA", FontSize = 11, Foreground = ThemeLookup.Brush(Root, "WarningBrush") };
-            ToolTipService.SetToolTip(mark, $"{warnings} note{(warnings == 1 ? "" : "s")} while reading the file");
+            ToolTipService.SetToolTip(mark, warnings == 1 ? Loc.F("Glass_Notes_ReadingOne", warnings) : Loc.F("Glass_Notes_ReadingMany", warnings));
             right.Children.Add(mark);
         }
         right.Children.Add(new TextBlock { Text = count.ToString(CultureInfo.InvariantCulture), Style = (Style)Application.Current.Resources["SecondaryNumberText"], FontSize = 12 });
@@ -329,22 +329,22 @@ public sealed partial class GlassCatalogsWindow : Window
         CatalogIcon.Glyph = c.IsBuiltin ? "\uE7B8" : user ? "\uE77B" : c.Library ? "\uE8F1" : "\uE8A5";
         CatalogTitle.Text = GlassBrowserModel.ScopeTitle(c.Name);
         CatalogOrigin.Text = GlassFormat.Origin(c, user);
-        CatalogPath.Text = c.Path is { } file ? GlassLibrary.PlainPath(file) : (c.IsBuiltin ? "Published Sellmeier data of a few common glasses" : "");
+        CatalogPath.Text = c.Path is { } file ? GlassLibrary.PlainPath(file) : (c.IsBuiltin ? Loc.S("Glass_CatalogBar_BuiltinPath") : "");
         CatalogPath.Visibility = CatalogPath.Text.Length > 0 ? Visibility.Visible : Visibility.Collapsed;
         ToolTipService.SetToolTip(CatalogPath, c.Path is null ? null : CatalogPath.Text);
         CatalogActions.Children.Clear();
         if (c.Warnings.Count > 0)
-            CatalogActions.Children.Add(BarButton($"{c.Warnings.Count} note{(c.Warnings.Count == 1 ? "" : "s")}", "\uE7BA", "What the engine noticed while reading the file",
-                () => _ = GlassDialogs.ShowListAsync(Root, $"{c.Name}: Notes", "Read from " + (Shown(c)) + ":",
-                    c.Warnings.Select(w => (w.Line is int n ? $"Line {n}: " : "") + w.Message))));
+            CatalogActions.Children.Add(BarButton(c.Warnings.Count == 1 ? Loc.F("Glass_CatalogBar_NotesOne", c.Warnings.Count) : Loc.F("Glass_CatalogBar_NotesMany", c.Warnings.Count), "\uE7BA", Loc.S("Glass_CatalogBar_NotesTip"),
+                () => _ = GlassDialogs.ShowListAsync(Root, Loc.F("Glass_Notes_Title", c.Name), Loc.F("Glass_Notes_Intro", Shown(c)),
+                    c.Warnings.Select(GlassFormat.Note))));
         if (user)
-            CatalogActions.Children.Add(BarButton("New Glass…", "\uE710", "Add a glass to this catalog", () => _ = NewGlassAsync()));
+            CatalogActions.Children.Add(BarButton(Loc.S("Glass_Menu_NewGlass"), "\uE710", Loc.S("Glass_CatalogBar_NewGlassTip"), () => _ = NewGlassAsync()));
         else if (c.Path is not null)
-            CatalogActions.Children.Add(BarButton("Reload", "\uE72C", "Read the catalog file again and list what changed", () => _ = ReloadAsync(c)));
+            CatalogActions.Children.Add(BarButton(Loc.S("Glass_CatalogBar_Reload"), "\uE72C", Loc.S("Glass_CatalogBar_ReloadTip"), () => _ = ReloadAsync(c)));
         if (c.InProject)
-            CatalogActions.Children.Add(BarButton("Remove from Design", "\uE738", "Remove the catalog from this design (undo with Ctrl+Z)", () => _model.RemoveFromDesign(c)));
+            CatalogActions.Children.Add(BarButton(Loc.S("Glass_Menu_RemoveFromDesign"), "\uE738", Loc.S("Glass_CatalogBar_RemoveFromDesignTip"), () => _model.RemoveFromDesign(c)));
         else if (c.Library && !user)
-            CatalogActions.Children.Add(BarButton("Remove from Library", "\uE738", "Stop loading this catalog into every design (the file stays)", () => _model.RemoveFromLibrary(c)));
+            CatalogActions.Children.Add(BarButton(Loc.S("Glass_Menu_RemoveFromLibrary"), "\uE738", Loc.S("Glass_CatalogBar_RemoveFromLibraryTip"), () => _model.RemoveFromLibrary(c)));
     }
 
     static Button BarButton(string text, string glyph, string tip, Action action)
@@ -371,30 +371,30 @@ public sealed partial class GlassCatalogsWindow : Window
     MenuFlyout LibraryMenu(CatalogInfo c)
     {
         var m = new MenuFlyout();
-        m.Items.Add(MenuItem("Reload from Disk", () => _ = ReloadAsync(c), "\uE72C", c.Path is not null));
-        m.Items.Add(MenuItem("Remove from Library", () => _model.RemoveFromLibrary(c), "\uE738"));
-        if (c.Path is { } p) m.Items.Add(MenuItem("Show in File Explorer", () => Reveal(p), "\uEC50"));
+        m.Items.Add(MenuItem(Loc.S("Glass_Menu_ReloadFromDisk"), () => _ = ReloadAsync(c), "\uE72C", c.Path is not null));
+        m.Items.Add(MenuItem(Loc.S("Glass_Menu_RemoveFromLibrary"), () => _model.RemoveFromLibrary(c), "\uE738"));
+        if (c.Path is { } p) m.Items.Add(MenuItem(Loc.S("Glass_Menu_ShowInExplorer"), () => Reveal(p), "\uEC50"));
         return m;
     }
 
     MenuFlyout UserMenu(CatalogInfo c)
     {
         var m = new MenuFlyout();
-        m.Items.Add(MenuItem("New Glass…", () => { _model.Scope = c.Name; _ = NewGlassAsync(); }, "\uE710"));
-        m.Items.Add(MenuItem("Rename…", () => _ = RenameAsync(c.Name), "\uE8AC"));
-        m.Items.Add(MenuItem("Export as AGF…", () => _ = ExportAsync(c.Name), "\uEDE1"));
-        if (c.Path is { } p) m.Items.Add(MenuItem("Show in File Explorer", () => Reveal(p), "\uEC50"));
+        m.Items.Add(MenuItem(Loc.S("Glass_Menu_NewGlass"), () => { _model.Scope = c.Name; _ = NewGlassAsync(); }, "\uE710"));
+        m.Items.Add(MenuItem(Loc.S("Glass_Menu_Rename"), () => _ = RenameAsync(c.Name), "\uE8AC"));
+        m.Items.Add(MenuItem(Loc.S("Glass_Menu_ExportAgf"), () => _ = ExportAsync(c.Name), "\uEDE1"));
+        if (c.Path is { } p) m.Items.Add(MenuItem(Loc.S("Glass_Menu_ShowInExplorer"), () => Reveal(p), "\uEC50"));
         m.Items.Add(new MenuFlyoutSeparator());
-        m.Items.Add(MenuItem("Move to Recycle Bin…", () => _ = DeleteCatalogAsync(c.Name), "\uE74D"));
+        m.Items.Add(MenuItem(Loc.S("Glass_Menu_MoveToRecycleBin"), () => _ = DeleteCatalogAsync(c.Name), "\uE74D"));
         return m;
     }
 
     MenuFlyout DesignMenu(CatalogInfo c)
     {
         var m = new MenuFlyout();
-        m.Items.Add(MenuItem("Reload from Disk", () => _ = ReloadAsync(c), "\uE72C", c.Path is not null));
-        m.Items.Add(MenuItem("Remove from Design", () => _model.RemoveFromDesign(c), "\uE738"));
-        if (c.Path is { } p) m.Items.Add(MenuItem("Show in File Explorer", () => Reveal(p), "\uEC50"));
+        m.Items.Add(MenuItem(Loc.S("Glass_Menu_ReloadFromDisk"), () => _ = ReloadAsync(c), "\uE72C", c.Path is not null));
+        m.Items.Add(MenuItem(Loc.S("Glass_Menu_RemoveFromDesign"), () => _model.RemoveFromDesign(c), "\uE738"));
+        if (c.Path is { } p) m.Items.Add(MenuItem(Loc.S("Glass_Menu_ShowInExplorer"), () => Reveal(p), "\uEC50"));
         return m;
     }
 
@@ -403,27 +403,27 @@ public sealed partial class GlassCatalogsWindow : Window
     {
         var m = new MenuFlyout();
         var (index, _) = _model.Assignment;
-        m.Items.Add(MenuItem(index is int i ? $"Use for Surface {i}" : "Use for Selected Surface", () => { _model.Selection = row.Id; _model.UseSelected(); }, "\uE8B0", index is not null));
-        m.Items.Add(MenuItem("Copy Name", () => CopyName(row), "\uE8C8"));
+        m.Items.Add(MenuItem(index is int i ? Loc.F("Glass_Menu_UseForSurface", i) : Loc.S("Glass_Menu_UseForSelectedSurface"), () => { _model.Selection = row.Id; _model.UseSelected(); }, "\uE8B0", index is not null));
+        m.Items.Add(MenuItem(Loc.S("Glass_Menu_CopyName"), () => CopyName(row), "\uE8C8"));
         m.Items.Add(new MenuFlyoutSeparator());
-        var status = new MenuFlyoutSubItem { Text = "Status" };
+        var status = new MenuFlyoutSubItem { Text = Loc.S("Glass_Label_Status") };
         var own = Library.OverrideFor(row.Catalog, row.Name)?.Status;
         foreach (var s in GlassStatus.Choices)
         {
-            var item = new RadioMenuFlyoutItem { Text = s.Title, GroupName = "status", IsChecked = own == s };
+            var item = new RadioMenuFlyoutItem { Text = GlassFormat.StatusTitle(s), GroupName = "status", IsChecked = own == s };
             item.Click += (_, _) => _model.SetStatus(s, row);
             status.Items.Add(item);
         }
         status.Items.Add(new MenuFlyoutSeparator());
-        var catalog = new RadioMenuFlyoutItem { Text = "Catalog's Status", GroupName = "status", IsChecked = own is null };
+        var catalog = new RadioMenuFlyoutItem { Text = Loc.S("Glass_Menu_CatalogStatus"), GroupName = "status", IsChecked = own is null };
         catalog.Click += (_, _) => _model.SetStatus(null, row);
         status.Items.Add(catalog);
         m.Items.Add(status);
-        m.Items.Add(MenuItem(row.ExcludeSubstitution ? "Allow in Glass Substitution" : "Exclude from Glass Substitution",
+        m.Items.Add(MenuItem(row.ExcludeSubstitution ? Loc.S("Glass_Menu_AllowSubstitution") : Loc.S("Glass_Menu_ExcludeSubstitution"),
             () => _model.SetExcluded(!row.ExcludeSubstitution, row), "\uE733"));
-        if (row.Overridden) m.Items.Add(MenuItem("Reset to Catalog Settings", () => _model.ResetStatus(row), "\uE777"));
+        if (row.Overridden) m.Items.Add(MenuItem(Loc.S("Glass_Menu_ResetToCatalog"), () => _model.ResetStatus(row), "\uE777"));
         m.Items.Add(new MenuFlyoutSeparator());
-        m.Items.Add(MenuItem(Library.IsUserCatalog(row.Catalog) ? "Duplicate…" : "Duplicate to User Glasses…", () => _ = DuplicateAsync(row), "\uE8F4"));
+        m.Items.Add(MenuItem(Library.IsUserCatalog(row.Catalog) ? Loc.S("Glass_Menu_Duplicate") : Loc.S("Glass_Menu_DuplicateToUser"), () => _ = DuplicateAsync(row), "\uE8F4"));
         return m;
     }
 
@@ -473,7 +473,7 @@ public sealed partial class GlassCatalogsWindow : Window
     async Task DeleteSelectedAsync()
     {
         if (_model.SelectedRow is not { } row) return;
-        if (await GlassDialogs.ConfirmAsync(Root, $"Delete {row.Name}?", $"The glass is removed from {row.Catalog}. Designs that use it will not find it.", "Delete"))
+        if (await GlassDialogs.ConfirmAsync(Root, Loc.F("Glass_Delete_Title", row.Name), Loc.F("Glass_Delete_Message", row.Catalog), Loc.S("Glass_Delete_Button")))
             _model.DeleteSelected();
     }
 
@@ -484,7 +484,7 @@ public sealed partial class GlassCatalogsWindow : Window
 
     async Task RenameAsync(string name)
     {
-        if (await GlassDialogs.AskNameAsync(Root, "Rename Catalog", name, "Designs that name the catalog in a glass reference keep the old name.") is not { } newName) return;
+        if (await GlassDialogs.AskNameAsync(Root, Loc.S("Glass_Rename_Title"), name, Loc.S("Glass_Rename_Note")) is not { } newName) return;
         try
         {
             Library.RenameUserCatalog(name, newName);
@@ -495,12 +495,12 @@ public sealed partial class GlassCatalogsWindow : Window
 
     async Task DeleteCatalogAsync(string name)
     {
-        if (!await GlassDialogs.ConfirmAsync(Root, $"Move “{name}” to the Recycle Bin?", "Designs that use its glasses will not find them.", "Move to Recycle Bin")) return;
+        if (!await GlassDialogs.ConfirmAsync(Root, Loc.F("Glass_Trash_Title", name), Loc.S("Glass_Trash_Message"), Loc.S("Glass_Trash_Button"))) return;
         try
         {
             Library.DeleteUserCatalog(name);
             _model.Scope = null;
-            ShowToast($"Moved {name} to the Recycle Bin.");
+            ShowToast(Loc.F("Glass_Toast_MovedToRecycleBin", name));
         }
         catch (Exception e) when (e is GlassLibrary.LibraryException or IOException or UnauthorizedAccessException) { ShowToast(e.Message); }
     }
@@ -509,16 +509,16 @@ public sealed partial class GlassCatalogsWindow : Window
     {
         if (_model.AgfExport(catalog) is not { } export) return;
         var picker = new FileSavePicker(AppWindow.Id) { SuggestedFileName = catalog, DefaultFileExtension = ".agf", SuggestedStartLocation = PickerLocationId.DocumentsLibrary };
-        picker.FileTypeChoices.Add("AGF glass catalog", [".agf"]);
+        picker.FileTypeChoices.Add(Loc.S("Glass_Export_FileType"), [".agf"]);
         if ((await picker.PickSaveFileAsync())?.Path is not { } path) return;
         try
         {
             await File.WriteAllTextAsync(path, export.Text);
-            ShowToast($"Exported {catalog} to {Path.GetFileName(path)}.");
+            ShowToast(Loc.F("Glass_Toast_Exported", catalog, Path.GetFileName(path)));
         }
-        catch (Exception e) when (e is IOException or UnauthorizedAccessException) { ShowToast($"Could not export: {e.Message}"); return; }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException) { ShowToast(Loc.F("Glass_Toast_ExportFailed", e.Message)); return; }
         if (export.Warnings.Count > 0)
-            await GlassDialogs.ShowListAsync(Root, "Not Exported Exactly", "AGF cannot express everything in this catalog:", export.Warnings);
+            await GlassDialogs.ShowListAsync(Root, Loc.S("Glass_Export_NotExactTitle"), Loc.S("Glass_Export_NotExactIntro"), export.Warnings.Select(EngineText.T));
     }
 
     async Task AddLibraryFilesAsync()

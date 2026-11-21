@@ -2,11 +2,12 @@
 // shape, buffer lookup, field labels, canvas set-up and colour ramps.
 import { useLayoutEffect, useRef, useState, type RefObject } from 'react'
 import type { AnalysisResult, Json, JsonObject } from '@/engine/types'
+import { engineIssue, parseStructuralIssue, t } from '@/i18n'
 import { nf, sig } from '@/model/format'
 import { fieldUnit, type System } from '@/model/system'
-import { wavelengthColor } from '@/lib/theme'
+import { FONT_FAMILY, wavelengthColor } from '@/lib/theme'
 
-export const FONT = '11px -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif'
+export const FONT = `11px ${FONT_FAMILY}`
 
 export const arr = (v: Json | undefined): Json[] => (Array.isArray(v) ? v : [])
 export const obj = (v: Json | undefined): JsonObject | null =>
@@ -45,9 +46,19 @@ function fieldValueText(fv: Json | undefined, unit: string): string {
 /** "Field 2 · 14°" from a result's field index and value. */
 export function fieldLabel(system: System, field: Json | undefined, value: Json | undefined): string {
   const k = typeof field === 'number' ? field : NaN
-  const head = Number.isFinite(k) ? `Field ${k + 1}` : 'Field'
+  const head = Number.isFinite(k) ? t('common.fieldN', { n: k + 1 }) : t('common.field')
   const v = fieldValueText(value, systemFieldUnit(system))
   return v ? `${head} · ${v}` : head
+}
+
+/** An issue's text in the current language: by its code (a sentence with
+ *  `{surface}`, `{path}`; the English message then as detail), else the
+ *  engine's English message. */
+export function issueMessage(i: JsonObject): { text: string; detail?: string } {
+  const message = String(i.message ?? '')
+  const s = !i.code ? parseStructuralIssue(message) : null
+  if (s) return engineIssue(s.code, { path: s.path }, s.message)
+  return engineIssue(typeof i.code === 'string' ? i.code : null, { surface: typeof i.surface === 'number' ? i.surface : null }, message)
 }
 
 /** Wavelengths (µm) by system index: from the result, else from the system. */

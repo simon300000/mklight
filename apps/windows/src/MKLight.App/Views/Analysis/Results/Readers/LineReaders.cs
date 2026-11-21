@@ -1,4 +1,5 @@
 using System.Text.Json.Nodes;
+using MKLight.App.Support;
 
 namespace MKLight.App.Views.Analysis.Results.Readers;
 
@@ -63,6 +64,9 @@ public static class LineReaders
                 m.Legend.Add(new LegendEntry(Fmt.Wavelength(um[w]), SeriesColor.Wavelength(um[w])));
     }
 
+    /// <summary>The field axis title: "Field (°)", or "Field" without a unit.</summary>
+    static string FieldAxis(string unit) => unit.Length > 0 ? Loc.F("Results_Axis_FieldUnit", unit) : Loc.S("Results_Axis_Field");
+
     static double[] Scale(double[] v, double k) => v.Select(x => x * k).ToArray();
 
     static ChartSeries Curve(double[] x, double[] y, SeriesColor c, bool dashed = false)
@@ -88,7 +92,7 @@ public static class LineReaders
             var f = list[k];
             var index = Json.Int(Json.At(f, "field")) ?? k;
             var g = new ChartGroup { Label = Fmt.FieldTitle(d, index, Json.At(f, "field_value")) };
-            foreach (var (key, title, x, y) in new[] { ("tangential", "Tangential", "Py", opd ? "W (waves)" : "εy (µm)"), ("sagittal", "Sagittal", "Px", opd ? "W (waves)" : "εx (µm)") })
+            foreach (var (key, title, x, y) in new[] { ("tangential", Loc.S("Results_Chart_Tangential"), "Py", opd ? "W (waves)" : "εy (µm)"), ("sagittal", Loc.S("Results_Chart_Sagittal"), "Px", opd ? "W (waves)" : "εx (µm)") })
             {
                 var p = new ChartPanel { Title = title, XTitle = x, YTitle = y, XDomain = (-1, 1) };
                 foreach (var c in Json.Arr(Json.At(f, key)) ?? [])
@@ -121,9 +125,9 @@ public static class LineReaders
         if (field is null || Json.Arr(Json.At(d.Json, "curves")) is not { Count: > 0 } list) return null;
         var unit = Json.Str(Json.At(d.Json, "field_unit")) ?? "";
         var um = WavelengthsUm(d, list);
-        var yTitle = unit.Length > 0 ? $"Field ({unit})" : "Field";
-        var curvature = new ChartPanel { Title = "Field Curvature", XTitle = "Focus shift (mm)", YTitle = yTitle, PadX = true };
-        var distortion = new ChartPanel { Title = "Distortion", XTitle = "Distortion (%)", YTitle = yTitle, PadX = true };
+        var yTitle = FieldAxis(unit);
+        var curvature = new ChartPanel { Title = Loc.S("Results_Chart_FieldCurvature"), XTitle = Loc.S("Results_Axis_FocusShiftMm"), YTitle = yTitle, PadX = true };
+        var distortion = new ChartPanel { Title = Loc.S("Results_Chart_Distortion"), XTitle = Loc.S("Results_Axis_DistortionPercent"), YTitle = yTitle, PadX = true };
         var wavelengths = new List<int>();
         foreach (var c in list)
         {
@@ -140,8 +144,8 @@ public static class LineReaders
         g.Panels.Add(distortion);
         m.Groups.Add(g);
         WavelengthLegend(m, um, wavelengths);
-        m.Legend.Add(new LegendEntry("Tangential", SeriesColor.Neutral));
-        m.Legend.Add(new LegendEntry("Sagittal", SeriesColor.Neutral, LegendMark.Dashed));
+        m.Legend.Add(new LegendEntry(Loc.S("Results_Chart_Tangential"), SeriesColor.Neutral));
+        m.Legend.Add(new LegendEntry(Loc.S("Results_Chart_Sagittal"), SeriesColor.Neutral, LegendMark.Dashed));
         return m;
     }
 
@@ -154,7 +158,7 @@ public static class LineReaders
         var um = WavelengthsUm(d, list);
         var bothAxes = list.Select(c => Json.Str(Json.At(c, "axis"))).Distinct().Count() > 1;
         var lo = pupil.Where(double.IsFinite).DefaultIfEmpty(0).Min() < 0 ? -1 : 0;
-        var p = new ChartPanel { XTitle = "Longitudinal aberration (mm)", YTitle = "Pupil zone", YDomain = (lo, 1), PadX = true };
+        var p = new ChartPanel { XTitle = Loc.S("Results_Axis_LongitudinalAberrationMm"), YTitle = Loc.S("Results_Axis_PupilZone"), YDomain = (lo, 1), PadX = true };
         var wavelengths = new List<int>();
         foreach (var c in list)
         {
@@ -167,8 +171,8 @@ public static class LineReaders
         WavelengthLegend(m, um, wavelengths);
         if (bothAxes)
         {
-            m.Legend.Add(new LegendEntry("y fan", SeriesColor.Neutral));
-            m.Legend.Add(new LegendEntry("x fan", SeriesColor.Neutral, LegendMark.Dashed));
+            m.Legend.Add(new LegendEntry(Loc.S("Results_Legend_YFan"), SeriesColor.Neutral));
+            m.Legend.Add(new LegendEntry(Loc.S("Results_Legend_XFan"), SeriesColor.Neutral, LegendMark.Dashed));
         }
         return m;
     }
@@ -178,7 +182,7 @@ public static class LineReaders
         var w = Json.NfArray(Json.At(d.Json, "wavelengths_um"));
         var s = Json.NfArray(Json.At(d.Json, "focal_shift"));
         if (w is null || s is null || w.Length != s.Length || w.Length == 0) return null;
-        var p = new ChartPanel { XTitle = "Focal shift (µm)", YTitle = "Wavelength (µm)", PadX = true };
+        var p = new ChartPanel { XTitle = Loc.S("Results_Axis_FocalShiftUm"), YTitle = Loc.S("Results_Axis_WavelengthUm"), PadX = true };
         p.Series.Add(Curve(Scale(s, 1000), w, SeriesColor.Field(0)));
         if (Json.NfArray(Json.At(d.Json, "focal_shift_x")) is double[] sx && sx.Length == w.Length && !sx.SequenceEqual(s))
         {
@@ -197,7 +201,7 @@ public static class LineReaders
         if (field is null || Json.Arr(Json.At(d.Json, "curves")) is not { } list) return null;
         var unit = Json.Str(Json.At(d.Json, "field_unit")) ?? "";
         var um = WavelengthsUm(d, list);
-        var p = new ChartPanel { XTitle = "Lateral color (µm)", YTitle = unit.Length > 0 ? $"Field ({unit})" : "Field", PadX = true };
+        var p = new ChartPanel { XTitle = Loc.S("Results_Axis_LateralColorUm"), YTitle = FieldAxis(unit), PadX = true };
         var wavelengths = new List<int>();
         foreach (var c in list)
         {
@@ -212,7 +216,7 @@ public static class LineReaders
         {
             p.Rules.Add(new ChartRule(airy * 1000));
             p.Rules.Add(new ChartRule(-airy * 1000));
-            m.Legend.Add(new LegendEntry("± Airy radius", SeriesColor.Neutral, LegendMark.Dashed));
+            m.Legend.Add(new LegendEntry(Loc.S("Results_Legend_AiryRadius"), SeriesColor.Neutral, LegendMark.Dashed));
         }
         return m;
     }
@@ -225,14 +229,14 @@ public static class LineReaders
         var ri = Json.NfArray(Json.At(d.Json, "relative_illumination"));
         if (field is null || ri is null) return null;
         var unit = Json.Str(Json.At(d.Json, "field_unit")) ?? "";
-        var p = new ChartPanel { XTitle = unit.Length > 0 ? $"Field ({unit})" : "Field", YTitle = "Fraction", YDomain = (0, 1.05), ZeroLine = false };
+        var p = new ChartPanel { XTitle = FieldAxis(unit), YTitle = Loc.S("Results_Axis_Fraction"), YDomain = (0, 1.05), ZeroLine = false };
         p.Series.Add(Curve(field, ri, SeriesColor.Field(0)));
         var m = ChartModel.Single(p);
-        m.Legend.Add(new LegendEntry("Relative illumination", SeriesColor.Field(0)));
+        m.Legend.Add(new LegendEntry(Loc.S("Results_Legend_RelativeIllumination"), SeriesColor.Field(0)));
         if (Json.NfArray(Json.At(d.Json, "vignetting_fraction")) is { Length: > 0 } v)
         {
             p.Series.Add(Curve(field, v, SeriesColor.Field(1), dashed: true));
-            m.Legend.Add(new LegendEntry("Vignetted fraction", SeriesColor.Field(1), LegendMark.Dashed));
+            m.Legend.Add(new LegendEntry(Loc.S("Results_Legend_VignettedFraction"), SeriesColor.Field(1), LegendMark.Dashed));
         }
         return m;
     }
@@ -246,7 +250,7 @@ public static class LineReaders
         var radius = Json.Numbers(d, Json.At(d.Json, "radius")) ?? Json.Numbers(d, Json.At(d.Json, "radius_mm"));
         if (radius is null) return null;
         var x = Scale(radius, 1000);
-        var p = new ChartPanel { XTitle = $"Radius ({units.Micro})", YTitle = "Encircled energy", YDomain = (0, 1.02), ZeroLine = false };
+        var p = new ChartPanel { XTitle = Loc.F("Results_Axis_Radius", units.Micro), YTitle = Loc.S("Results_Axis_EncircledEnergy"), YDomain = (0, 1.02), ZeroLine = false };
         var m = ChartModel.Single(p);
         double[]? limit = null;
         for (var k = 0; k < list.Count; k++)
@@ -257,14 +261,14 @@ public static class LineReaders
             var i = Json.Int(Json.At(f, "field")) ?? k;
             p.Series.Add(Curve(x, enc, SeriesColor.Field(i)));
             var r80 = Json.Number(Json.At(f, "r80")) ?? Json.Nf(Json.At(f, "r80_mm"));
-            m.Legend.Add(new LegendEntry(Fmt.FieldTitle(d, i, Json.At(f, "field_value")) + " · r80 " + units.Length(r80), SeriesColor.Field(i)));
+            m.Legend.Add(new LegendEntry(Loc.F("Results_Legend_FieldR80", Fmt.FieldTitle(d, i, Json.At(f, "field_value")), units.Length(r80)), SeriesColor.Field(i)));
             limit ??= Json.Numbers(d, Json.At(f, "diffraction_limit"));
         }
         if (p.Series.Count == 0) return null;
         if (limit is { Length: > 0 })
         {
             p.Series.Insert(0, Curve(x, limit, SeriesColor.Neutral, dashed: true));
-            m.Legend.Add(new LegendEntry("Diffraction limit", SeriesColor.Neutral, LegendMark.Dashed));
+            m.Legend.Add(new LegendEntry(Loc.S("Results_Legend_DiffractionLimit"), SeriesColor.Neutral, LegendMark.Dashed));
         }
         return m;
     }
@@ -279,7 +283,7 @@ public static class LineReaders
         if (freq is not { Length: > 0 } || !(freq[^1] >= 0)) return null;
         var p = new ChartPanel
         {
-            XTitle = $"Spatial frequency ({units.Frequency})", YTitle = "Modulation",
+            XTitle = Loc.F("Results_Axis_SpatialFrequency", units.Frequency), YTitle = Loc.S("Results_Axis_Modulation"),
             XDomain = (0, freq[^1] > 0 ? freq[^1] : 1), YDomain = (0, 1.02), ZeroLine = false,
         };
         var m = ChartModel.Single(p, 140);
@@ -290,7 +294,7 @@ public static class LineReaders
             foreach (var c in geometric)
             {
                 var f = Json.Int(Json.At(c, "field")) ?? 0;
-                var cur = curves.TryGetValue(f, out var e) ? e : ($"Field {f + 1}", null, null);
+                var cur = curves.TryGetValue(f, out var e) ? e : (Loc.F("Results_Chart_FieldNumber", f + 1), null, null);
                 var mod = Json.NfArray(Json.At(c, "modulation"));
                 if (Json.Str(Json.At(c, "orientation")) == "sagittal") cur.S = mod; else cur.T = mod;
                 curves[f] = cur;
@@ -325,10 +329,10 @@ public static class LineReaders
             if (c.S is not null) p.Series.Add(Curve(freq, c.S, SeriesColor.Field(f), dashed: true));
             m.Legend.Add(new LegendEntry(c.Label, SeriesColor.Field(f)));
         }
-        m.Legend.Add(new LegendEntry("T solid, S dashed", SeriesColor.Neutral, LegendMark.Text));
-        if (limit is { Length: > 0 }) m.Legend.Add(new LegendEntry("Diffraction limit", SeriesColor.Neutral));
+        m.Legend.Add(new LegendEntry(Loc.S("Results_Legend_TSolidSDashed"), SeriesColor.Neutral, LegendMark.Text));
+        if (limit is { Length: > 0 }) m.Legend.Add(new LegendEntry(Loc.S("Results_Legend_DiffractionLimit"), SeriesColor.Neutral));
         var nyquist = Json.NfArray(Json.At(j, "nyquist"))?.FirstOrDefault(double.IsFinite);
-        if (nyquist is double n && double.IsFinite(n) && n > 0) p.Rules.Add(new ChartRule(n, "Nyquist"));
+        if (nyquist is double n && double.IsFinite(n) && n > 0) p.Rules.Add(new ChartRule(n, Loc.S("Results_Rule_Nyquist")));
         return m;
     }
 
@@ -336,7 +340,7 @@ public static class LineReaders
     {
         var k = 0;
         foreach (var f in frequencies) m.Legend.Add(new LegendEntry(Fmt.Short(f) + " " + units.Frequency, SeriesColor.Field(k++)));
-        m.Legend.Add(new LegendEntry("T solid, S dashed", SeriesColor.Neutral, LegendMark.Text));
+        m.Legend.Add(new LegendEntry(Loc.S("Results_Legend_TSolidSDashed"), SeriesColor.Neutral, LegendMark.Text));
     }
 
     public static ChartModel? MtfVsField(ResultData d)
@@ -345,7 +349,7 @@ public static class LineReaders
         var units = ImageUnits.Of(j);
         var field = Json.Numbers(d, Json.At(j, "normalized_field"));
         if (field is null || Json.Arr(Json.At(j, "curves")) is not { Count: > 0 } list) return null;
-        var p = new ChartPanel { XTitle = "Normalized field", YTitle = "Modulation", XDomain = (0, 1), YDomain = (0, 1.02), ZeroLine = false };
+        var p = new ChartPanel { XTitle = Loc.S("Results_Axis_NormalizedField"), YTitle = Loc.S("Results_Axis_Modulation"), XDomain = (0, 1), YDomain = (0, 1.02), ZeroLine = false };
         var freqs = new List<double>();
         for (var k = 0; k < list.Count; k++)
         {
@@ -374,8 +378,8 @@ public static class LineReaders
         {
             var f = list[k];
             var i = Json.Int(Json.At(f, "field")) ?? k;
-            var p = new ChartPanel { XTitle = units.FocusAxis, YTitle = "Modulation", XDomain = domain, YDomain = (0, 1.02), ZeroLine = false };
-            p.Rules.Add(new ChartRule(0, "Image"));
+            var p = new ChartPanel { XTitle = units.FocusAxis, YTitle = Loc.S("Results_Axis_Modulation"), XDomain = domain, YDomain = (0, 1.02), ZeroLine = false };
+            p.Rules.Add(new ChartRule(0, Loc.S("Results_Rule_Image")));
             var curves = Json.Arr(Json.At(f, "curves")) ?? [];
             for (var c = 0; c < curves.Count; c++)
             {
@@ -397,7 +401,7 @@ public static class LineReaders
     {
         if (Json.Arr(Json.At(d.Json, "fields")) is not { Count: > 0 } list) return null;
         var units = ImageUnits.Of(d.Json);
-        var p = new ChartPanel { XTitle = $"Position ({units.Micro})", YTitle = $"Line spread ({units.Density})", ZeroLine = false };
+        var p = new ChartPanel { XTitle = Loc.F("Results_Axis_Position", units.Micro), YTitle = Loc.F("Results_Axis_LineSpread", units.Density), ZeroLine = false };
         var m = ChartModel.Single(p);
         for (var k = 0; k < list.Count; k++)
         {
@@ -410,7 +414,7 @@ public static class LineReaders
             m.Legend.Add(new LegendEntry(Fmt.FieldTitle(d, i, Json.At(f, "field_value")), SeriesColor.Field(i)));
         }
         if (p.Series.Count == 0) return null;
-        m.Legend.Add(new LegendEntry("x solid, y dashed", SeriesColor.Neutral, LegendMark.Text));
+        m.Legend.Add(new LegendEntry(Loc.S("Results_Legend_XSolidYDashed"), SeriesColor.Neutral, LegendMark.Text));
         return m;
     }
 
@@ -422,9 +426,9 @@ public static class LineReaders
         var x = Json.NfArray(Json.At(d.Json, "through_focus_defocus"));
         var y = Json.NfArray(Json.At(d.Json, "through_focus_merit"));
         if (!Json.Has(d.Json, "defocus") || x is null || y is null || x.Length < 3 || x.Length != y.Length) return null;
-        var p = new ChartPanel { XTitle = "Defocus (mm)", YTitle = "RMS radius (µm)", ZeroLine = false };
+        var p = new ChartPanel { XTitle = Loc.S("Results_Axis_DefocusMm"), YTitle = Loc.S("Results_Axis_RmsRadiusUm"), ZeroLine = false };
         p.Series.Add(Curve(x, Scale(y, 1000), SeriesColor.Field(0)));
-        p.Rules.Add(new ChartRule(Json.Nf(Json.At(d.Json, "defocus")), "Best"));
+        p.Rules.Add(new ChartRule(Json.Nf(Json.At(d.Json, "defocus")), Loc.S("Results_Rule_Best")));
         return ChartModel.Single(p);
     }
 }

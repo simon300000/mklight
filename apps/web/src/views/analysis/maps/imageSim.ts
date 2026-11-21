@@ -3,6 +3,7 @@
 // `ImageSourceImport`). Pure functions, tested on their own.
 
 import type { AnalysisResult, Json, JsonObject } from '@/engine/types'
+import { t, type Key } from '@/i18n'
 import { nf } from '@/model/format'
 import type { System } from '@/model/system'
 import { arr, buffer, isObj, nums, obj } from '@/views/results/common'
@@ -62,12 +63,13 @@ export function clippedFraction(img: LinearImage, gain = 1): number {
   return n / img.data.length
 }
 
-export const PATTERNS: { id: string; title: string }[] = [
-  { id: 'grid', title: 'Grid' },
-  { id: 'siemens_star', title: 'Siemens star' },
-  { id: 'slanted_edge', title: 'Slanted edge' },
-  { id: 'text_chart', title: 'Text chart' },
-]
+/** The built-in patterns; `title` reads in the language shown when it is used. */
+export const PATTERNS: { id: string; readonly title: string }[] = ['grid', 'siemens_star', 'slanted_edge', 'text_chart'].map((id) => ({
+  id,
+  get title() {
+    return t(`maps.sim.patterns.${id}` as Key)
+  },
+}))
 
 const FONT = [
   [17, 27, 21, 17, 17, 17, 17],
@@ -296,8 +298,8 @@ export const EXTENTS = [FULL_EXTENT, 0.5, 0.25, 0.1, 0.05, 0.02]
 export const SIZES = [128, 256, 512, 1024]
 
 export function extentTitle(e: number): string {
-  if (e >= 1) return 'full square'
-  if (Math.abs(e - FULL_EXTENT) < 1e-6) return 'full field'
+  if (e >= 1) return t('maps.sim.fullSquare')
+  if (Math.abs(e - FULL_EXTENT) < 1e-6) return t('maps.sim.fullField')
   if (Math.abs(e - 0.5) < 1e-9) return '½'
   if (Math.abs(e - 0.25) < 1e-9) return '¼'
   return `${Number((e * 100).toPrecision(6))} %`
@@ -332,21 +334,21 @@ export const coordinates = (c: [number, number]) => `(${signed2(c[0])}, ${signed
 
 /** The axis and the design's field points, normalised by the largest radial field. */
 export function fieldPoints(system: System | null | undefined): FieldPointChoice[] {
-  const out: FieldPointChoice[] = [{ title: 'On axis', field: [0, 0] }]
+  const out: FieldPointChoice[] = [{ title: t('maps.sim.onAxis'), field: [0, 0] }]
   const f = system?.fields?.fields ?? []
   const r = Math.max(0, ...f.map((p) => Math.hypot(nf(p.x), nf(p.y))).filter(Number.isFinite))
   if (!(r > 0)) return out
   f.forEach((p, k) => {
     const h: [number, number] = [nf(p.x) / r, nf(p.y) / r]
     if (!h.every(Number.isFinite) || out.some((q) => Math.hypot(q.field[0] - h[0], q.field[1] - h[1]) < 1e-9)) return
-    out.push({ title: `Field ${k + 1} ${coordinates(h)}`, field: h })
+    out.push({ title: t('maps.sim.fieldPoint', { n: k + 1, coords: coordinates(h) }), field: h })
   })
   return out
 }
 
 /** "on axis", "Field 3 (0.00, +1.00)" or "(+0.30, −0.45)". */
 export function centerTitle(c: [number, number], points: FieldPointChoice[]): string {
-  if (c[0] === 0 && c[1] === 0) return 'on axis'
+  if (c[0] === 0 && c[1] === 0) return t('maps.sim.onAxisLower')
   const p = points.find((q) => Math.hypot(q.field[0] - c[0], q.field[1] - c[1]) < 1e-4)
   return p ? p.title : coordinates(c)
 }

@@ -64,6 +64,23 @@ public static class AppSettings
         }
     }
 
+    /// <summary>The chosen language (key <c>language</c>): <c>system</c> (the default), <c>en-US</c> or <c>zh-Hans</c>; applied on the next launch.</summary>
+    public static string Language
+    {
+        get
+        {
+            var v = Load()["language"]?.GetValue<string>();
+            try { return Languages.Normalize(v) ?? Languages.System; }
+            catch (ArgumentException) { return Languages.System; }
+        }
+        set
+        {
+            var o = Load();
+            o["language"] = Languages.Normalize(value) ?? Languages.System;
+            Save(o);
+        }
+    }
+
     public static List<string> Recent
     {
         get => (Load()["recent"] as JsonArray ?? []).Select(n => n?.GetValue<string>()).OfType<string>().ToList();

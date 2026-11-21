@@ -2,6 +2,7 @@
 // system transmission.
 import { useState } from 'react'
 import type { AnalysisResult } from '@/engine/types'
+import { t, useT } from '@/i18n'
 import { cssVar, seriesColor, useDark } from '@/lib/theme'
 import { sig } from '@/model/format'
 import { nums } from '../../results/common'
@@ -23,11 +24,12 @@ function TS() {
 // MARK: MTF vs field
 
 function MtfVsField({ result }: RendererProps) {
+  const t = useT()
   const dark = useDark()
   const j = result.json
   const field = series(result, j.normalized_field)
   const curves = objects(j.curves).map((c) => ({ f: nf(c.frequency), t: series(result, c.tangential), s: series(result, c.sagittal) }))
-  if (!field.length || !curves.length) return <Empty title="No MTF curves in this result" />
+  if (!field.length || !curves.length) return <Empty title={t('analysis.mtfVsField.empty')} />
   const plot: XYSeries[] = curves.flatMap((c, k) => [
     { x: field, y: c.t, color: seriesColor(k, dark) },
     { x: field, y: c.s, color: seriesColor(k, dark), dash: true },
@@ -43,7 +45,7 @@ function MtfVsField({ result }: RendererProps) {
         </>
       }
     >
-      <XYPlot series={plot} xLabel="Normalized field" yLabel="Modulation" xDomain={[0, 1]} yDomain={[0, 1.02]} label="MTF versus normalized field at fixed frequencies" />
+      <XYPlot series={plot} xLabel={t('analysis.mtfVsField.normalizedField')} yLabel={t('analysis.curves.modulation')} xDomain={[0, 1]} yDomain={[0, 1.02]} label={t('analysis.mtfVsField.label')} />
     </PlotPane>
   )
 }
@@ -52,12 +54,13 @@ function mtfVsFieldKeys(r: AnalysisResult): KeyNumber[] {
   const c = objects(r.json.curves)[0]
   if (!c) return []
   const m = minOf([...series(r, c.tangential), ...series(r, c.sagittal)])
-  return Number.isFinite(m) ? [{ label: `Min @ ${short(nf(c.frequency))}`, value: m.toFixed(3), help: `Lowest modulation over the field at ${short(nf(c.frequency))} cycles/mm` }] : []
+  return Number.isFinite(m) ? [{ label: t('analysis.mtfVsField.min', { frequency: short(nf(c.frequency)) }), value: m.toFixed(3), help: t('analysis.mtfVsField.minHelp', { frequency: short(nf(c.frequency)) }) }] : []
 }
 
 // MARK: Through-focus MTF
 
 function ThroughFocus({ result, system }: RendererProps) {
+  const t = useT()
   const dark = useDark()
   const [sel, setSel] = useState(0)
   const j = result.json
@@ -66,7 +69,7 @@ function ThroughFocus({ result, system }: RendererProps) {
     title: fieldTitle(system, intOf(f.field, k), f.field_value),
     curves: objects(f.curves).map((c) => ({ f: nf(c.frequency), t: series(result, c.tangential), s: series(result, c.sagittal) })),
   }))
-  if (!focus.length || !fields.length) return <Empty title="No through-focus curves in this result" />
+  if (!focus.length || !fields.length) return <Empty title={t('analysis.throughFocus.empty')} />
   const f = fields[Math.min(sel, fields.length - 1)]
   const fin = focus.filter(Number.isFinite)
   const lo = Math.min(...fin), hi = Math.max(...fin)
@@ -76,7 +79,7 @@ function ThroughFocus({ result, system }: RendererProps) {
   ])
   return (
     <PlotPane
-      top={fields.length > 1 ? <Picker label="Field" value={Math.min(sel, fields.length - 1)} onChange={setSel} options={fields.map((x) => x.title)} /> : undefined}
+      top={fields.length > 1 ? <Picker label={t('common.field')} value={Math.min(sel, fields.length - 1)} onChange={setSel} options={fields.map((x) => x.title)} /> : undefined}
       legend={
         <>
           {fields.length === 1 && <span className="text-label">{f.title}</span>}
@@ -89,12 +92,12 @@ function ThroughFocus({ result, system }: RendererProps) {
     >
       <XYPlot
         series={plot}
-        xLabel="Focus shift (mm)"
-        yLabel="Modulation"
+        xLabel={t('analysis.throughFocus.xLabel')}
+        yLabel={t('analysis.curves.modulation')}
         xDomain={hi > lo ? [lo, hi] : undefined}
         yDomain={[0, 1.02]}
-        markers={[{ x: 0, label: 'Image' }]}
-        label={`Through-focus MTF, ${f.title}`}
+        markers={[{ x: 0, label: t('analysis.throughFocus.image') }]}
+        label={t('analysis.throughFocus.label', { field: f.title })}
       />
     </PlotPane>
   )
@@ -105,16 +108,17 @@ function throughFocusKeys(r: AnalysisResult): KeyNumber[] {
   const focus = series(r, r.json.focus_mm)
   const c = objects(objects(r.json.fields)[0]?.curves)[0]
   if (!c || !focus.length) return []
-  const t = series(r, c.tangential)
+  const tan = series(r, c.tangential)
   let best = -1
-  for (let i = 0; i < Math.min(t.length, focus.length); i++) if (Number.isFinite(t[i]) && (best < 0 || t[i] > t[best])) best = i
+  for (let i = 0; i < Math.min(tan.length, focus.length); i++) if (Number.isFinite(tan[i]) && (best < 0 || tan[i] > tan[best])) best = i
   if (best < 0) return []
-  return [{ label: 'Peak (T)', value: `${focus[best] >= 0 ? '+' : '−'}${Math.abs(focus[best]).toFixed(4)} mm`, help: `Focus shift of the highest tangential MTF at ${short(nf(c.frequency))} cycles/mm, first field` }]
+  return [{ label: t('analysis.throughFocus.peak'), value: `${focus[best] >= 0 ? '+' : '−'}${Math.abs(focus[best]).toFixed(4)} mm`, help: t('analysis.throughFocus.peakHelp', { frequency: short(nf(c.frequency)) }) }]
 }
 
 // MARK: Line spread
 
 function LineSpread({ result, system }: RendererProps) {
+  const t = useT()
   const dark = useDark()
   const items = objects(result.json.fields)
     .map((f, k) => ({
@@ -124,7 +128,7 @@ function LineSpread({ result, system }: RendererProps) {
       ly: series(result, f.y),
     }))
     .filter((i) => i.x.length > 0)
-  if (!items.length) return <Empty title="No line-spread functions in this result" />
+  if (!items.length) return <Empty title={t('analysis.lineSpread.empty')} />
   const plot: XYSeries[] = items.flatMap((i, k) => [
     { x: i.x, y: i.lx, color: seriesColor(k, dark) },
     { x: i.x, y: i.ly, color: seriesColor(k, dark), dash: true },
@@ -141,7 +145,7 @@ function LineSpread({ result, system }: RendererProps) {
         </>
       }
     >
-      <XYPlot series={plot} xLabel="Position (µm)" yLabel="Line spread (mm⁻¹)" label="Line-spread functions along x and y per field" />
+      <XYPlot series={plot} xLabel={t('analysis.lineSpread.xLabel')} yLabel={t('analysis.lineSpread.yLabel')} label={t('analysis.lineSpread.label')} />
     </PlotPane>
   )
 }
@@ -149,18 +153,19 @@ function LineSpread({ result, system }: RendererProps) {
 // MARK: System transmission
 
 function Transmission({ result, system }: RendererProps) {
+  const t = useT()
   const dark = useDark()
   const j = result.json
   const points = objects(j.points).map((p) => ({ field: intOf(p.field, 0), um: nf(p.wavelength_um), t: nf(p.transmission) }))
   const poly = nums(j.polychromatic)
   const fieldDefs = objects(j.fields)
-  if (!points.length) return <Empty title="No transmission in this result" />
+  if (!points.length) return <Empty title={t('analysis.transmission.empty')} />
   const fields = [...new Set(points.map((p) => p.field))].sort((a, b) => a - b)
   const labelOf = (f: number) => {
     const d = fieldDefs[f]
     if (d && (d.hx !== undefined || d.hy !== undefined)) return `H (${nf(d.hx ?? 0).toFixed(2)}, ${nf(d.hy ?? 0).toFixed(2)})`
     if (d && d.field !== undefined) return fieldTitle(system, intOf(d.field, f), d.field_value)
-    return `Field ${f + 1}`
+    return t('common.fieldN', { n: f + 1 })
   }
   const spectral = new Set(points.map((p) => p.um)).size > 1
   return (
@@ -175,19 +180,19 @@ function Transmission({ result, system }: RendererProps) {
             const ps = points.filter((p) => p.field === f).sort((a, b) => a.um - b.um)
             return { x: ps.map((p) => p.um), y: ps.map((p) => p.t), color: seriesColor(k, dark) }
           })}
-          xLabel="Wavelength (µm)"
-          yLabel="Transmission"
+          xLabel={t('analysis.curves.wavelengthUm')}
+          yLabel={t('analysis.curves.transmission')}
           yDomain={[0, 1.02]}
-          label="System transmission versus wavelength per field"
+          label={t('analysis.transmission.labelSpectral')}
         />
       ) : (
         <BarPlot
           categories={fields.map((f) => String(f + 1))}
-          groups={[{ label: 'Transmission', color: seriesColor(0, dark), values: fields.map((f) => points.find((p) => p.field === f)?.t ?? NaN) }]}
-          xLabel={`Field${Number.isFinite(points[0].um) ? ` · ${sig(points[0].um, 4)} µm` : ''}`}
-          yLabel="Transmission"
+          groups={[{ label: t('analysis.curves.transmission'), color: seriesColor(0, dark), values: fields.map((f) => points.find((p) => p.field === f)?.t ?? NaN) }]}
+          xLabel={Number.isFinite(points[0].um) ? t('analysis.transmission.fieldAt', { wavelength: sig(points[0].um, 4) }) : t('common.field')}
+          yLabel={t('analysis.curves.transmission')}
           yDomain={[0, 1]}
-          label="System transmission per field"
+          label={t('analysis.transmission.labelField')}
         />
       )}
     </PlotPane>
@@ -198,9 +203,9 @@ function transmissionKeys(r: AnalysisResult): KeyNumber[] {
   const poly = nums(r.json.polychromatic)
   const m = minOf(poly)
   const out: KeyNumber[] = []
-  if (Number.isFinite(m)) out.push({ label: 'Min transmission', value: percent(m), help: 'Lowest polychromatic transmission over the fields' })
+  if (Number.isFinite(m)) out.push({ label: t('analysis.transmission.min'), value: percent(m), help: t('analysis.transmission.minHelp') })
   const ax = poly[0]
-  if (Number.isFinite(ax) && poly.length > 1) out.push({ label: 'Field 1', value: percent(ax) })
+  if (Number.isFinite(ax) && poly.length > 1) out.push({ label: t('common.fieldN', { n: 1 }), value: percent(ax) })
   return out
 }
 

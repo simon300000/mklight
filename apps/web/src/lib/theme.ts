@@ -13,6 +13,11 @@ export function useDark(): boolean {
   return useSyncExternalStore(subscribe, () => query()?.matches ?? false, () => false)
 }
 
+/** The UI font for canvas text: the system font, with the platform's
+ *  Simplified Chinese font for CJK (as --font-sans in index.css). */
+export const FONT_FAMILY =
+  '-apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", system-ui, "PingFang SC", "Microsoft YaHei UI", "Microsoft YaHei", "Noto Sans CJK SC", "Noto Sans SC", sans-serif'
+
 /** Resolved value of a CSS custom property (`--label`), for canvas drawing. */
 export function cssVar(name: string): string {
   return getComputedStyle(document.documentElement).getPropertyValue(name).trim()

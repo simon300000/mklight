@@ -1,5 +1,6 @@
 using System.Globalization;
 using System.Text.Json.Nodes;
+using MKLight.App.Support;
 using MKLight.Engine;
 using MKLight.Model;
 
@@ -68,16 +69,27 @@ public sealed record GlassCandidates
         {
             var parts = new List<string>
             {
-                Rule == CandidateRule.Nearest ? $"{Nearest} nearest" : $"n_d ±{MeritFormat.Short(WindowNd)}, V_d ±{MeritFormat.Short(WindowVd)}",
-                Catalogs.Count == 0 ? "all catalogs" : string.Join(", ", Catalogs),
+                Rule == CandidateRule.Nearest ? Loc.F("Jobs_GlassSub_SummaryNearest", Nearest) : $"n_d ±{MeritFormat.Short(WindowNd)}, V_d ±{MeritFormat.Short(WindowVd)}",
+                Catalogs.Count == 0 ? Loc.S("Jobs_GlassSub_SummaryAllCatalogs") : string.Join(", ", Catalogs),
             };
-            if (!Statuses.SetEquals(DefaultStatuses)) parts.Add(string.Join(", ", AllStatuses.Where(Statuses.Contains)));
+            if (!Statuses.SetEquals(DefaultStatuses)) parts.Add(string.Join(", ", AllStatuses.Where(Statuses.Contains).Select(StatusName)));
             if (Include.Count > 0) parts.Add($"+{Include.Count}");
             if (Exclude.Count > 0) parts.Add($"−{Exclude.Count}");
-            if (MinTransmission is not null || MaxRelativeCost is not null || MaxClimateClass is not null || MaxStainClass is not null) parts.Add("limits");
+            if (MinTransmission is not null || MaxRelativeCost is not null || MaxClimateClass is not null || MaxStainClass is not null) parts.Add(Loc.S("Jobs_GlassSub_SummaryLimits"));
             return string.Join(" · ", parts);
         }
     }
+
+    /// <summary>A catalogue status in running text (<c>preferred</c>).</summary>
+    public static string StatusName(string status) => status switch
+    {
+        "preferred" => Loc.S("Jobs_GlassSub_StatusName_Preferred"),
+        "standard" => Loc.S("Jobs_GlassSub_StatusName_Standard"),
+        "melt" => Loc.S("Jobs_GlassSub_StatusName_Melt"),
+        "special" => Loc.S("Jobs_GlassSub_StatusName_Special"),
+        "obsolete" => Loc.S("Jobs_GlassSub_StatusName_Obsolete"),
+        _ => status,
+    };
 
     /// <summary>Splits <c>N-BK7, SCHOTT:F2</c> into names.</summary>
     public static IReadOnlyList<string> Names(string text) =>
@@ -143,8 +155,8 @@ public sealed record GlassCombination(int Rank, double Merit, double Violation, 
         get
         {
             var n = Moved.Count;
-            var s = n == 0 ? "shape unchanged" : $"{n} variable{(n == 1 ? "" : "s")} re-optimized";
-            return CutShort ? s + " · cut short" : s;
+            var s = n == 0 ? Loc.S("Jobs_GlassSub_ShapeUnchanged") : Loc.F(n == 1 ? "Jobs_GlassSub_VariablesReoptimized_One" : "Jobs_GlassSub_VariablesReoptimized_Many", n);
+            return CutShort ? Loc.F("Jobs_GlassSub_CutShort", s) : s;
         }
     }
 }
@@ -171,13 +183,17 @@ public sealed record GlassSubstitutionResult(string Status, bool Stopped, string
 
     public string StatusText(bool applied)
     {
-        var s = $"{Combinations} combination{(Combinations == 1 ? "" : "s")} re-optimized";
-        if (Failed > 0) s += $", {Failed} failed";
-        s += ". ";
-        if (Stopped) s += "Stopped early: the ranking so far. ";
-        if (Termination == "time_limit") s += "The time limit ended the search. ";
-        if (!applied) s += "Select a combination to preview it in the window.";
-        return s.TrimEnd();
+        var one = Combinations == 1;
+        var parts = new List<string>
+        {
+            Failed > 0
+                ? Loc.F(one ? "Jobs_GlassSub_StatusFailed_One" : "Jobs_GlassSub_StatusFailed_Many", Combinations, Failed)
+                : Loc.F(one ? "Jobs_GlassSub_StatusDone_One" : "Jobs_GlassSub_StatusDone_Many", Combinations),
+        };
+        if (Stopped) parts.Add(Loc.S("Jobs_GlassSub_StatusStopped"));
+        if (Termination == "time_limit") parts.Add(Loc.S("Jobs_GlassSub_StatusTimeLimit"));
+        if (!applied) parts.Add(Loc.S("Jobs_GlassSub_StatusSelect"));
+        return parts.Aggregate((a, b) => Loc.F("Jobs_GlassSub_StatusJoin", a, b));
     }
 }
 
@@ -227,10 +243,8 @@ public sealed class GlassSubstitutionSettings
 
     IReadOnlyList<SurfaceID> _configuredFor = [];
 
-    public static string Title(GlassSearch a) => a == GlassSearch.Tabu ? "Quick (tabu search)" : "Thorough (global search)";
-    public static string Detail(GlassSearch a) => a == GlassSearch.Tabu
-        ? "Tries glass combinations, each re-optimized from the current shape."
-        : "Hops over glasses and shape together to escape local minima; slower.";
+    public static string Title(GlassSearch a) => Loc.S(a == GlassSearch.Tabu ? "Jobs_GlassSub_SearchTabu" : "Jobs_GlassSub_SearchHammer");
+    public static string Detail(GlassSearch a) => Loc.S(a == GlassSearch.Tabu ? "Jobs_GlassSub_SearchTabuDetail" : "Jobs_GlassSub_SearchHammerDetail");
 
     /// <summary>Selects every glass of a design the first time (or when its glass gaps changed).</summary>
     public void Configure(OpticalSystem system)
@@ -262,9 +276,8 @@ public sealed class GlassSubstitutionSettings
         var slots = GlassSlot.All(system).Where(s => Selected.Contains(s.Id) && !s.Offset.IsZero).ToList();
         if (slots.Count == 0) return null;
         var names = slots.Select(s => $"S{s.Index} {s.Label}").ToList();
-        var list = names.Count == 1 ? names[0] : string.Join(", ", names.Take(names.Count - 1)) + " and " + names[^1];
-        var one = slots.Count == 1;
-        return $"{list} {(one ? "carries a melt offset" : "carry melt offsets")}. A replacement glass is installed without {(one ? "it" : "them")}, even the same glass: the offset belonged to the original melt.";
+        var list = names.Count == 1 ? names[0] : Loc.F("Jobs_GlassSub_ListAnd", string.Join(Loc.S("Jobs_GlassSub_ListSeparator"), names.Take(names.Count - 1)), names[^1]);
+        return Loc.F(slots.Count == 1 ? "Jobs_GlassSub_OffsetNote_One" : "Jobs_GlassSub_OffsetNote_Many", list);
     }
 
     /// <summary>The <c>glass_substitution</c> settings.</summary>
@@ -309,8 +322,8 @@ public static class OptimizeVariables
         bool Solved(DesignVariable v) => system?.IsSolved(v.Param) ?? false;
         if (variables.All(v => v.IsPinned || Solved(v)))
             return variables.Any(Solved)
-                ? "Every variable is pinned or controlled by a solve. Add a free variable, or vary the automatic set."
-                : "Every variable is pinned. Unpin one, or vary the automatic set.";
+                ? Loc.S("Jobs_GlassSub_VariablesPinnedOrSolved")
+                : Loc.S("Jobs_GlassSub_VariablesPinned");
         return null;
     }
 }

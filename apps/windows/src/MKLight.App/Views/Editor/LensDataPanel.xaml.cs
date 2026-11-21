@@ -103,7 +103,7 @@ public sealed partial class LensDataPanel : UserControl, ILensCellActions
     {
         if (_document is not { } doc || Selected is not { } i || !LensCommands.CanDelete(doc.System, i)) return;
         CommitEditing();
-        if (doc.Edit("Delete Surface", s => new LensEdit.Delete(i).Apply(s)))
+        if (doc.Edit(Loc.S("Lens_Undo_DeleteSurface"), s => new LensEdit.Delete(i).Apply(s)))
             Select(LensCommands.SelectionAfterDelete(doc.System, i));
     }
 
@@ -134,7 +134,7 @@ public sealed partial class LensDataPanel : UserControl, ILensCellActions
         column ??= _editor.Active?.Column ?? _pressedColumn ?? LensColumn.Radius;
         if (VariablePath(doc.System, i, column.Value) is not { } path)
         {
-            _host?.ShowToast($"The {column.Value.Title().ToLowerInvariant()} of this surface cannot be a variable.");
+            _host?.ShowToast(Loc.F("Lens_Toast_CannotBeVariable", column.Value.Title().ToLowerInvariant()));
             return;
         }
         // Typed text goes to its value first; the field stays open.
@@ -253,7 +253,7 @@ public sealed partial class LensDataPanel : UserControl, ILensCellActions
         _rows = LensRows.Build(system, _host.AutoSemiDiameters, variables);
         Caption.Text = LensRows.Caption(system);
         VariablesButton.Visibility = variables.Count > 0 ? Visibility.Visible : Visibility.Collapsed;
-        VariablesText.Text = variables.Count == 1 ? "1 variable" : $"{variables.Count} variables";
+        VariablesText.Text = Loc.F(variables.Count == 1 ? "Lens_Panel_Variables_One" : "Lens_Panel_Variables_Many", variables.Count);
 
         var columns = LensGridLayout.Columns(_rows.Any(r => r.Notes.ContainsKey(LensColumn.Material)));
         if (!columns.SequenceEqual(_columns))
@@ -608,9 +608,10 @@ public sealed partial class LensDataPanel : UserControl, ILensCellActions
     {
         if (column == LensColumn.Type)
         {
-            // A type by its menu title ("Even Asphere", "Cylinder (power in x)").
+            // A type by its menu title ("Even Asphere", "Cylinder (power in x)"), in the UI language or in English.
             var entry = SurfaceTypeCatalog.All.FirstOrDefault(e => string.Equals(e.Title, text.Trim(), StringComparison.OrdinalIgnoreCase))
-                ?? throw new ArgumentException($"“{text.Trim()}” is not a surface type");
+                ?? SurfaceTypeCatalog.All.FirstOrDefault(e => string.Equals(e.English, text.Trim(), StringComparison.OrdinalIgnoreCase))
+                ?? throw new ArgumentException(Loc.F("Lens_Error_NotASurfaceType", text.Trim()));
             SetType(row.Id, entry.Choice);
             return;
         }
@@ -770,23 +771,23 @@ public sealed partial class LensDataPanel : UserControl, ILensCellActions
             item.Click += (_, _) => action();
             return item;
         }
-        menu.Items.Add(Item("Insert Surface Before", "\uE710", "Ctrl+Shift+I", true, InsertBefore));
-        menu.Items.Add(Item("Insert Surface After", "", "Ctrl+Alt+I", true, InsertAfter));
-        menu.Items.Add(Item("Delete Surface", "\uE738", "Ctrl+Delete", LensCommands.CanDelete(s, i), DeleteSelected));
+        menu.Items.Add(Item(Loc.S("Lens_Menu_InsertBefore"), "\uE710", "Ctrl+Shift+I", true, InsertBefore));
+        menu.Items.Add(Item(Loc.S("Lens_Menu_InsertAfter"), "", "Ctrl+Alt+I", true, InsertAfter));
+        menu.Items.Add(Item(Loc.S("Lens_Menu_DeleteSurface"), "\uE738", "Ctrl+Delete", LensCommands.CanDelete(s, i), DeleteSelected));
         menu.Items.Add(new MenuFlyoutSeparator());
-        menu.Items.Add(Item("Make Aperture Stop", "\uE7C8", "Ctrl+Shift+T", LensCommands.CanMakeStop(s, i), MakeSelectedStop));
+        menu.Items.Add(Item(Loc.S("Lens_Menu_MakeStop"), "\uE7C8", "Ctrl+Shift+T", LensCommands.CanMakeStop(s, i), MakeSelectedStop));
         menu.Items.Add(new MenuFlyoutSeparator());
         if (under is { } col && VariablePath(s, i, col) is { } own)
         {
             var on = DesignVariables.IsVariable(_document, own);
             var refusal = on ? null : DesignVariables.Refusal(s, own);
-            var item = Item(on ? "Remove Variable" : "Make Variable", "", "Ctrl+Shift+V", refusal is null, () => ToggleVariable(col));
+            var item = Item(on ? Loc.S("Lens_Menu_RemoveVariable") : Loc.S("Lens_Menu_MakeVariable"), "", "Ctrl+Shift+V", refusal is null, () => ToggleVariable(col));
             if (refusal is not null) ToolTipService.SetToolTip(item, refusal);
             menu.Items.Add(item);
         }
         menu.Items.Add(VariablesMenu(s, i));
         menu.Items.Add(new MenuFlyoutSeparator());
-        var inspect = Item("Show in Inspector", "\uE8A0", "", true, () => ShowInInspector(i));
+        var inspect = Item(Loc.S("Lens_Menu_ShowInInspector"), "\uE8A0", "", true, () => ShowInInspector(i));
         AutomationProperties.SetAutomationId(inspect, "LensTable.Row.ShowInInspector");
         menu.Items.Add(inspect);
         ForCapture(menu);
@@ -800,7 +801,7 @@ public sealed partial class LensDataPanel : UserControl, ILensCellActions
     /// </summary>
     MenuFlyoutSubItem VariablesMenu(OpticalSystem s, int i)
     {
-        var sub = new MenuFlyoutSubItem { Text = "Variables", Icon = new FontIcon { Glyph = "\uE9D9" } };
+        var sub = new MenuFlyoutSubItem { Text = Loc.S("Lens_Menu_Variables"), Icon = new FontIcon { Glyph = "\uE9D9" } };
         var seen = new HashSet<ParamPath>();
         foreach (var column in LensColumns.Editable)
         {
@@ -900,8 +901,8 @@ public sealed partial class LensDataPanel : UserControl, ILensCellActions
             item.Click += (_, _) => click();
             return item;
         }
-        MoreMenu.Items.Add(Item("Fit Columns to Content", "\uE9A6", "FitColumns", _rows.Count > 0, FitColumns));
-        MoreMenu.Items.Add(Item("Automatic Column Widths", "\uE72C", "AutomaticWidths", !_userWidths.IsEmpty, ResetColumnWidths));
+        MoreMenu.Items.Add(Item(Loc.S("Lens_More_FitColumns"), "\uE9A6", "FitColumns", _rows.Count > 0, FitColumns));
+        MoreMenu.Items.Add(Item(Loc.S("Lens_More_AutomaticWidths"), "\uE72C", "AutomaticWidths", !_userWidths.IsEmpty, ResetColumnWidths));
         if (Panels is not { } host)
         {
             ForCapture(MoreMenu);
@@ -910,11 +911,11 @@ public sealed partial class LensDataPanel : UserControl, ILensCellActions
         var panel = PanelId.LensData;
         MoreMenu.Items.Add(new MenuFlyoutSeparator());
         if (host.Arrangement.IsDetached(panel))
-            MoreMenu.Items.Add(Item("Move to Main Window", "\uE73F", "MoveToMainWindow", true, () => host.MoveToMainWindow(panel)));
+            MoreMenu.Items.Add(Item(Loc.S("Lens_More_MoveToMainWindow"), "\uE73F", "MoveToMainWindow", true, () => host.MoveToMainWindow(panel)));
         if (!host.Arrangement.IsAloneInWindow(panel))
-            MoreMenu.Items.Add(Item("Move to New Window", "\uE8A7", "MoveToNewWindow", true, () => host.MoveToNewWindow(panel)));
+            MoreMenu.Items.Add(Item(Loc.S("Lens_More_MoveToNewWindow"), "\uE8A7", "MoveToNewWindow", true, () => host.MoveToNewWindow(panel)));
         if (MoreMenu.Items[^1] is not MenuFlyoutSeparator) MoreMenu.Items.Add(new MenuFlyoutSeparator());
-        MoreMenu.Items.Add(Item("Hide Lens Data", "\uED1A", "Hide", true, () => host.Close(panel)));
+        MoreMenu.Items.Add(Item(Loc.S("Lens_More_Hide"), "\uED1A", "Hide", true, () => host.Close(panel)));
         ForCapture(MoreMenu);
     }
 

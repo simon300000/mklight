@@ -3,6 +3,7 @@ import { useMemo } from 'react'
 import uPlot from 'uplot'
 import type { AnalysisResult, JsonObject } from '@/engine/types'
 import type { System } from '@/model/system'
+import { useT } from '@/i18n'
 import { useDark } from '@/lib/theme'
 import { sig } from '@/model/format'
 import { arr, fieldLabel, isObj, maxAbs, nums, useSize, wavelengthsUm, wlColor } from './common'
@@ -50,6 +51,7 @@ function FanPlot(props: { fans: Fan[]; xLabel: string; yLabel: string; range: nu
 }
 
 export function FansView(props: { result: AnalysisResult; system: System; opd: boolean }) {
+  const t = useT()
   const dark = useDark()
   const j = props.result.json
   const [ref, size] = useSize<HTMLDivElement>()
@@ -66,9 +68,8 @@ export function FansView(props: { result: AnalysisResult; system: System; opd: b
 
   const rowH = Math.max(150, Math.min(260, (size.h - 30) / Math.max(fields.length, 1) - 20))
   const narrow = size.w > 0 && size.w < 420
-  const what = props.opd ? 'OPD' : 'Ray aberration'
 
-  if (!fields.length) return <div className="p-4 text-secondary">No fields in this result.</div>
+  if (!fields.length) return <div className="p-4 text-secondary">{t('analysis.results.noFields')}</div>
   return (
     <div ref={ref} className="absolute inset-0 flex flex-col">
       <Legend>
@@ -86,7 +87,7 @@ export function FansView(props: { result: AnalysisResult; system: System; opd: b
               <div className={narrow ? 'flex flex-col' : 'grid grid-cols-2 gap-2'}>
                 {(['t', 's'] as const).map((side) => (
                   <div key={side} className="flex min-w-0 flex-col">
-                    <div className="px-1 text-[11px] text-secondary">{side === 't' ? 'Tangential' : 'Sagittal'}</div>
+                    <div className="px-1 text-[11px] text-secondary">{side === 't' ? t('analysis.results.tangential') : t('analysis.results.sagittal')}</div>
                     <div style={{ height: rowH }}>
                       <FanPlot
                         fans={fans[k][side]}
@@ -96,7 +97,7 @@ export function FansView(props: { result: AnalysisResult; system: System; opd: b
                         scale={scale}
                         wls={wls}
                         dark={dark}
-                        label={`${what}, ${side === 't' ? 'tangential' : 'sagittal'} fan, ${label}`}
+                        label={t(props.opd ? (side === 't' ? 'analysis.results.opdFanT' : 'analysis.results.opdFanS') : side === 't' ? 'analysis.results.rayFanT' : 'analysis.results.rayFanS', { field: label })}
                       />
                     </div>
                   </div>

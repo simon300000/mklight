@@ -16,6 +16,7 @@ import { useView } from '@/state/view'
 import { useWorkspace } from '@/state/workspace'
 import { usePalette } from '@/state/palette'
 import { cn, shortcutLabel } from '@/lib/utils'
+import { engineText, t, useT } from '@/i18n'
 
 
 interface Item {
@@ -30,7 +31,7 @@ function items(): Item[] {
   const out: Item[] = []
   for (const c of COMMANDS) {
     if (c.enabled && !c.enabled()) continue
-    out.push({ id: `cmd:${c.id}`, title: c.title.replace(/…$/, ''), group: 'Commands', shortcut: c.shortcut, run: c.run })
+    out.push({ id: `cmd:${c.id}`, title: c.title.replace(/…$/, ''), group: t('app.palette.commands'), shortcut: c.shortcut, run: c.run })
   }
   const ws = useWorkspace.getState()
   for (const g of groupedAnalyses(ws.descriptors)) {
@@ -38,8 +39,8 @@ function items(): Item[] {
       if (!d.available) continue
       out.push({
         id: `pane:${d.name}`,
-        title: `Add ${analysisTitle(d.name, d)}`,
-        group: 'Analyses',
+        title: t('app.palette.addAnalysis', { name: analysisTitle(d.name, d) }),
+        group: t('app.palette.analyses'),
         run: () => {
           const key = useWorkspace.getState().addPane(d.name)
           useView.getState().set({ focusedPane: key })
@@ -51,15 +52,15 @@ function items(): Item[] {
   sys?.surfaces?.forEach((s, i) => {
     out.push({
       id: `surf:${i}`,
-      title: `Select ${surfaceTitle(sys, i)}${s.label ? ` · ${s.label}` : ''}`,
-      group: 'Surfaces',
+      title: t('app.palette.selectSurface', { name: `${surfaceTitle(sys, i)}${s.label ? ` · ${s.label}` : ''}` }),
+      group: t('app.palette.surfaces'),
       run: () => {
         useView.getState().select(i)
         useView.getState().setPage('surface')
       },
     })
   })
-  for (const s of SAMPLES) out.push({ id: `sample:${s.id}`, title: `Open Sample ${s.system.name}`, group: 'Samples', run: () => openSample(s.id) })
+  for (const s of SAMPLES) out.push({ id: `sample:${s.id}`, title: t('app.palette.openSample', { name: engineText(s.system.name) }), group: t('app.palette.samples'), run: () => openSample(s.id) })
   return out
 }
 
@@ -70,12 +71,13 @@ function matches(title: string, q: string) {
 }
 
 export function CommandPalette() {
+  const t = useT()
   const open = usePalette((s) => s.open)
   const setOpen = usePalette((s) => s.set)
   const [q, setQ] = useState('')
   const [active, setActive] = useState(0)
   const list = useRef<HTMLUListElement>(null)
-  const all = useMemo(() => (open ? items() : []), [open])
+  const all = useMemo(() => (open ? items() : []), [open, t])
   const shown = useMemo(() => all.filter((i) => matches(i.title, q)).slice(0, 60), [all, q])
 
   useEffect(() => {
@@ -99,7 +101,7 @@ export function CommandPalette() {
   return (
     <Dialog open={open} onOpenChange={setOpen}>
       <DialogContent className="top-[18%] w-[min(560px,92vw)] translate-y-0 p-0" aria-describedby={undefined}>
-        <DialogTitle className="sr-only">Command Palette</DialogTitle>
+        <DialogTitle className="sr-only">{t('app.palette.title')}</DialogTitle>
         <div className="flex items-center gap-2 border-b border-separator px-3">
           <Search className="size-4 text-secondary" aria-hidden />
           <input
@@ -108,8 +110,8 @@ export function CommandPalette() {
             aria-expanded="true"
             aria-controls="palette-list"
             aria-activedescendant={shown[active] ? `palette-${shown[active].id}` : undefined}
-            aria-label="Search commands, analyses, surfaces and samples"
-            placeholder="Search commands, analyses, surfaces, samples"
+            aria-label={t('app.palette.searchLabel')}
+            placeholder={t('app.palette.placeholder')}
             className="h-11 min-w-0 flex-1 bg-transparent text-[14px] outline-none placeholder:text-secondary"
             value={q}
             onChange={(e) => setQ(e.target.value)}
@@ -127,8 +129,8 @@ export function CommandPalette() {
             }}
           />
         </div>
-        <ul ref={list} id="palette-list" role="listbox" aria-label="Results" className="max-h-[50vh] overflow-y-auto p-1.5" data-testid="command-palette">
-          {shown.length === 0 && <li className="px-3 py-6 text-center text-secondary">No matches</li>}
+        <ul ref={list} id="palette-list" role="listbox" aria-label={t('app.palette.results')} className="max-h-[50vh] overflow-y-auto p-1.5" data-testid="command-palette">
+          {shown.length === 0 && <li className="px-3 py-6 text-center text-secondary">{t('app.palette.noMatches')}</li>}
           {shown.map((i, k) => (
             <li
               key={i.id}

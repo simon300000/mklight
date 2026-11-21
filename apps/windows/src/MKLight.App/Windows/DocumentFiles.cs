@@ -1,3 +1,4 @@
+using MKLight.App.Support;
 using MKLight.Engine;
 using MKLight.Model;
 
@@ -26,7 +27,7 @@ public static class Autosaves
     /// <summary>An autosave found at launch: <see cref="Original"/> is the design's file, null for an untitled design.</summary>
     public sealed record Entry(string Path, string? Original, DateTime Modified)
     {
-        public string Title => Original is { } o ? System.IO.Path.GetFileName(o) : "Untitled design";
+        public string Title => Original is { } o ? System.IO.Path.GetFileName(o) : Loc.S("Shell_Autosave_UntitledDesign");
     }
 
     /// <summary>
@@ -153,14 +154,14 @@ public static class DocumentFiles
     public static string? RenameProblem(string current, string name)
     {
         var n = name.Trim();
-        if (n.Length == 0) return "Enter a name.";
+        if (n.Length == 0) return Loc.S("Shell_Rename_EnterName");
         if (n.IndexOfAny(['<', '>', ':', '"', '/', '\\', '|', '?', '*']) >= 0 || n.Any(char.IsControl))
-            return "A name cannot contain < > : \" / \\ | ? or *.";
-        if (n.EndsWith('.')) return "A name cannot end with a period.";
+            return Loc.S("Shell_Rename_BadCharacters");
+        if (n.EndsWith('.')) return Loc.S("Shell_Rename_EndsWithPeriod");
         var target = RenamedPath(current, n);
         // A change of case only renames the same file.
         if (!string.Equals(target, current, StringComparison.OrdinalIgnoreCase) && (File.Exists(target) || Directory.Exists(target)))
-            return $"“{Path.GetFileName(target)}” already exists in this folder.";
+            return Loc.F("Shell_Rename_Exists", Path.GetFileName(target));
         return null;
     }
 }

@@ -106,8 +106,8 @@ public sealed class PanelHost : UserControl
     internal AnalysisPaneModel? Pane(PanelId panel) => panel.PaneId is { } id ? _session.Workspace.Panes.FirstOrDefault(p => p.Id == id) : null;
 
     internal string Title(PanelId panel) =>
-        panel == PanelId.LensData ? "Lens Data" : panel == PanelId.Layout ? "Layout"
-        : Pane(panel) is { } p ? AnalysisCatalog.Title(p.Analysis, _session.Workspace.Descriptor(p.Analysis)?.Title) : "Analysis";
+        panel == PanelId.LensData ? Loc.S("Shell_Sidebar_LensData") : panel == PanelId.Layout ? Loc.S("Shell_Sidebar_Layout")
+        : Pane(panel) is { } p ? AnalysisCatalog.Title(p.Analysis, _session.Workspace.Descriptor(p.Analysis)?.Title) : Loc.S("Shell_Panels_Analysis");
 
     internal string Glyph(PanelId panel) =>
         panel == PanelId.LensData ? AnalysisCatalog.LensDataGlyph : panel == PanelId.Layout ? AnalysisCatalog.LayoutGlyph

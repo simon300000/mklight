@@ -1,5 +1,7 @@
 using System.Runtime.CompilerServices;
+using MKLight.App.Support;
 using MKLight.Engine;
+using MKLight.Model;
 
 namespace MKLight.App.ViewModels;
 
@@ -46,11 +48,11 @@ public static class GlassLibrarySync
             }
             catch (EngineException e)
             {
-                warnings.Add($"Glass status settings: {e.Message}");
+                warnings.Add(Loc.F("Glass_Sync_StatusSettings", EngineText.T(e.Message)));
             }
         }
         warnings.InsertRange(0, sync.Errors.Select(e =>
-            $"{(string.IsNullOrEmpty(e.Path) ? "Glass library" : Path.GetFileName(e.Path))}: {e.Message}"));
+            Loc.F("Glass_Sync_Error", string.IsNullOrEmpty(e.Path) ? Loc.S("Glass_Sync_Library") : Path.GetFileName(e.Path), EngineText.T(e.Message))));
         state.Warnings = warnings;
         return changed;
     }

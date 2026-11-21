@@ -21,19 +21,17 @@
                     Background="{ThemeResource AccentFillColorDefaultBrush}">
                 <StackPanel Orientation="Horizontal" Spacing="6">
                     <TextBlock x:Name="PreviewText" Foreground="{ThemeResource TextOnAccentFillColorPrimaryBrush}" FontSize="12" FontWeight="SemiBold" VerticalAlignment="Center" />
-                    <Button x:Name="EndPreviewButton" Content="End Preview" FontSize="11.5" Padding="8,1,8,2" CornerRadius="10" MinHeight="20" VerticalAlignment="Center" Click="OnEndPreview" />
+                    <Button x:Name="EndPreviewButton" x:Uid="Shell_Status_EndPreview" FontSize="11.5" Padding="8,1,8,2" CornerRadius="10" MinHeight="20" VerticalAlignment="Center" Click="OnEndPreview" />
                 </StackPanel>
             </Border>
-            <Button x:Name="NumbersButton" Background="Transparent" BorderThickness="0" CornerRadius="13" Height="26" Padding="10,0"
-                    ToolTipService.ToolTip="First-order data, engine and compute backend">
+            <Button x:Name="NumbersButton" Background="Transparent" BorderThickness="0" CornerRadius="13" Height="26" Padding="10,0">
                 <StackPanel x:Name="Numbers" Orientation="Horizontal" Spacing="14" />
                 <Button.Flyout>
                     <Flyout Placement="Bottom">
                         <StackPanel Width="340" Spacing="4">
                             <StackPanel x:Name="Details" Spacing="4" />
-                            <TextBlock Text="Compute On" Style="{StaticResource PanelTitleText}" Margin="0,10,0,2" />
-                            <ComboBox x:Name="BackendPicker" HorizontalAlignment="Stretch" SelectionChanged="OnBackendChanged"
-                                      ToolTipService.ToolTip="Where analyses compute. Automatic uses the GPU where the engine has a path and it pays off." />
+                            <TextBlock x:Uid="Shell_Status_ComputeOn" Style="{StaticResource PanelTitleText}" Margin="0,10,0,2" />
+                            <ComboBox x:Name="BackendPicker" HorizontalAlignment="Stretch" SelectionChanged="OnBackendChanged" />
                             <TextBlock x:Name="BackendNote" Style="{StaticResource CaptionText}" TextWrapping="Wrap" TextTrimming="None" Visibility="Collapsed" />
                         </StackPanel>
                     </Flyout>

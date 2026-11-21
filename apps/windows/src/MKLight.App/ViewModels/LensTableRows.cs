@@ -1,3 +1,4 @@
+using MKLight.App.Support;
 using MKLight.Model;
 
 namespace MKLight.App.ViewModels;
@@ -21,16 +22,16 @@ public static class LensColumns
 
     public static string Title(this LensColumn c) => c switch
     {
-        LensColumn.Surface => "Surf",
-        LensColumn.Type => "Type",
-        LensColumn.Comment => "Comment",
-        LensColumn.Radius => "Radius",
-        LensColumn.RadiusX => "Radius x",
-        LensColumn.Thickness => "Thickness",
-        LensColumn.Material => "Material",
-        LensColumn.SemiDiameter => "Semi-Diameter",
-        LensColumn.Conic => "Conic",
-        _ => "Conic x",
+        LensColumn.Surface => Loc.S("Lens_Column_Surface"),
+        LensColumn.Type => Loc.S("Lens_Column_Type"),
+        LensColumn.Comment => Loc.S("Lens_Column_Comment"),
+        LensColumn.Radius => Loc.S("Lens_Column_Radius"),
+        LensColumn.RadiusX => Loc.S("Lens_Column_RadiusX"),
+        LensColumn.Thickness => Loc.S("Lens_Column_Thickness"),
+        LensColumn.Material => Loc.S("Lens_Column_Material"),
+        LensColumn.SemiDiameter => Loc.S("Lens_Column_SemiDiameter"),
+        LensColumn.Conic => Loc.S("Lens_Column_Conic"),
+        _ => Loc.S("Lens_Column_ConicX"),
     };
 
     public static bool IsNumeric(this LensColumn c) =>
@@ -307,7 +308,7 @@ public static class LensRows
             SolveType? solve = solves.TryGetValue(p, out var k) ? k : null;
             if (c == LensColumn.Radius && solves.TryGetValue(new ParamPath.ParaxialFocalLength(sf.Id), out var f)) solve = f;
             if (isVariable || solve is not null)
-                markers[c] = new CellMarker(isVariable, isVariable ? bounds : VariableBounds.Free, solve is { } st ? Letter(st) : null, solve?.Title());
+                markers[c] = new CellMarker(isVariable, isVariable ? bounds : VariableBounds.Free, solve is { } st ? Letter(st) : null, solve is { } sk ? LensText.Solve(sk) : null);
         }
         var notes = new Dictionary<LensColumn, string>();
         if (sf.Interaction == Interaction.Refract && sf.Material is MaterialRef.CatalogGlass { Offset.IsZero: false } glass)
@@ -323,7 +324,7 @@ public static class LensRows
                 if (solves.TryGetValue(p, out var k)) solve = k;
             }
             if (isVariable || solve is not null)
-                markers[LensColumn.Material] = new CellMarker(isVariable, bounds, solve is { } st ? Letter(st) : null, solve?.Title());
+                markers[LensColumn.Material] = new CellMarker(isVariable, bounds, solve is { } st ? Letter(st) : null, solve is { } sk ? LensText.Solve(sk) : null);
         }
         return new LensRow
         {
@@ -348,11 +349,11 @@ public static class LensRows
     /// <summary>Short type name for the table: a conic of k = 0 is a sphere.</summary>
     public static string TypeTitle(SurfaceShape shape) => shape.Geometry switch
     {
-        _ when shape is DiffractiveShape => "Diffractive",
-        ConicShape c => c.Conic == 0 ? "Sphere" : "Conic",
+        _ when shape is DiffractiveShape => Loc.S("Lens_TypeShort_Diffractive"),
+        ConicShape c => c.Conic == 0 ? Loc.S("Lens_TypeShort_Sphere") : Loc.S("Lens_TypeShort_Conic"),
         QConShape => "Q-Con",
         QBfsShape => "Q-BFS",
-        BiconicShape b when b.IsCylinder => "Cylinder",
+        BiconicShape b when b.IsCylinder => Loc.S("Lens_TypeShort_Cylinder"),
         _ => SurfaceTypeCatalog.Title(shape.Kind),
     };
 
@@ -372,9 +373,8 @@ public static class LensRows
     public static string Caption(OpticalSystem s, int variableCount = 0)
     {
         var n = s.Surfaces.Count - 2;
-        var text = FormattableString.Invariant($"{n} surface{(n == 1 ? "" : "s")} · stop on {s.Stop} · mm");
-        if (variableCount > 0) text += FormattableString.Invariant($" · {variableCount} variable{(variableCount == 1 ? "" : "s")}");
-        return text;
+        var text = Loc.F(n == 1 ? "Lens_Caption_One" : "Lens_Caption_Many", n, s.Stop);
+        return variableCount == 0 ? text : Loc.F(variableCount == 1 ? "Lens_Caption_Variables_One" : "Lens_Caption_Variables_Many", text, variableCount);
     }
 
     /// <summary>
@@ -419,28 +419,30 @@ public readonly record struct SurfaceTypeChoice(ShapeKind Kind, CylinderAxis? Cy
 /// <summary>The type menu as data (the Mac app's <c>SurfaceTypes.menu</c>): groups in order, each with its types, a title and a Segoe Fluent glyph.</summary>
 public static class SurfaceTypeCatalog
 {
-    public sealed record Entry(SurfaceTypeChoice Choice, string Title, string Glyph, SurfaceTypeGroup Group);
+    /// <param name="Title">The title in the UI language.</param>
+    /// <param name="English">The English title (automation sets a type by either).</param>
+    public sealed record Entry(SurfaceTypeChoice Choice, string Title, string Glyph, SurfaceTypeGroup Group, string English);
 
     public static readonly Entry[] All =
     [
-        new(new(ShapeKind.Plane), "Plane", "\uE739", SurfaceTypeGroup.Spherical),
-        new(new(ShapeKind.Conic), "Sphere / Conic", "\uE7A1", SurfaceTypeGroup.Spherical),
-        new(new(ShapeKind.EvenAsphere), "Even Asphere", "\uE9D9", SurfaceTypeGroup.Aspheric),
-        new(new(ShapeKind.OddAsphere), "Odd Asphere", "\uE9D2", SurfaceTypeGroup.Aspheric),
-        new(new(ShapeKind.QCon), "Q-Type (Conic)", "\uEA3F", SurfaceTypeGroup.Aspheric),
-        new(new(ShapeKind.QBfs), "Q-Type (Best-Fit Sphere)", "\uE922", SurfaceTypeGroup.Aspheric),
-        new(new(ShapeKind.XyPolynomial), "XY Polynomial", "\uE809", SurfaceTypeGroup.Freeform),
-        new(new(ShapeKind.ZernikeSag), "Zernike Sag", "\uE8A9", SurfaceTypeGroup.Freeform),
-        new(new(ShapeKind.Toroid), "Toroid", "\uEA4B", SurfaceTypeGroup.Anamorphic),
-        new(new(ShapeKind.Biconic), "Biconic", "\uEA3A", SurfaceTypeGroup.Anamorphic),
-        new(new(ShapeKind.Biconic, CylinderAxis.X), "Cylinder (power in x)", "\uE8EA", SurfaceTypeGroup.Anamorphic),
-        new(new(ShapeKind.Biconic, CylinderAxis.Y), "Cylinder (power in y)", "\uE8EA", SurfaceTypeGroup.Anamorphic),
-        new(new(ShapeKind.Diffractive), "Diffractive", "\uE790", SurfaceTypeGroup.Diffractive),
-        new(new(ShapeKind.Paraxial), "Ideal Lens", "\uE8A3", SurfaceTypeGroup.Special),
-        new(new(ShapeKind.CoordinateBreak), "Coordinate Break", "\uE7C2", SurfaceTypeGroup.Special),
+        new(new(ShapeKind.Plane), Loc.S("Lens_Type_Plane"), "\uE739", SurfaceTypeGroup.Spherical, "Plane"),
+        new(new(ShapeKind.Conic), Loc.S("Lens_Type_Conic"), "\uE7A1", SurfaceTypeGroup.Spherical, "Sphere / Conic"),
+        new(new(ShapeKind.EvenAsphere), Loc.S("Lens_Type_EvenAsphere"), "\uE9D9", SurfaceTypeGroup.Aspheric, "Even Asphere"),
+        new(new(ShapeKind.OddAsphere), Loc.S("Lens_Type_OddAsphere"), "\uE9D2", SurfaceTypeGroup.Aspheric, "Odd Asphere"),
+        new(new(ShapeKind.QCon), Loc.S("Lens_Type_QCon"), "\uEA3F", SurfaceTypeGroup.Aspheric, "Q-Type (Conic)"),
+        new(new(ShapeKind.QBfs), Loc.S("Lens_Type_QBfs"), "\uE922", SurfaceTypeGroup.Aspheric, "Q-Type (Best-Fit Sphere)"),
+        new(new(ShapeKind.XyPolynomial), Loc.S("Lens_Type_XyPolynomial"), "\uE809", SurfaceTypeGroup.Freeform, "XY Polynomial"),
+        new(new(ShapeKind.ZernikeSag), Loc.S("Lens_Type_ZernikeSag"), "\uE8A9", SurfaceTypeGroup.Freeform, "Zernike Sag"),
+        new(new(ShapeKind.Toroid), Loc.S("Lens_Type_Toroid"), "\uEA4B", SurfaceTypeGroup.Anamorphic, "Toroid"),
+        new(new(ShapeKind.Biconic), Loc.S("Lens_Type_Biconic"), "\uEA3A", SurfaceTypeGroup.Anamorphic, "Biconic"),
+        new(new(ShapeKind.Biconic, CylinderAxis.X), Loc.S("Lens_Type_CylinderX"), "\uE8EA", SurfaceTypeGroup.Anamorphic, "Cylinder (power in x)"),
+        new(new(ShapeKind.Biconic, CylinderAxis.Y), Loc.S("Lens_Type_CylinderY"), "\uE8EA", SurfaceTypeGroup.Anamorphic, "Cylinder (power in y)"),
+        new(new(ShapeKind.Diffractive), Loc.S("Lens_Type_Diffractive"), "\uE790", SurfaceTypeGroup.Diffractive, "Diffractive"),
+        new(new(ShapeKind.Paraxial), Loc.S("Lens_Type_IdealLens"), "\uE8A3", SurfaceTypeGroup.Special, "Ideal Lens"),
+        new(new(ShapeKind.CoordinateBreak), Loc.S("Lens_Type_CoordinateBreak"), "\uE7C2", SurfaceTypeGroup.Special, "Coordinate Break"),
     ];
 
-    public static string Title(SurfaceTypeGroup g) => g.ToString();
+    public static string Title(SurfaceTypeGroup g) => LensText.Group(g);
 
     public static Entry EntryFor(SurfaceTypeChoice choice) => All.FirstOrDefault(e => e.Choice == choice) ?? All.First(e => e.Choice.Kind == choice.Kind);
 

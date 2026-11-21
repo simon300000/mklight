@@ -7,6 +7,7 @@
 // variables are project sections edited through `useDocument.editProject`.
 
 import { create } from 'zustand'
+import { engineText, t } from '@/i18n'
 import type { AnalysisJob, JsonObject, ModelSnapshot } from '@/engine/types'
 import { EngineError } from '@/engine/types'
 import { isPinned, boundsOf, type CurvatureBoundsUnit } from '@/model/bounds'
@@ -27,18 +28,18 @@ import { useDocument } from './document'
 import { stableJson, useWorkspace } from './workspace'
 
 export const ALGORITHMS: { id: string; title: string }[] = [
-  { id: 'lm', title: 'Damped least squares (LM)' },
-  { id: 'dogleg', title: 'Trust region (dogleg)' },
-  { id: 'de', title: 'Differential evolution' },
-  { id: 'cma_es', title: 'CMA-ES' },
-  { id: 'nelder_mead', title: 'Nelder–Mead' },
-  { id: 'hammer', title: 'Basin hopping' },
+  { id: 'lm', get title() { return t('optimize.algorithms.lm') } },
+  { id: 'dogleg', get title() { return t('optimize.algorithms.dogleg') } },
+  { id: 'de', get title() { return t('optimize.algorithms.de') } },
+  { id: 'cma_es', get title() { return t('optimize.algorithms.cmaEs') } },
+  { id: 'nelder_mead', get title() { return t('optimize.algorithms.nelderMead') } },
+  { id: 'hammer', get title() { return t('optimize.algorithms.hammer') } },
 ]
 export const STOCHASTIC = new Set(['de', 'cma_es', 'hammer'])
 /** The engine's default iterations per algorithm (RESULTS.md `max_iterations`). */
 export const DEFAULT_ITERATIONS: Record<string, number> = { lm: 200, dogleg: 200, de: 2000, cma_es: 100, nelder_mead: 200, hammer: 20 }
 
-export const AUTOMATIC_VARIABLES = 'Automatic: every curved surface and the back focus'
+export const automaticVariables = () => t('optimize.variables.automatic')
 
 const UNIT_KEY = 'mklight.curvatureBoundsUnit'
 function storedUnit(): CurvatureBoundsUnit {
@@ -113,8 +114,8 @@ export function variableProblem(project: Project, useDesign: boolean): string | 
   const vars = variablesOf(project)
   const solved = (v: VariableSpec) => isSolved(project.system, v)
   if (vars.every((v) => isPinned(boundsOf(v)) || solved(v))) {
-    if (!vars.some(solved)) return 'Every variable is pinned. Unpin one, or vary the automatic set.'
-    return 'Every variable is pinned or controlled by a solve. Add a free variable, or vary the automatic set.'
+    if (!vars.some(solved)) return t('optimize.variables.allPinned')
+    return t('optimize.variables.allPinnedOrSolved')
   }
   return null
 }
@@ -136,8 +137,8 @@ export function optimizeSettings(project: Project, s: Pick<OptimizeState, 'algor
 }
 
 function errorText(e: unknown): string {
-  if (e instanceof EngineError) return e.issues.length ? e.issues.join('\n') : e.message
-  return e instanceof Error ? e.message : String(e)
+  if (e instanceof EngineError) return e.issues.length ? e.issues.map((i) => engineText(i)).join('\n') : engineText(e.message)
+  return e instanceof Error ? engineText(e.message) : String(e)
 }
 
 let timer: ReturnType<typeof setTimeout> | null = null
@@ -216,7 +217,7 @@ export const useOptimize = create<OptimizeState>()((set, get) => ({
           const e = readEvaluation(r.json)
           evaluatedKey = key
           pendingKey = null
-          set({ evaluation: e, evaluating: false, evaluationError: e ? null : 'The engine returned no merit.' })
+          set({ evaluation: e, evaluating: false, evaluationError: e ? null : t('optimize.errors.noMerit') })
         },
         (e) => {
           if (job !== j) return
@@ -259,16 +260,16 @@ export const useOptimize = create<OptimizeState>()((set, get) => ({
       set({ converting: false })
     }
     if (!e) {
-      set({ evaluationError: 'The engine returned no merit.' })
+      set({ evaluationError: t('optimize.errors.noMerit') })
       return
     }
     const spec = specOperands(e)
     // The EFL hold stays with the "Hold the focal length" switch, which adds it again.
     const operands = spec.operands.filter((op) => !isEflHold(op) || !merit.holdEfl)
     if (!operands.length) {
-      set({ evaluationError: 'The engine generated no operands for this design.' })
+      set({ evaluationError: t('optimize.errors.noOperands') })
       return
     }
-    editMerit('Convert Merit to Custom', (m) => ({ ...m, operands, specOptions: spec.options, mode: 'custom' }))
+    editMerit(t('optimize.undo.convertMerit'), (m) => ({ ...m, operands, specOptions: spec.options, mode: 'custom' }))
   },
 }))

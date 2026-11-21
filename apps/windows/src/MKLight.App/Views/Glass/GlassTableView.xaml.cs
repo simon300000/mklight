@@ -15,19 +15,20 @@ namespace MKLight.App.Views.Glass;
 /// </summary>
 public sealed partial class GlassTableView : UserControl
 {
-    static readonly (GlassColumn Column, string Title, bool Number, string Tip)[] Columns =
+    /// <summary>The columns: title, whether numeric, tooltip (read when the table is made, in the UI language).</summary>
+    static (GlassColumn Column, string Title, bool Number, string Tip)[] Columns() =>
     [
-        (GlassColumn.Name, "Glass", false, "Glass name"),
-        (GlassColumn.Catalog, "Catalog", false, "The catalog the glass comes from"),
-        (GlassColumn.Nd, "nd", true, "Refractive index at the d line (587.6 nm)"),
-        (GlassColumn.Vd, "Vd", true, "Abbe number"),
-        (GlassColumn.Dpgf, "ΔPg,F", true, "Anomalous partial dispersion"),
-        (GlassColumn.Status, "Status", false, "Availability (your setting or the catalog's)"),
-        (GlassColumn.Density, "Density", true, "g/cm³"),
-        (GlassColumn.Cost, "Cost", true, "Relative cost"),
-        (GlassColumn.Tce, "TCE", true, "Thermal expansion, 10⁻⁶/K (−30…+70 °C)"),
-        (GlassColumn.Lambda80, "λ80 nm", true, "Wavelength of 80 % internal transmittance through 10 mm"),
-        (GlassColumn.Range, "Range µm", false, "The wavelength range the dispersion formula is valid for"),
+        (GlassColumn.Name, Loc.S("Glass_Table_Glass"), false, Loc.S("Glass_Table_GlassTip")),
+        (GlassColumn.Catalog, Loc.S("Glass_Editor_Catalog"), false, Loc.S("Glass_Table_CatalogTip")),
+        (GlassColumn.Nd, "nd", true, Loc.S("Glass_Table_NdTip")),
+        (GlassColumn.Vd, "Vd", true, Loc.S("Glass_Table_VdTip")),
+        (GlassColumn.Dpgf, "ΔPg,F", true, Loc.S("Glass_Table_DpgfTip")),
+        (GlassColumn.Status, Loc.S("Glass_Label_Status"), false, Loc.S("Glass_Table_StatusTip")),
+        (GlassColumn.Density, Loc.S("Glass_Detail_Density"), true, "g/cm³"),
+        (GlassColumn.Cost, Loc.S("Glass_Table_Cost"), true, Loc.S("Glass_Detail_RelativeCost")),
+        (GlassColumn.Tce, "TCE", true, Loc.S("Glass_Table_TceTip")),
+        (GlassColumn.Lambda80, "λ80 nm", true, Loc.S("Glass_Table_Lambda80Tip")),
+        (GlassColumn.Range, Loc.S("Glass_Table_Range"), false, Loc.S("Glass_Table_RangeTip")),
     ];
 
     GlassBrowserModel? _model;
@@ -37,9 +38,10 @@ public sealed partial class GlassTableView : UserControl
     public GlassTableView()
     {
         InitializeComponent();
-        for (var i = 0; i < Columns.Length; i++)
+        var columns = Columns();
+        for (var i = 0; i < columns.Length; i++)
         {
-            var (column, title, number, tip) = Columns[i];
+            var (column, title, number, tip) = columns[i];
             var arrow = new FontIcon { Glyph = "\uE70E", FontSize = 9, Opacity = 0, Margin = new Thickness(4, 1, 0, 0), VerticalAlignment = VerticalAlignment.Center };
             var label = new StackPanel { Orientation = Orientation.Horizontal };
             label.Children.Add(new TextBlock { Text = title, Style = (Style)Application.Current.Resources["ColumnHeaderText"] });
@@ -96,17 +98,18 @@ public sealed partial class GlassTableView : UserControl
             arrow.Opacity = column == m.SortColumn ? 1 : 0;
             arrow.Glyph = m.SortAscending ? "\uE70E" : "\uE70D";
         }
-        CountText.Text = string.Create(CultureInfo.InvariantCulture, $"{rows.Count} of {m.Rows.Count} glasses");
+        CountText.Text = Loc.F("Glass_Table_Count", rows.Count, m.Rows.Count);
         var empty = rows.Count == 0;
         Empty.Visibility = empty ? Visibility.Visible : Visibility.Collapsed;
         if (empty)
         {
             var searching = m.Search.Trim().Length > 0 || m.Filter != GlassFilter.All;
             EmptyIcon.Glyph = searching ? "\uE721" : "\uE7B8";
-            EmptyTitle.Text = searching ? "No Results" : "No Glasses";
+            EmptyTitle.Text = searching ? Loc.S("Glass_Table_NoResults") : Loc.S("Glass_Table_NoGlasses");
+            var why = m.Search.Trim().Length > 0 ? Loc.F("Glass_Table_NoMatch", m.Search.Trim()) : Loc.S("Glass_Table_NoPass");
             EmptyText.Text = searching
-                ? (m.Search.Trim().Length > 0 ? $"No glass matches “{m.Search.Trim()}”" : "No glass passes the filter") + (m.Filter != GlassFilter.All ? $" ({GlassBrowserModel.FilterTitle(m.Filter)})." : ".")
-                : m.Scope is { } n && m.Library.IsUserCatalog(n) ? "Add a glass with New Glass." : "This catalog has no glasses.";
+                ? (m.Filter != GlassFilter.All ? Loc.F("Glass_Table_EmptyFiltered", why, GlassBrowserModel.FilterTitle(m.Filter)) : Loc.F("Glass_Table_EmptySentence", why))
+                : m.Scope is { } n && m.Library.IsUserCatalog(n) ? Loc.S("Glass_Table_AddHint") : Loc.S("Glass_Table_EmptyCatalog");
         }
     }
 

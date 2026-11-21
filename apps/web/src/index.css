@@ -55,7 +55,10 @@
 }
 
 @theme inline {
+  /* Latin from the system font; CJK (Chinese UI, glass and file names) from the
+     platform's Simplified Chinese font where the system font has none. */
   --font-sans: -apple-system, BlinkMacSystemFont, 'SF Pro Text', 'Segoe UI Variable Text', 'Segoe UI', system-ui,
+    'PingFang SC', 'Microsoft YaHei UI', 'Microsoft YaHei', 'Noto Sans CJK SC', 'Noto Sans SC', 'Source Han Sans SC',
     'Helvetica Neue', Arial, sans-serif;
   --font-mono: ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
   --color-window: var(--window);

@@ -1,5 +1,7 @@
 using System.Globalization;
+using MKLight.App.Support;
 using MKLight.Engine;
+using MKLight.Model;
 
 namespace MKLight.App.ViewModels;
 
@@ -40,7 +42,7 @@ public static class GlassFormat
     public static string Cost(GlassRow r) => Fixed(r.RelativeCost, 1);
     public static string Tce(GlassRow r) => Fixed(r.Tce, 1);
     public static string Lambda80(GlassRow r) => r.Lambda80Um is { } um ? Fixed(um * 1000, 0) : None;
-    public static string Range(GlassRow r) => r.UnrestrictedRange ? "any" : $"{Fixed(r.MinUm, 2)}–{Fixed(r.MaxUm, 2)}";
+    public static string Range(GlassRow r) => r.UnrestrictedRange ? Loc.S("Glass_Format_Any") : $"{Fixed(r.MinUm, 2)}–{Fixed(r.MaxUm, 2)}";
 
     /// <summary>
     /// The tooltip of an IR glass's n_d / V_d cell: why there is no value, and the values its
@@ -50,9 +52,9 @@ public static class GlassFormat
     {
         if (r.Nd is not null && r.Vd is not null) return null;
         var why = r.Nd is null
-            ? "The d line (587.6 nm) is outside this glass's range."
-            : "The F (486.1 nm) or C (656.3 nm) line is outside this glass's range.";
-        return CatalogListed(r) is { } listed ? $"{why}\nCatalog lists {listed}." : why;
+            ? Loc.S("Glass_Ir_NoD")
+            : Loc.S("Glass_Ir_NoFC");
+        return CatalogListed(r) is { } listed ? why + "\n" + Loc.F("Glass_Ir_CatalogLists", listed) : why;
     }
 
     /// <summary>The n_d, V_d the catalog file lists, shortest form ("nd 1, Vd 0"); null when it lists neither.</summary>
@@ -81,13 +83,39 @@ public static class GlassFormat
     /// <summary>"Built into MKLight", "Library · loaded into every design", …</summary>
     public static string Origin(CatalogInfo c, bool user)
     {
-        if (c.IsBuiltin) return "Built into MKLight";
-        if (user) return "Your glasses · saved in the app's library";
+        if (c.IsBuiltin) return Loc.S("Glass_Origin_Builtin");
+        if (user) return Loc.S("Glass_Origin_User");
         return (c.Library, c.InProject) switch
         {
-            (true, true) => "Library · recorded in this design",
-            (true, false) => "Library · loaded into every design",
-            _ => "This design only",
+            (true, true) => Loc.S("Glass_Origin_LibraryInDesign"),
+            (true, false) => Loc.S("Glass_Origin_LibraryEveryDesign"),
+            _ => Loc.S("Glass_Origin_DesignOnly"),
         };
     }
+
+    /// <summary>A glass status as the UI shows it ("Preferred", or "Status 7" for another code).</summary>
+    public static string StatusTitle(GlassStatus s) => s.Code switch
+    {
+        0 => Loc.S("Glass_Status_Standard"),
+        1 => Loc.S("Glass_Status_Preferred"),
+        2 => Loc.S("Glass_Status_Obsolete"),
+        3 => Loc.S("Glass_Status_Special"),
+        4 => Loc.S("Glass_Status_Melt"),
+        _ => Loc.F("Glass_Status_Other", s.Code),
+    };
+
+    /// <summary>What a reload changed, in one line: "2 added, 1 removed, 3 changed", or "No changes".</summary>
+    public static string ChangeSummary(CatalogChanges c)
+    {
+        if (c.IsEmpty) return Loc.S("Glass_Changes_None");
+        var parts = new List<string>();
+        if (c.Added.Count > 0) parts.Add(Loc.F("Glass_Changes_Added", c.Added.Count));
+        if (c.Removed.Count > 0) parts.Add(Loc.F("Glass_Changes_Removed", c.Removed.Count));
+        if (c.Changed.Count > 0) parts.Add(Loc.F("Glass_Changes_Changed", c.Changed.Count));
+        return string.Join(Loc.S("Glass_List_Comma"), parts);
+    }
+
+    /// <summary>A catalog load note as the UI shows it: "Line 12: …" when it has a line.</summary>
+    public static string Note(CatalogWarning w) =>
+        w.Line is int n ? Loc.F("Glass_Notes_Line", n, EngineText.T(w.Message)) : EngineText.T(w.Message);
 }

@@ -1,6 +1,7 @@
 using System.Globalization;
 using System.Text.Json;
 using System.Text.Json.Nodes;
+using MKLight.App.Support;
 using MKLight.Model;
 
 namespace MKLight.App.ViewModels;
@@ -40,8 +41,8 @@ public sealed record CoefficientList(
     Func<SurfaceShape, int> MaxCount,
     bool Sparse = false);
 
-/// <summary>A titled group of a type's parameters, choices and coefficient list.</summary>
-public sealed record ParamSection(string Title)
+/// <summary>A titled group of a type's parameters, choices and coefficient list; <c>Key</c> is its stable English name (row ids).</summary>
+public sealed record ParamSection(string Key, string Title)
 {
     public IReadOnlyList<ShapeParam> Params { get; init; } = [];
     public IReadOnlyList<ShapeChoice> Choices { get; init; } = [];
@@ -74,16 +75,16 @@ public static class SurfaceTypes
 {
     // ---- Building blocks ----
 
-    static ShapeParam Radius(string key = "curvature", string title = "Radius", Func<SurfaceID, ParamPath>? path = null) =>
-        new(key, title, "mm", ParamDisplay.RadiusOfCurvature, "Radius of curvature; ∞ for a plane. Stored as curvature c = 1/R.",
+    static ShapeParam Radius(string key = "curvature", string? title = null, Func<SurfaceID, ParamPath>? path = null) =>
+        new(key, title ?? Loc.S("Lens_Param_Radius"), "mm", ParamDisplay.RadiusOfCurvature, Loc.S("Lens_Help_Radius"),
             path ?? (id => new ParamPath.Curvature(id)));
 
     static ShapeParam Conic(string key = "conic") =>
-        new(key, "Conic", "", Help: "Conic constant k: 0 sphere, −1 paraboloid, < −1 hyperboloid.", Path: id => new ParamPath.Conic(id));
+        new(key, Loc.S("Lens_Param_Conic"), "", Help: Loc.S("Lens_Help_Conic"), Path: id => new ParamPath.Conic(id));
 
     static ShapeParam NormRadius(string key = "norm_radius") =>
-        new(key, "Norm radius", "mm",
-            Help: "Normalization radius r_norm: the polynomial is defined for r ≤ r_norm. Usually the clear semi-diameter.",
+        new(key, Loc.S("Lens_Param_NormRadius"), "mm",
+            Help: Loc.S("Lens_Help_NormRadius"),
             Path: id => new ParamPath.ShapeParam(id, ShapeParameter.NormRadius));
 
     static Func<SurfaceID, int, ParamPath> ShapeCoefficient(CoefficientSet set) => (id, k) => new ParamPath.ShapeCoefficient(id, set, k);
@@ -114,20 +115,20 @@ public static class SurfaceTypes
         var axis = t.M > 0 ? " x" : t.M < 0 ? " y" : "";
         string? name = (t.N, m) switch
         {
-            (0, 0) => "piston",
-            (1, 1) => "tilt",
-            (2, 0) => "defocus",
-            (2, 2) => "astigmatism",
-            (3, 1) => "coma",
-            (3, 3) => "trefoil",
-            (4, 0) => "spherical",
-            (4, 2) => "2nd astigmatism",
-            (4, 4) => "tetrafoil",
-            (5, 1) => "2nd coma",
-            (5, 3) => "2nd trefoil",
-            (5, 5) => "pentafoil",
-            (6, 0) => "2nd spherical",
-            (8, 0) => "3rd spherical",
+            (0, 0) => Loc.S("Lens_Zernike_Piston"),
+            (1, 1) => Loc.S("Lens_Zernike_Tilt"),
+            (2, 0) => Loc.S("Lens_Zernike_Defocus"),
+            (2, 2) => Loc.S("Lens_Zernike_Astigmatism"),
+            (3, 1) => Loc.S("Lens_Zernike_Coma"),
+            (3, 3) => Loc.S("Lens_Zernike_Trefoil"),
+            (4, 0) => Loc.S("Lens_Zernike_Spherical"),
+            (4, 2) => Loc.S("Lens_Zernike_Astigmatism2"),
+            (4, 4) => Loc.S("Lens_Zernike_Tetrafoil"),
+            (5, 1) => Loc.S("Lens_Zernike_Coma2"),
+            (5, 3) => Loc.S("Lens_Zernike_Trefoil2"),
+            (5, 5) => Loc.S("Lens_Zernike_Pentafoil"),
+            (6, 0) => Loc.S("Lens_Zernike_Spherical2"),
+            (8, 0) => Loc.S("Lens_Zernike_Spherical3"),
             _ => null,
         };
         if (name is not null) return name + (m == 0 ? "" : t.N is 1 or 3 or 5 ? axis : t.M > 0 ? " 0°" : " 45°");
@@ -138,158 +139,158 @@ public static class SurfaceTypes
 
     public static readonly IReadOnlyList<SurfaceTypeDescriptor> All =
     [
-        new("plane", ShapeKind.Plane, "Plane", SurfaceTypeGroup.Spherical, "A flat surface.", []),
-        new("conic", ShapeKind.Conic, "Sphere / Conic", SurfaceTypeGroup.Spherical, "Sphere or conic of revolution.",
-            [new ParamSection("Shape") { Params = [Radius(), Conic()] }]),
-        new("even_asphere", ShapeKind.EvenAsphere, "Even Asphere", SurfaceTypeGroup.Aspheric, "Conic plus even polynomial terms A₄r⁴ + A₆r⁶ + …",
+        new("plane", ShapeKind.Plane, Loc.S("Lens_Type_Plane"), SurfaceTypeGroup.Spherical, Loc.S("Lens_Summary_Plane"), []),
+        new("conic", ShapeKind.Conic, Loc.S("Lens_Type_Conic"), SurfaceTypeGroup.Spherical, Loc.S("Lens_Summary_Conic"),
+            [new ParamSection("Shape", Loc.S("Lens_Section_Shape")) { Params = [Radius(), Conic()] }]),
+        new("even_asphere", ShapeKind.EvenAsphere, Loc.S("Lens_Type_EvenAsphere"), SurfaceTypeGroup.Aspheric, Loc.S("Lens_Summary_EvenAsphere"),
         [
-            new ParamSection("Base Conic") { Params = [Radius(), Conic()] },
-            new ParamSection("Polynomial") { Coefficients = EvenTerms },
+            new ParamSection("Base Conic", Loc.S("Lens_Section_BaseConic")) { Params = [Radius(), Conic()] },
+            new ParamSection("Polynomial", Loc.S("Lens_Section_Polynomial")) { Coefficients = EvenTerms },
         ]),
-        new("odd_asphere", ShapeKind.OddAsphere, "Odd Asphere", SurfaceTypeGroup.Aspheric,
-            "Conic plus all powers of r: β₁r + β₂r² + β₃r³ + … A nonzero β₁ is a cone at the vertex.",
+        new("odd_asphere", ShapeKind.OddAsphere, Loc.S("Lens_Type_OddAsphere"), SurfaceTypeGroup.Aspheric,
+            Loc.S("Lens_Summary_OddAsphere"),
         [
-            new ParamSection("Base Conic") { Params = [Radius(), Conic()] },
-            new ParamSection("Polynomial")
+            new ParamSection("Base Conic", Loc.S("Lens_Section_BaseConic")) { Params = [Radius(), Conic()] },
+            new ParamSection("Polynomial", Loc.S("Lens_Section_Polynomial"))
             {
                 Coefficients = new("coefficients", (k, _) => "β" + Sub(k + 1), (k, _) => k == 0 ? "r" : "r" + Super(k + 1), k => MmPower(-k),
                     ShapeCoefficient(CoefficientSet.Odd), Limit(CoefficientSet.Odd)),
-                Footer = "The paraxial curvature is c + 2β₂; β₁ has no first-order meaning.",
+                Footer = Loc.S("Lens_Footer_OddAsphere"),
             },
         ]),
-        new("q_con", ShapeKind.QCon, "Q-Type (Conic)", SurfaceTypeGroup.Aspheric,
-            "Forbes conic-based asphere: conic plus u⁴ Σ aₘ Qₘᶜᵒⁿ(u²), u = r/r_norm. Keeps the vertex curvature.",
+        new("q_con", ShapeKind.QCon, Loc.S("Lens_Type_QCon"), SurfaceTypeGroup.Aspheric,
+            Loc.S("Lens_Summary_QCon"),
         [
-            new ParamSection("Base Conic") { Params = [Radius(), Conic(), NormRadius()] },
-            new ParamSection("Q Polynomial")
+            new ParamSection("Base Conic", Loc.S("Lens_Section_BaseConic")) { Params = [Radius(), Conic(), NormRadius()] },
+            new ParamSection("Q Polynomial", Loc.S("Lens_Section_QPolynomial"))
             {
                 Coefficients = new("coefficients", (k, _) => "a" + Sub(k), (k, _) => "u⁴Q" + Sub(k) + "ᶜᵒⁿ", _ => "mm",
                     ShapeCoefficient(CoefficientSet.Q), Limit(CoefficientSet.Q)),
             },
         ]),
-        new("q_bfs", ShapeKind.QBfs, "Q-Type (Best-Fit Sphere)", SurfaceTypeGroup.Aspheric,
-            "Forbes slope-orthogonal departure from a best-fit sphere: u²(1−u²) Σ aₘ Qₘᵇᶠˢ(u²) / √(1−c²r²).",
+        new("q_bfs", ShapeKind.QBfs, Loc.S("Lens_Type_QBfs"), SurfaceTypeGroup.Aspheric,
+            Loc.S("Lens_Summary_QBfs"),
         [
-            new ParamSection("Best-Fit Sphere") { Params = [Radius(), NormRadius()] },
-            new ParamSection("Q Polynomial")
+            new ParamSection("Best-Fit Sphere", Loc.S("Lens_Section_BestFitSphere")) { Params = [Radius(), NormRadius()] },
+            new ParamSection("Q Polynomial", Loc.S("Lens_Section_QPolynomial"))
             {
                 Coefficients = new("coefficients", (k, _) => "a" + Sub(k), (k, _) => "Q" + Sub(k) + "ᵇᶠˢ", _ => "mm",
                     ShapeCoefficient(CoefficientSet.Q), Limit(CoefficientSet.Q)),
-                Footer = "Vertex curvature c_bfs + 2Σaₘ Qₘ(0)/r_norm².",
+                Footer = Loc.S("Lens_Footer_QBfs"),
             },
         ]),
-        new("xy_polynomial", ShapeKind.XyPolynomial, "XY Polynomial", SurfaceTypeGroup.Freeform,
-            "Freeform: conic plus Σ C(xᵐyⁿ) Xᵐ Yⁿ with X = x/r_norm, Y = y/r_norm; degrees 1 to 10.",
+        new("xy_polynomial", ShapeKind.XyPolynomial, Loc.S("Lens_Type_XyPolynomial"), SurfaceTypeGroup.Freeform,
+            Loc.S("Lens_Summary_XyPolynomial"),
         [
-            new ParamSection("Base Conic") { Params = [Radius(), Conic(), NormRadius()] },
-            new ParamSection("XY Terms")
+            new ParamSection("Base Conic", Loc.S("Lens_Section_BaseConic")) { Params = [Radius(), Conic(), NormRadius()] },
+            new ParamSection("XY Terms", Loc.S("Lens_Section_XyTerms"))
             {
                 Coefficients = new("coefficients",
                     (k, _) => XYTerm.FromIndex(k) is { } t ? $"C({t.Monomial})" : "C" + k.ToString(CultureInfo.InvariantCulture),
-                    (k, _) => XYTerm.FromIndex(k) is { } t ? "degree " + t.Degree.ToString(CultureInfo.InvariantCulture) : "",
+                    (k, _) => XYTerm.FromIndex(k) is { } t ? Loc.F("Lens_Term_Degree", t.Degree) : "",
                     _ => "mm", ShapeCoefficient(CoefficientSet.Xy), Limit(CoefficientSet.Xy), Sparse: true),
             },
         ]) { Preview = ShapePreviewKind.Freeform },
-        new("zernike_sag", ShapeKind.ZernikeSag, "Zernike Sag", SurfaceTypeGroup.Freeform,
-            "Freeform: conic plus Σ cⱼ Zⱼ(ρ, θ), ρ = r/r_norm, θ from +x. Sag coefficients in mm, piston and tilt kept.",
+        new("zernike_sag", ShapeKind.ZernikeSag, Loc.S("Lens_Type_ZernikeSag"), SurfaceTypeGroup.Freeform,
+            Loc.S("Lens_Summary_ZernikeSag"),
         [
-            new ParamSection("Base Conic")
+            new ParamSection("Base Conic", Loc.S("Lens_Section_BaseConic"))
             {
                 Params = [Radius(), Conic(), NormRadius()],
                 Choices =
                 [
-                    new("ordering", "Ordering", [("fringe", "Fringe (37 terms)"), ("standard", "Standard / Noll (45 terms)")],
-                        "Fringe terms are unnormalized; Standard (Noll) terms are normalized."),
+                    new("ordering", Loc.S("Lens_Param_Ordering"), [("fringe", Loc.S("Lens_Ordering_Fringe")), ("standard", Loc.S("Lens_Ordering_Standard"))],
+                        Loc.S("Lens_Help_Ordering")),
                 ],
             },
-            new ParamSection("Zernike Terms")
+            new ParamSection("Zernike Terms", Loc.S("Lens_Section_ZernikeTerms"))
             {
                 Coefficients = new("coefficients", (k, _) => "Z" + Sub(k + 1),
                     (k, shape) => shape is ZernikeSagShape z && ZernikeTerm.FromJ(k + 1, z.Ordering) is { } t ? ZernikeName(t) : "",
                     _ => "mm", ShapeCoefficient(CoefficientSet.Zernike), Limit(CoefficientSet.Zernike), Sparse: true),
             },
         ]) { Preview = ShapePreviewKind.Freeform },
-        new("toroid", ShapeKind.Toroid, "Toroid", SurfaceTypeGroup.Anamorphic,
-            "The y profile (conic plus even terms) rotated about an axis parallel to y at the distance R_x.",
+        new("toroid", ShapeKind.Toroid, Loc.S("Lens_Type_Toroid"), SurfaceTypeGroup.Anamorphic,
+            Loc.S("Lens_Summary_Toroid"),
         [
-            new ParamSection("Y Profile")
+            new ParamSection("Y Profile", Loc.S("Lens_Section_YProfile"))
             {
                 Params =
                 [
-                    Radius("curvature_y", "Radius y"),
-                    new("conic_y", "Conic y", "", Help: "Conic constant of the y profile.", Path: id => new ParamPath.ShapeParam(id, ShapeParameter.ConicY)),
+                    Radius("curvature_y", Loc.S("Lens_Param_RadiusY")),
+                    new("conic_y", Loc.S("Lens_Param_ConicY"), "", Help: Loc.S("Lens_Help_ConicYProfile"), Path: id => new ParamPath.ShapeParam(id, ShapeParameter.ConicY)),
                 ],
                 Coefficients = AxisList("y", CoefficientSet.YAsphere, "B"),
             },
-            new ParamSection("Rotation")
+            new ParamSection("Rotation", Loc.S("Lens_Section_Rotation"))
             {
-                Params = [Radius("curvature_x", "Radius x", id => new ParamPath.ShapeParam(id, ShapeParameter.CurvatureX))],
-                Footer = "Radius x is the distance from the vertex to the axis of rotation; ∞ makes a y cylinder.",
+                Params = [Radius("curvature_x", Loc.S("Lens_Param_RadiusX"), id => new ParamPath.ShapeParam(id, ShapeParameter.CurvatureX))],
+                Footer = Loc.S("Lens_Footer_Toroid"),
             },
         ]) { Preview = ShapePreviewKind.Anamorphic },
-        new("biconic", ShapeKind.Biconic, "Biconic", SurfaceTypeGroup.Anamorphic,
-            "Independent conics in x and y with even axis polynomials. A cylinder is a biconic with one plane axis.",
+        new("biconic", ShapeKind.Biconic, Loc.S("Lens_Type_Biconic"), SurfaceTypeGroup.Anamorphic,
+            Loc.S("Lens_Summary_Biconic"),
         [
-            new ParamSection("X Section")
+            new ParamSection("X Section", Loc.S("Lens_Section_XSection"))
             {
                 Params =
                 [
-                    Radius("curvature_x", "Radius x", id => new ParamPath.ShapeParam(id, ShapeParameter.CurvatureX)),
-                    new("conic_x", "Conic x", "", Help: "Conic constant in x.", Path: id => new ParamPath.ShapeParam(id, ShapeParameter.ConicX)),
+                    Radius("curvature_x", Loc.S("Lens_Param_RadiusX"), id => new ParamPath.ShapeParam(id, ShapeParameter.CurvatureX)),
+                    new("conic_x", Loc.S("Lens_Param_ConicX"), "", Help: Loc.S("Lens_Help_ConicX"), Path: id => new ParamPath.ShapeParam(id, ShapeParameter.ConicX)),
                 ],
                 Coefficients = AxisList("x", CoefficientSet.XAsphere, "A"),
             },
-            new ParamSection("Y Section")
+            new ParamSection("Y Section", Loc.S("Lens_Section_YSection"))
             {
                 Params =
                 [
-                    Radius("curvature_y", "Radius y"),
-                    new("conic_y", "Conic y", "", Help: "Conic constant in y.", Path: id => new ParamPath.ShapeParam(id, ShapeParameter.ConicY)),
+                    Radius("curvature_y", Loc.S("Lens_Param_RadiusY")),
+                    new("conic_y", Loc.S("Lens_Param_ConicY"), "", Help: Loc.S("Lens_Help_ConicY"), Path: id => new ParamPath.ShapeParam(id, ShapeParameter.ConicY)),
                 ],
                 Coefficients = AxisList("y", CoefficientSet.YAsphere, "B"),
             },
         ]) { Preview = ShapePreviewKind.Anamorphic },
-        new("diffractive", ShapeKind.Diffractive, "Diffractive", SurfaceTypeGroup.Diffractive,
-            "A fixed-period phase Φ = Σ Aᵢ ρ²ⁱ (order +1, radians) on a plane, conic or even-asphere base.",
+        new("diffractive", ShapeKind.Diffractive, Loc.S("Lens_Type_Diffractive"), SurfaceTypeGroup.Diffractive,
+            Loc.S("Lens_Summary_Diffractive"),
         [
-            new ParamSection("Base Shape")
+            new ParamSection("Base Shape", Loc.S("Lens_Section_BaseShape"))
             {
                 Params = [Radius("base.curvature"), Conic("base.conic")],
                 Applies = s => s is DiffractiveShape d && d.Base.Kind != ShapeKind.Plane,
             },
-            new ParamSection("Base Polynomial")
+            new ParamSection("Base Polynomial", Loc.S("Lens_Section_BasePolynomial"))
             {
                 Coefficients = EvenTerms with { Key = "base.coefficients" },
                 Applies = s => s is DiffractiveShape d && d.Base.Kind == ShapeKind.EvenAsphere,
             },
-            new ParamSection("Phase")
+            new ParamSection("Phase", Loc.S("Lens_Section_Phase"))
             {
                 Params = [NormRadius("phase.norm_radius")],
                 Coefficients = new("phase.coefficients", (k, _) => "A" + Sub(k + 1), (k, _) => "ρ" + Super(2 * (k + 1)), _ => "rad",
                     ShapeCoefficient(CoefficientSet.Phase), Limit(CoefficientSet.Phase)),
-                Footer = "A focusing phase has negative A₁. Coefficients describe order +1 and stay fixed when the wavelength or order changes.",
+                Footer = Loc.S("Lens_Footer_Phase"),
             },
-            new ParamSection("Orders")
+            new ParamSection("Orders", Loc.S("Lens_Section_Orders"))
             {
                 Params =
                 [
-                    new("phase.design_order", "Design order", "", ParamDisplay.Integer,
-                        "The order the structure is designed for (nonzero). Metadata: it does not rescale the phase."),
-                    new("phase.design_wavelength_um", "Design λ", "µm", Help: "Design wavelength λ₀. Metadata: it does not rescale the phase."),
-                    new("phase.trace_order", "Trace order", "", ParamDisplay.Integer, "The order rays follow; 0 is ordinary refraction or reflection."),
+                    new("phase.design_order", Loc.S("Lens_Param_DesignOrder"), "", ParamDisplay.Integer,
+                        Loc.S("Lens_Help_DesignOrder")),
+                    new("phase.design_wavelength_um", Loc.S("Lens_Param_DesignWavelength"), "µm", Help: Loc.S("Lens_Help_DesignWavelength")),
+                    new("phase.trace_order", Loc.S("Lens_Param_TraceOrder"), "", ParamDisplay.Integer, Loc.S("Lens_Help_TraceOrder")),
                 ],
-                Footer = "Orders are discrete and never optimization variables.",
+                Footer = Loc.S("Lens_Footer_Orders"),
             },
         ]) { Preview = ShapePreviewKind.Diffractive, OrderEfficiency = true },
-        new("paraxial", ShapeKind.Paraxial, "Ideal Lens", SurfaceTypeGroup.Special, "A thin, aberration-free lens of the given focal length.",
+        new("paraxial", ShapeKind.Paraxial, Loc.S("Lens_Type_IdealLens"), SurfaceTypeGroup.Special, Loc.S("Lens_Summary_IdealLens"),
         [
-            new ParamSection("Ideal Lens")
+            new ParamSection("Ideal Lens", Loc.S("Lens_Section_IdealLens"))
             {
-                Params = [new("focal_length", "Focal length", "mm", Help: "Focal length of the ideal lens.", Path: id => new ParamPath.ParaxialFocalLength(id))],
+                Params = [new("focal_length", Loc.S("Lens_Param_FocalLength"), "mm", Help: Loc.S("Lens_Help_FocalLength"), Path: id => new ParamPath.ParaxialFocalLength(id))],
             },
         ]) { Preview = ShapePreviewKind.IdealLens },
-        new("coordinate_break", ShapeKind.CoordinateBreak, "Coordinate Break", SurfaceTypeGroup.Special,
-            "Changes the coordinate frame only: decenters, then tilts (or the reverse).", [])
+        new("coordinate_break", ShapeKind.CoordinateBreak, Loc.S("Lens_Type_CoordinateBreak"), SurfaceTypeGroup.Special,
+            Loc.S("Lens_Summary_CoordinateBreak"), [])
         { PlacementFirst = true, Preview = ShapePreviewKind.CoordinateBreak },
     ];
 
@@ -342,7 +343,7 @@ public static class SurfaceTypes
         return p.Display == ParamDisplay.RadiusOfCurvature ? RadiusDisplay.RadiusFromCurvature(v) : v;
     }
 
-    public const string MustBeWhole = "Value must be a whole number";
+    public static string MustBeWhole => Loc.S("Lens_Error_MustBeWhole");
 
     /// <summary>Parses entered text for a parameter into the number it stores (a curvature for a radius).</summary>
     public static Parsed<double> StoredValue(ShapeParam p, string text) => p.Display switch

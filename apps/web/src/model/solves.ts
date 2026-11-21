@@ -4,6 +4,7 @@
 // Angle solves take the paraxial slope u = dy/dz, dimensionless, never degrees.
 
 import type { Json, JsonObject } from '@/engine/types'
+import { t, type Key } from '@/i18n'
 import { canonicalParam, paramKey, paramTitle, sameParam, solveFor, solvesOf as solvesOfParams, surfaceIndexOfId, type ParamPath } from './params'
 import { imageIndex, type System } from './system'
 
@@ -36,16 +37,39 @@ export interface SolveKindInfo {
   help: string
 }
 
+/** One kind: its title, help and value label are read through `t()` when used,
+ *  so they follow the UI language. */
+function kind(id: SolveKindId, letter: string, targets: SolveKindInfo['targets'], value: { key: string; label: Key; unit: string } | null): SolveKindInfo {
+  return {
+    id,
+    letter,
+    targets,
+    get title() {
+      return t(`inspector.solves.kinds.${id}.title` as Key)
+    },
+    get help() {
+      return t(`inspector.solves.kinds.${id}.help` as Key)
+    },
+    value: value && {
+      key: value.key,
+      unit: value.unit,
+      get label() {
+        return t(value.label)
+      },
+    },
+  }
+}
+
 export const SOLVE_KINDS: SolveKindInfo[] = [
-  { id: 'marginal_ray_height', title: 'Marginal ray height', letter: 'M', value: { key: 'height', label: 'Height', unit: 'mm' }, targets: 'thickness', help: 'The marginal ray’s height on the next vertex; 0 on the last thickness puts the image at the paraxial focus.' },
-  { id: 'chief_ray_height', title: 'Chief ray height', letter: 'C', value: { key: 'height', label: 'Height', unit: 'mm' }, targets: 'thickness', help: 'The chief ray’s height on the next vertex; 0 puts the next surface on a pupil image.' },
-  { id: 'marginal_ray_angle', title: 'Marginal ray angle', letter: 'M', value: { key: 'slope', label: 'Paraxial angle u', unit: '' }, targets: 'power', help: 'The marginal ray’s paraxial slope u = dy/dz after the surface (dimensionless, not degrees).' },
-  { id: 'chief_ray_angle', title: 'Chief ray angle', letter: 'C', value: { key: 'slope', label: 'Paraxial angle u', unit: '' }, targets: 'power', help: 'The chief ray’s paraxial slope u = dy/dz after the surface (dimensionless, not degrees).' },
-  { id: 'f_number', title: 'F-number', letter: 'F', value: { key: 'value', label: 'F/#', unit: '' }, targets: 'power', help: 'The image-space F/# f′/EPD. Not with an F/# aperture, which already fixes it.' },
-  { id: 'pickup', title: 'Pickup', letter: 'P', value: null, targets: 'any', help: 'target = scale · source + offset, from any other parameter.' },
-  { id: 'position', title: 'Position', letter: 'D', value: { key: 'distance', label: 'Distance', unit: 'mm' }, targets: 'thickness', help: 'The axial distance from one vertex to another (surface 1 to the image keeps the total track).' },
-  { id: 'center_of_curvature', title: 'Centre of curvature', letter: 'O', value: null, targets: 'power', help: 'Puts the centre of curvature on the vertex of another surface.' },
-  { id: 'edge_thickness', title: 'Edge thickness', letter: 'E', value: { key: 'value', label: 'Edge thickness', unit: 'mm' }, targets: 'thickness', help: 'The axial distance between this surface and the next at a radius (empty: from the semi-diameters).' },
+  kind('marginal_ray_height', 'M', 'thickness', { key: 'height', label: 'inspector.solves.value.height', unit: 'mm' }),
+  kind('chief_ray_height', 'C', 'thickness', { key: 'height', label: 'inspector.solves.value.height', unit: 'mm' }),
+  kind('marginal_ray_angle', 'M', 'power', { key: 'slope', label: 'inspector.solves.value.slope', unit: '' }),
+  kind('chief_ray_angle', 'C', 'power', { key: 'slope', label: 'inspector.solves.value.slope', unit: '' }),
+  kind('f_number', 'F', 'power', { key: 'value', label: 'inspector.solves.value.fNumber', unit: '' }),
+  kind('pickup', 'P', 'any', null),
+  kind('position', 'D', 'thickness', { key: 'distance', label: 'inspector.solves.value.distance', unit: 'mm' }),
+  kind('center_of_curvature', 'O', 'power', null),
+  kind('edge_thickness', 'E', 'thickness', { key: 'value', label: 'inspector.solves.value.edgeThickness', unit: 'mm' }),
 ]
 
 export const solveKindInfo = (id: string): SolveKindInfo | undefined => SOLVE_KINDS.find((k) => k.id === id)
@@ -124,11 +148,11 @@ export function solveTargets(s: System, index: number): { path: ParamPath; title
   const type = surf.shape.type
   const out: { path: ParamPath; title: string; kinds: SolveKindId[] }[] = []
   const add = (path: ParamPath, title: string) => out.push({ path, title, kinds: SOLVE_KINDS.filter((k) => kindFits(k.id, path)).map((k) => k.id) })
-  add({ param: 'thickness', surface: id }, 'Thickness')
-  if (type === 'paraxial') add({ param: 'paraxial_focal_length', surface: id }, 'Focal length')
-  else if (type !== 'coordinate_break') add({ param: 'curvature', surface: id }, type === 'toroid' || type === 'biconic' ? 'Radius y' : 'Radius')
-  if (['conic', 'sphere', 'even_asphere', 'odd_asphere', 'q_con', 'xy_polynomial', 'zernike_sag'].includes(type)) add({ param: 'conic', surface: id }, 'Conic')
-  if (type === 'toroid' || type === 'biconic') add({ param: 'shape_param', surface: id, parameter: 'curvature_x' }, 'Radius x')
+  add({ param: 'thickness', surface: id }, t('inspector.surface.thickness'))
+  if (type === 'paraxial') add({ param: 'paraxial_focal_length', surface: id }, t('inspector.params.focalLength'))
+  else if (type !== 'coordinate_break') add({ param: 'curvature', surface: id }, type === 'toroid' || type === 'biconic' ? t('inspector.params.radiusY') : t('inspector.params.radius'))
+  if (['conic', 'sphere', 'even_asphere', 'odd_asphere', 'q_con', 'xy_polynomial', 'zernike_sag'].includes(type)) add({ param: 'conic', surface: id }, t('inspector.params.conic'))
+  if (type === 'toroid' || type === 'biconic') add({ param: 'shape_param', surface: id, parameter: 'curvature_x' }, t('inspector.params.radiusX'))
   return out
 }
 
@@ -140,14 +164,14 @@ export function solveSummary(s: System, kind: JsonObject): string {
   const sIdx = (v: Json | undefined) => (typeof v === 'number' ? surfaceIndexOfId(s, v) : -1)
   switch (kind.type) {
     case 'pickup':
-      return `Pickup of ${paramTitle(s, kind.source as ParamPath)} × ${Number(kind.scale ?? 1)} + ${Number(kind.offset ?? 0)}`
+      return t('inspector.solves.summary.pickup', { source: paramTitle(s, kind.source as ParamPath), scale: Number(kind.scale ?? 1), offset: Number(kind.offset ?? 0) })
     case 'position':
-      return `Position S${sIdx(kind.from)} → S${sIdx(kind.to)} = ${Number(kind.distance)} mm`
+      return t('inspector.solves.summary.position', { from: sIdx(kind.from), to: sIdx(kind.to), distance: Number(kind.distance) })
     case 'center_of_curvature':
-      return `Centre of curvature on S${sIdx(kind.surface)}`
+      return t('inspector.solves.summary.centerOfCurvature', { surface: sIdx(kind.surface) })
     default: {
       const v = solveValue(kind)
-      return v == null ? title : `${title} ${v}${info?.value?.unit ? ' ' + info.value.unit : ''}`
+      return v == null ? title : t('inspector.solves.summary.value', { title, value: `${v}${info?.value?.unit ? ' ' + info.value.unit : ''}` })
     }
   }
 }
@@ -156,9 +180,9 @@ export function solveSummary(s: System, kind: JsonObject): string {
  *  validation is authoritative). */
 export function solveProblem(solve: Solve): string | null {
   const nums = Object.values(solve.kind).filter((v) => typeof v === 'number') as number[]
-  if (nums.some((v) => !Number.isFinite(v))) return 'Values must be finite.'
-  if (solve.kind.type === 'f_number' && !(Number(solve.kind.value) > 0)) return 'The F/# must be positive.'
-  if (solve.kind.type === 'edge_thickness' && solve.kind.radius != null && !(Number(solve.kind.radius) > 0)) return 'The edge radius must be positive.'
-  if (solve.kind.type === 'pickup' && paramKey(solve.kind.source) === paramKey(solve.target)) return 'A pickup cannot read its own target.'
+  if (nums.some((v) => !Number.isFinite(v))) return t('inspector.solves.problems.finite')
+  if (solve.kind.type === 'f_number' && !(Number(solve.kind.value) > 0)) return t('inspector.solves.problems.fNumber')
+  if (solve.kind.type === 'edge_thickness' && solve.kind.radius != null && !(Number(solve.kind.radius) > 0)) return t('inspector.solves.problems.edgeRadius')
+  if (solve.kind.type === 'pickup' && paramKey(solve.kind.source) === paramKey(solve.target)) return t('inspector.solves.problems.pickupSelf')
   return null
 }

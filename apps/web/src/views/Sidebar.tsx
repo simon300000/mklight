@@ -8,6 +8,7 @@ import { useView } from '@/state/view'
 import { closePanel, isDetached, moveToMainWindow, showPanel } from './panels/actions'
 import { allIssues, useWorkspace } from '@/state/workspace'
 import { cn, shortcutLabel } from '@/lib/utils'
+import { engineText, useT } from '@/i18n'
 import { AnalysisIcon } from './AnalysisIcon'
 
 function Row({
@@ -29,6 +30,7 @@ function Row({
   children?: React.ReactNode
   testId?: string
 }) {
+  const t = useT()
   return (
     <button
       type="button"
@@ -43,7 +45,7 @@ function Row({
       <span className="flex w-4 shrink-0 justify-center text-accent [&_svg]:size-[15px]">{icon}</span>
       <span className="min-w-0 flex-1 truncate">{title}</span>
       {children}
-      {open && <span className="size-[5px] shrink-0 rounded-full bg-secondary" aria-label="open" />}
+      {open && <span className="size-[5px] shrink-0 rounded-full bg-secondary" aria-label={t('app.sidebar.open')} />}
     </button>
   )
 }
@@ -51,6 +53,7 @@ function Row({
 /** The lens data or the layout: a click shows and focuses the panel (opening
  *  it where it belongs if closed), its context menu hides or shows it. */
 function DesignRow({ panel, icon, title, open, testId }: { panel: string; icon: React.ReactNode; title: string; open: boolean; testId: string }) {
+  const t = useT()
   return (
     <ContextMenu>
       <ContextMenuTrigger asChild>
@@ -60,11 +63,11 @@ function DesignRow({ panel, icon, title, open, testId }: { panel: string; icon: 
       </ContextMenuTrigger>
       <ContextMenuContent>
         {open ? (
-          <ContextMenuItem onSelect={() => closePanel(panel)}>Hide {title}</ContextMenuItem>
+          <ContextMenuItem onSelect={() => closePanel(panel)}>{t('app.sidebar.hidePanel', { title })}</ContextMenuItem>
         ) : (
-          <ContextMenuItem onSelect={() => showPanel(panel)}>Show {title}</ContextMenuItem>
+          <ContextMenuItem onSelect={() => showPanel(panel)}>{t('app.sidebar.showPanel', { title })}</ContextMenuItem>
         )}
-        {open && isDetached(panel) && <ContextMenuItem onSelect={() => moveToMainWindow(panel)}>Move to Main Window</ContextMenuItem>}
+        {open && isDetached(panel) && <ContextMenuItem onSelect={() => moveToMainWindow(panel)}>{t('app.menu.moveToMainWindow')}</ContextMenuItem>}
       </ContextMenuContent>
     </ContextMenu>
   )
@@ -74,6 +77,7 @@ function DesignRow({ panel, icon, title, open, testId }: { panel: string; icon: 
  *  every engine analysis by category, searchable. A click shows the analysis
  *  in the focused pane; ⌥-click or the context menu opens a new pane. */
 export function Sidebar() {
+  const t = useT()
   const v = useView()
   const descriptors = useWorkspace((s) => s.descriptors)
   const panes = useWorkspace((s) => s.panes)
@@ -96,10 +100,10 @@ export function Sidebar() {
   }
 
   return (
-    <aside className="flex h-full w-[220px] shrink-0 flex-col border-r border-separator bg-sidebar backdrop-blur-xl" aria-label="Sidebar">
+    <aside className="flex h-full w-[220px] shrink-0 flex-col border-r border-separator bg-sidebar backdrop-blur-xl" aria-label={t('app.sidebar.label')}>
       <div className="flex h-[52px] shrink-0 items-center px-2">
-        <Tip label={`Hide Sidebar (${shortcutLabel('ctrl+mod+s')})`}>
-          <Button variant="ghost" size="icon" aria-label="Hide Sidebar" onClick={() => v.set({ sidebarVisible: false })}>
+        <Tip label={`${t('app.menu.hideSidebar')} (${shortcutLabel('ctrl+mod+s')})`}>
+          <Button variant="ghost" size="icon" aria-label={t('app.menu.hideSidebar')} onClick={() => v.set({ sidebarVisible: false })}>
             <PanelLeft />
           </Button>
         </Tip>
@@ -110,8 +114,8 @@ export function Sidebar() {
           <Search className="size-3.5" />
           <input
             type="search"
-            placeholder="Search"
-            aria-label="Search analyses"
+            placeholder={t('app.sidebar.search')}
+            aria-label={t('app.sidebar.searchLabel')}
             value={v.sidebarQuery}
             onChange={(e) => v.set({ sidebarQuery: e.target.value })}
             className="min-w-0 flex-1 bg-transparent text-[13px] text-label outline-none placeholder:text-secondary"
@@ -121,12 +125,12 @@ export function Sidebar() {
       <nav className="min-h-0 flex-1 overflow-y-auto px-2 pb-3">
         {!q && (
           <>
-            <h4 className="px-2 pb-0.5 pt-1 text-[11px] font-semibold text-secondary">Design</h4>
-            <DesignRow panel={LENS_DATA} icon={<Table2 />} title="Lens Data" open={v.lensDataVisible} testId="sidebar-lens-data" />
-            <DesignRow panel={LAYOUT_PANEL} icon={<ScanLine />} title="Layout" open={v.layoutVisible} testId="sidebar-layout" />
+            <h4 className="px-2 pb-0.5 pt-1 text-[11px] font-semibold text-secondary">{t('app.sidebar.design')}</h4>
+            <DesignRow panel={LENS_DATA} icon={<Table2 />} title={t('app.panels.lensData')} open={v.lensDataVisible} testId="sidebar-lens-data" />
+            <DesignRow panel={LAYOUT_PANEL} icon={<ScanLine />} title={t('app.panels.layout')} open={v.layoutVisible} testId="sidebar-layout" />
             <Row
               icon={issues.length === 0 ? <CheckCircle2 /> : errors ? <XOctagon className="text-danger" /> : <AlertTriangle className="text-warning" />}
-              title="Issues"
+              title={t('app.sidebar.issues')}
               onClick={() => v.set({ issuesOpen: true })}
             >
               {issues.length > 0 && <span className="num text-[12px] text-secondary">{issues.length}</span>}
@@ -150,7 +154,7 @@ export function Sidebar() {
                           title={analysisTitle(d.name, d)}
                           open={!!open}
                           dimmed={!d.available}
-                          help={d.available ? d.description : (d.unavailable_reason ?? undefined)}
+                          help={d.available ? engineText(d.description) : engineText(d.unavailable_reason ?? undefined)}
                           testId={`sidebar-analysis-${d.name}`}
                           onClick={(e) => d.available && show(d.name, e.altKey)}
                         />
@@ -158,9 +162,9 @@ export function Sidebar() {
                     </ContextMenuTrigger>
                     <ContextMenuContent>
                       <ContextMenuItem disabled={!d.available} onSelect={() => show(d.name, true)}>
-                        Open in New Pane
+                        {t('app.sidebar.openInNewPane')}
                       </ContextMenuItem>
-                      {open && <ContextMenuItem onSelect={() => useWorkspace.getState().removePane(open.key)}>Close Pane</ContextMenuItem>}
+                      {open && <ContextMenuItem onSelect={() => useWorkspace.getState().removePane(open.key)}>{t('app.menu.closePane')}</ContextMenuItem>}
                     </ContextMenuContent>
                   </ContextMenu>
                 )

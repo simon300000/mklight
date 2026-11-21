@@ -2,10 +2,11 @@
 // system summary and validation.
 import { AlertTriangle, CheckCircle2, Info, XCircle } from 'lucide-react'
 import type { Json, JsonObject } from '@/engine/types'
+import { engineText, t, tMaybe, useT } from '@/i18n'
 import { sig } from '@/model/format'
 import type { System } from '@/model/system'
 import { cn } from '@/lib/utils'
-import { nums, obj } from '../../results/common'
+import { issueMessage, nums, obj } from '../../results/common'
 import type { KeyNumber, Renderer, RendererProps } from '../registry'
 import { intOf, length, nf, objects, short, valueUnit } from './kit'
 
@@ -23,7 +24,8 @@ interface XYRow {
 }
 
 const NON_ROTATIONAL = new Set(['toroid', 'biconic', 'xy_polynomial', 'zernike_sag'])
-const SYMMETRY: Record<string, string> = { rotational: 'Rotational', meridional: 'Meridional (y–z plane)', none: 'None' }
+const symmetryText = (s: string): string =>
+  s === 'rotational' ? t('analysis.tables.symRotational') : s === 'meridional' ? t('analysis.tables.symMeridional') : s === 'none' ? t('common.none') : s
 
 export function paraxialXY(j: JsonObject) {
   const p = obj(j.paraxial_xy)
@@ -60,11 +62,12 @@ export function isAnamorphic(j: JsonObject, system?: System): boolean {
 const squeezeText = (v: number) => (Number.isFinite(v) ? `${v.toFixed(4)}×` : short(v))
 
 function DoePower({ row }: { row: XYRow }) {
+  const t = useT()
   return (
-    <div className="grid grid-cols-[auto_auto] justify-start gap-x-6 gap-y-0.5 text-[12px]" title="Phase power of the trace order (base refractive power excluded)">
+    <div className="grid grid-cols-[auto_auto] justify-start gap-x-6 gap-y-0.5 text-[12px]" title={t('analysis.tables.doePowerHelp')}>
       {row.doe.map((d) => (
         <div key={d.surface} className="contents">
-          <span className="text-secondary">DOE power, surface {d.surface}</span>
+          <span className="text-secondary">{t('analysis.tables.doePower', { surface: d.surface })}</span>
           <span className="num text-right">{valueUnit(d.power, '1/mm')}</span>
         </div>
       ))}
@@ -73,15 +76,16 @@ function DoePower({ row }: { row: XYRow }) {
 }
 
 function AnamorphicCard({ j }: { j: JsonObject }) {
+  const t = useT()
   const xy = paraxialXY(j)
   const p = xy?.primary
   return (
-    <section className="mx-3 mt-3 max-w-xl rounded-lg bg-selected/60 p-2.5 text-[12px]" aria-label="Anamorphic first-order data">
-      <h3 className="mb-1.5 text-[12px] font-semibold">Anamorphic</h3>
+    <section className="mx-3 mt-3 max-w-xl rounded-lg bg-selected/60 p-2.5 text-[12px]" aria-label={t('analysis.tables.anamorphicLabel')}>
+      <h3 className="mb-1.5 text-[12px] font-semibold">{t('analysis.tables.anamorphic')}</h3>
       {!xy || !p ? (
         <p className="flex gap-1.5 text-secondary">
           <Info className="mt-[1px] size-3.5 shrink-0" />
-          This design is not rotationally symmetric. The engine's first-order data covers the y section.
+          {t('analysis.tables.notRotational')}
         </p>
       ) : (
         <div className="space-y-2">
@@ -94,48 +98,48 @@ function AnamorphicCard({ j }: { j: JsonObject }) {
               </tr>
             </thead>
             <tbody className="num">
-              <tr title="Effective focal length">
+              <tr title={t('analysis.tables.eflHelp')}>
                 <td className="text-secondary">EFL</td>
                 <td className="pl-4 text-right">{short(p.eflX)}</td>
                 <td className="pl-4 text-right">{short(p.eflY)}</td>
               </tr>
-              <tr title="Back focal length">
+              <tr title={t('analysis.tables.bflHelp')}>
                 <td className="text-secondary">BFL</td>
                 <td className="pl-4 text-right">{short(p.bflX)}</td>
                 <td className="pl-4 text-right">{short(p.bflY)}</td>
               </tr>
-              <tr title={'Squeeze: ' + (xy.squeezeDefinition ?? 'signed EFL y / EFL x')}>
-                <td className="text-secondary">Squeeze</td>
+              <tr title={t('analysis.tables.squeezeHelp', { definition: xy.squeezeDefinition ? engineText(xy.squeezeDefinition) : t('analysis.tables.squeezeDefault') })}>
+                <td className="text-secondary">{t('analysis.tables.squeeze')}</td>
                 <td colSpan={2} className="pl-4 text-right">
                   {squeezeText(p.squeeze)}
                 </td>
               </tr>
               {xy.symmetry && (
                 <tr>
-                  <td className="text-secondary">Symmetry</td>
+                  <td className="text-secondary">{t('analysis.tables.symmetry')}</td>
                   <td colSpan={2} className="pl-4 text-right font-sans">
-                    {SYMMETRY[xy.symmetry] ?? xy.symmetry}
+                    {symmetryText(xy.symmetry)}
                   </td>
                 </tr>
               )}
             </tbody>
           </table>
-          {Number.isFinite(p.um) && <div className="num text-[11px] text-secondary">At λ = {p.um.toFixed(4)} µm (primary)</div>}
+          {Number.isFinite(p.um) && <div className="num text-[11px] text-secondary">{t('analysis.tables.atPrimary', { value: p.um.toFixed(4) })}</div>}
           {p.doe.length > 0 && <DoePower row={p} />}
           {xy.warnings.map((w, k) => (
             <p key={k} className="flex gap-1.5 text-[11px] text-warning">
               <AlertTriangle className="mt-[1px] size-3 shrink-0" />
-              <span>{w}</span>
+              <span>{engineText(w)}</span>
             </p>
           ))}
           {xy.others.length > 0 && (
             <details>
-              <summary className="cursor-default text-[12px]">Other wavelengths ({xy.others.length})</summary>
+              <summary className="cursor-default text-[12px]">{t('analysis.tables.otherWavelengths', { count: xy.others.length })}</summary>
               <div className="overflow-x-auto">
                 <table className="num mt-1 text-[11px]">
                   <thead className="text-secondary">
                     <tr>
-                      {['λ µm', 'EFL x', 'EFL y', 'BFL x', 'BFL y', 'Squeeze'].map((h) => (
+                      {['λ µm', 'EFL x', 'EFL y', 'BFL x', 'BFL y', t('analysis.tables.squeeze')].map((h) => (
                         <th key={h} className="pl-3 text-right font-normal first:pl-0">
                           {h}
                         </th>
@@ -164,6 +168,7 @@ function AnamorphicCard({ j }: { j: JsonObject }) {
 }
 
 function FirstOrder({ result, system }: RendererProps) {
+  const t = useT()
   const j = result.json
   const entries = objects(j.entries)
   const anamorphic = isAnamorphic(j, system)
@@ -177,7 +182,7 @@ function FirstOrder({ result, system }: RendererProps) {
         p &&
         p.doe.length > 0 && (
           <section className="mx-3 mt-3 max-w-xl rounded-lg bg-selected/60 p-2.5">
-            <h3 className="mb-1.5 text-[12px] font-semibold">Diffractive</h3>
+            <h3 className="mb-1.5 text-[12px] font-semibold">{t('analysis.tables.diffractive')}</h3>
             <DoePower row={p} />
           </section>
         )
@@ -186,14 +191,14 @@ function FirstOrder({ result, system }: RendererProps) {
         <tbody>
           {entries.map((e, k) => (
             <tr key={k} className="border-b border-separator/60 last:border-0">
-              <td className="py-1 pr-4 text-secondary">{String(e.label ?? e.key ?? '')}</td>
+              <td className="py-1 pr-4 text-secondary">{engineText(String(e.label ?? e.key ?? ''))}</td>
               <td className="num py-1 text-right">{typeof e.value === 'string' && Number.isNaN(nf(e.value)) && e.value !== 'nan' ? e.value : short(nf(e.value))}</td>
               <td className="py-1 pl-1.5 text-[12px] text-secondary">{typeof e.unit === 'string' ? e.unit : ''}</td>
             </tr>
           ))}
         </tbody>
       </table>
-      {Number.isFinite(wl) && <div className="num mx-3 mb-3 text-[11px] text-secondary">At λ = {wl.toFixed(4)} µm</div>}
+      {Number.isFinite(wl) && <div className="num mx-3 mb-3 text-[11px] text-secondary">{t('analysis.tables.at', { value: wl.toFixed(4) })}</div>}
     </div>
   )
 }
@@ -212,7 +217,7 @@ function firstOrderKeys(r: { json: JsonObject }): KeyNumber[] {
     if (!e) return
     const v = nf(e.value)
     if (Number.isNaN(v)) return
-    out.push({ label, value: valueUnit(v, typeof e.unit === 'string' ? e.unit : ''), help: typeof e.label === 'string' ? e.label : undefined })
+    out.push({ label, value: valueUnit(v, typeof e.unit === 'string' ? e.unit : ''), help: typeof e.label === 'string' ? engineText(e.label) : undefined })
   }
   add('EFL', find('efl'))
   add('F/#', find('working_f_number', 'image_f_number', 'f_number'))
@@ -222,7 +227,8 @@ function firstOrderKeys(r: { json: JsonObject }): KeyNumber[] {
 
 // MARK: System summary
 
-const surfaceTypeTitle = (t: string) => t.replace(/_/g, ' ').replace(/^q /, 'Q-').replace(/^./, (c) => c.toUpperCase())
+const surfaceTypeTitle = (type: string) =>
+  tMaybe(`analysis.surfaceTypes.${type}`) ?? type.replace(/_/g, ' ').replace(/^q /, 'Q-').replace(/^./, (c) => c.toUpperCase())
 
 function semiDiameterText(v: Json | undefined): string {
   const o = obj(v)
@@ -232,6 +238,7 @@ function semiDiameterText(v: Json | undefined): string {
 }
 
 function SystemSummary({ result }: RendererProps) {
+  const t = useT()
   const j = result.json
   const surfaces = objects(j.surfaces)
   const um = nums(j.wavelengths_um)
@@ -241,19 +248,29 @@ function SystemSummary({ result }: RendererProps) {
   const env = obj(j.environment)
   const xy = paraxialXY(j)
   const head: [string, string][] = []
-  if (typeof j.name === 'string' && j.name) head.push(['Name', j.name])
-  if (ap) head.push(['Aperture', `${String(ap.type ?? '').replace(/_/g, ' ')}${ap.value != null ? ' ' + short(nf(ap.value)) : ''}`])
-  if (fs) head.push(['Fields', `${String(fs.kind ?? '').replace(/_/g, ' ')} · ${Array.isArray(fs.fields) ? fs.fields.length : 0}`])
-  if (um.length) head.push(['Wavelengths', um.map((w, k) => (k === pw ? `${sig(w, 5)}*` : sig(w, 5))).join(', ') + ' µm'])
-  if (typeof j.stop === 'number') head.push(['Stop', `Surface ${j.stop}`])
-  if (j.object_at_infinity === true) head.push(['Object', 'At infinity'])
+  if (typeof j.name === 'string' && j.name) head.push([t('analysis.tables.name'), j.name])
+  if (ap) head.push([t('analysis.tables.aperture'), `${String(ap.type ?? '').replace(/_/g, ' ')}${ap.value != null ? ' ' + short(nf(ap.value)) : ''}`])
+  if (fs) head.push([t('analysis.tables.fields'), `${String(fs.kind ?? '').replace(/_/g, ' ')} · ${Array.isArray(fs.fields) ? fs.fields.length : 0}`])
+  if (um.length) head.push([t('analysis.tables.wavelengths'), um.map((w, k) => (k === pw ? `${sig(w, 5)}*` : sig(w, 5))).join(', ') + ' µm'])
+  if (typeof j.stop === 'number') head.push([t('analysis.tables.stop'), t('common.surfaceN', { n: j.stop })])
+  if (j.object_at_infinity === true) head.push([t('analysis.tables.object'), t('analysis.tables.atInfinity')])
   const L = nf(j.first_to_image_distance)
-  if (Number.isFinite(L)) head.push(['Surface 1 to image', length(L)])
-  if (env) head.push(['Environment', `${short(nf(env.temperature_c ?? env.temperature))} °C · ${short(nf(env.pressure_atm ?? env.pressure))} atm`])
-  if (typeof j.symmetry === 'string') head.push(['Symmetry', SYMMETRY[j.symmetry] ?? j.symmetry])
-  if (xy?.primary && isAnamorphic(j)) head.push(['EFL x / y', `${short(xy.primary.eflX)} / ${short(xy.primary.eflY)} mm`])
+  if (Number.isFinite(L)) head.push([t('analysis.tables.firstToImage'), length(L)])
+  if (env) head.push([t('analysis.tables.environment'), `${short(nf(env.temperature_c ?? env.temperature))} °C · ${short(nf(env.pressure_atm ?? env.pressure))} atm`])
+  if (typeof j.symmetry === 'string') head.push([t('analysis.tables.symmetry'), symmetryText(j.symmetry)])
+  if (xy?.primary && isAnamorphic(j)) head.push([t('analysis.tables.eflXY'), `${short(xy.primary.eflX)} / ${short(xy.primary.eflY)} mm`])
   const warnings = (Array.isArray(j.warnings) ? j.warnings : []).filter((w): w is string => typeof w === 'string')
-  const cols = ['#', 'Label', 'Type', 'Radius', 'Thickness', 'Material', 'n_d', 'V_d', 'Semi-dia.']
+  const cols: [string, string][] = [
+    ['#', '#'],
+    ['label', t('analysis.tables.colLabel')],
+    ['type', t('analysis.tables.colType')],
+    ['radius', t('analysis.tables.colRadius')],
+    ['thickness', t('analysis.tables.colThickness')],
+    ['material', t('analysis.tables.colMaterial')],
+    ['n_d', 'n_d'],
+    ['V_d', 'V_d'],
+    ['semi', t('analysis.tables.colSemiDia')],
+  ]
   return (
     <div className="absolute inset-0 overflow-auto p-3 select-text">
       <div className="mb-3 grid max-w-2xl grid-cols-[auto_1fr] gap-x-4 gap-y-0.5 text-[12px]">
@@ -267,7 +284,7 @@ function SystemSummary({ result }: RendererProps) {
       <table className="text-[12px]">
         <thead>
           <tr className="border-b border-separator text-[11px] text-secondary">
-            {cols.map((c, k) => (
+            {cols.map(([c, title], k) => (
               <th key={c} className={cn('px-1.5 py-0.5 font-normal whitespace-nowrap', k < 3 || k === 5 ? 'text-left' : 'text-right')}>
                 {c === 'n_d' ? (
                   <>
@@ -278,7 +295,7 @@ function SystemSummary({ result }: RendererProps) {
                     V<sub>d</sub>
                   </>
                 ) : (
-                  c
+                  title
                 )}
               </th>
             ))}
@@ -290,12 +307,12 @@ function SystemSummary({ result }: RendererProps) {
             const stop = s.is_stop === true || index === j.stop
             return (
               <tr key={k} className="border-b border-separator/50 last:border-0">
-                <td className="px-1.5 py-0.5 text-secondary">{stop ? `${index} (stop)` : index}</td>
+                <td className="px-1.5 py-0.5 text-secondary">{stop ? t('analysis.tables.stopMark', { index }) : index}</td>
                 <td className="max-w-[10rem] truncate px-1.5 py-0.5 font-sans">{String(s.label ?? '')}</td>
                 <td className="px-1.5 py-0.5 font-sans whitespace-nowrap">{surfaceTypeTitle(String(s.type ?? obj(s.shape)?.type ?? ''))}</td>
                 <td className="px-1.5 py-0.5 text-right">{short(nf(s.radius))}</td>
                 <td className="px-1.5 py-0.5 text-right">{short(nf(s.thickness))}</td>
-                <td className="px-1.5 py-0.5 font-sans">{s.interaction === 'reflect' ? 'Mirror' : String(s.material ?? '')}</td>
+                <td className="px-1.5 py-0.5 font-sans">{s.interaction === 'reflect' ? t('analysis.tables.mirror') : String(s.material ?? '')}</td>
                 <td className="px-1.5 py-0.5 text-right">{s.nd_after == null ? '' : nf(s.nd_after).toFixed(6)}</td>
                 <td className="px-1.5 py-0.5 text-right">{s.vd_after == null || !Number.isFinite(nf(s.vd_after)) ? '' : nf(s.vd_after).toFixed(2)}</td>
                 <td className="px-1.5 py-0.5 text-right whitespace-nowrap">{semiDiameterText(s.semi_diameter)}</td>
@@ -304,11 +321,11 @@ function SystemSummary({ result }: RendererProps) {
           })}
         </tbody>
       </table>
-      {um.length > 1 && <p className="mt-1 text-[11px] text-secondary">* primary wavelength</p>}
+      {um.length > 1 && <p className="mt-1 text-[11px] text-secondary">{t('analysis.tables.primaryNote')}</p>}
       {warnings.map((w, k) => (
         <p key={k} className="mt-1.5 flex gap-1.5 text-[11px] text-warning">
           <AlertTriangle className="mt-[1px] size-3 shrink-0" />
-          {w}
+          {engineText(w)}
         </p>
       ))}
     </div>
@@ -317,30 +334,41 @@ function SystemSummary({ result }: RendererProps) {
 
 // MARK: Validate
 
+const severityText = (sev: string) => (sev === 'error' ? t('common.error') : sev === 'warning' ? t('common.warning') : sev === 'info' ? t('common.info') : sev)
+
 function ValidateView({ result }: RendererProps) {
+  const t = useT()
   const issues = objects(result.json.issues)
   if (!issues.length) {
     return (
       <div className="absolute inset-0 flex flex-col items-center justify-center gap-1.5 p-4 text-center">
         <CheckCircle2 className="size-6 text-secondary" />
-        <span className="text-[13px] font-medium">No Issues</span>
-        <span className="text-[12px] text-secondary">The design passed every check.</span>
+        <span className="text-[13px] font-medium">{t('analysis.tables.noIssues')}</span>
+        <span className="text-[12px] text-secondary">{t('analysis.tables.passed')}</span>
       </div>
     )
   }
   const rank: Record<string, number> = { error: 0, warning: 1, info: 2 }
   const sorted = [...issues].sort((a, b) => (rank[String(a.severity)] ?? 3) - (rank[String(b.severity)] ?? 3))
   return (
-    <ul className="absolute inset-0 overflow-auto py-1 select-text" aria-label="Validation issues">
+    <ul className="absolute inset-0 overflow-auto py-1 select-text" aria-label={t('analysis.tables.issuesLabel')}>
       {sorted.map((i, k) => {
         const sev = String(i.severity ?? 'warning')
         const Icon = sev === 'error' ? XCircle : sev === 'info' ? Info : AlertTriangle
         return (
           <li key={k} className="flex gap-2 border-b border-separator/50 px-3 py-1.5 text-[12px] last:border-0">
-            <Icon className={cn('mt-[1px] size-3.5 shrink-0', sev === 'error' ? 'text-danger' : sev === 'info' ? 'text-secondary' : 'text-warning')} aria-label={sev} />
+            <Icon className={cn('mt-[1px] size-3.5 shrink-0', sev === 'error' ? 'text-danger' : sev === 'info' ? 'text-secondary' : 'text-warning')} aria-label={severityText(sev)} />
             <span className="min-w-0 flex-1">
-              {typeof i.surface === 'number' && <span className="mr-1.5 text-secondary">Surface {i.surface}</span>}
-              {String(i.message ?? '')}
+              {typeof i.surface === 'number' && <span className="mr-1.5 text-secondary">{t('common.surfaceN', { n: i.surface })}</span>}
+              {(() => {
+                const m = issueMessage(i)
+                return (
+                  <>
+                    {m.text}
+                    {m.detail && <span className="block select-text text-[11px] text-secondary">{m.detail}</span>}
+                  </>
+                )
+              })()}
               {typeof i.code === 'string' && <span className="ml-1.5 text-[11px] text-secondary">{i.code}</span>}
             </span>
           </li>
@@ -362,9 +390,9 @@ export const TABLE_RENDERERS: Record<string, Renderer> = {
     keyNumbers: (r) => {
       const out: KeyNumber[] = []
       const n = objects(r.json.surfaces).length
-      if (n) out.push({ label: 'Surfaces', value: String(n) })
+      if (n) out.push({ label: t('analysis.tables.surfaces'), value: String(n) })
       const L = nf(r.json.first_to_image_distance)
-      if (Number.isFinite(L)) out.push({ label: 'Length', value: length(L), help: 'Surface 1 to the image vertex' })
+      if (Number.isFinite(L)) out.push({ label: t('analysis.tables.length'), value: length(L), help: t('analysis.tables.lengthHelp') })
       return out
     },
   },
@@ -372,8 +400,8 @@ export const TABLE_RENDERERS: Record<string, Renderer> = {
     accepts: (j) => Array.isArray(j.issues) || typeof j.errors === 'number',
     View: ValidateView,
     keyNumbers: (r) => [
-      { label: 'Errors', value: String(intOf(r.json.errors, 0)) },
-      { label: 'Warnings', value: String(intOf(r.json.warnings, 0)) },
+      { label: t('analysis.tables.errors'), value: String(intOf(r.json.errors, 0)) },
+      { label: t('analysis.tables.warnings'), value: String(intOf(r.json.warnings, 0)) },
     ],
   },
 }

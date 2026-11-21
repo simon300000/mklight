@@ -1,5 +1,6 @@
 using System.Globalization;
 using System.Text.Json.Nodes;
+using MKLight.App.Support;
 using MKLight.App.Views.Analysis.Results.Readers;
 
 namespace MKLight.App.Views.Analysis.Settings;
@@ -21,7 +22,7 @@ public sealed record SpectralSampling(int Samples = 9, double LowerUm = 0.38, do
     public static readonly SpectralSampling Default = new();
     public const int MinSamples = 1, MaxSamples = 4096;
 
-    public static string SpacingTitle(SamplingSpacing s) => s == SamplingSpacing.EqualWeight ? "Equal energy" : "Uniform";
+    public static string SpacingTitle(SamplingSpacing s) => Loc.S(s == SamplingSpacing.EqualWeight ? "Analysis_Spectrum_EqualEnergy" : "Analysis_Spectrum_Uniform");
 
     /// <summary>
     /// Reads <c>{samples, range_um, spacing}</c>; absent or null is the
@@ -69,8 +70,8 @@ public sealed record SpectralSampling(int Samples = 9, double LowerUm = 0.38, do
         get
         {
             var out_ = new List<string>();
-            if (Samples is < MinSamples or > MaxSamples) out_.Add("Samples must be between 1 and 4096.");
-            if (!(LowerUm > 0 && UpperUm > LowerUm && double.IsFinite(UpperUm))) out_.Add("The range must be positive and increasing.");
+            if (Samples is < MinSamples or > MaxSamples) out_.Add(Loc.F("Analysis_Spectrum_IssueSamples", MinSamples, MaxSamples));
+            if (!(LowerUm > 0 && UpperUm > LowerUm && double.IsFinite(UpperUm))) out_.Add(Loc.S("Analysis_Spectrum_IssueRange"));
             return out_;
         }
     }
@@ -109,15 +110,15 @@ public sealed record SpectrumSetting(SpectrumKind Kind, SpectralSampling? Sampli
 
     public IReadOnlyList<SpectrumSample> List => Samples ?? [];
 
-    public static string Title(SpectrumKind k) => k switch
+    public static string Title(SpectrumKind k) => Loc.S(k switch
     {
-        SpectrumKind.Design => "Design wavelengths",
-        SpectrumKind.Photopic => "Photopic V(λ)",
-        SpectrumKind.Scotopic => "Scotopic V′(λ)",
-        SpectrumKind.Blackbody => "Blackbody",
-        SpectrumKind.Explicit => "Explicit wavelengths",
-        _ => "Sensor response",
-    };
+        SpectrumKind.Design => "Analysis_Spectrum_KindDesign",
+        SpectrumKind.Photopic => "Analysis_Spectrum_KindPhotopic",
+        SpectrumKind.Scotopic => "Analysis_Spectrum_KindScotopic",
+        SpectrumKind.Blackbody => "Analysis_Spectrum_KindBlackbody",
+        SpectrumKind.Explicit => "Analysis_Spectrum_KindExplicit",
+        _ => "Analysis_Spectrum_KindSensor",
+    });
 
     /// <summary>The same spectrum with other sampling (no change for design and explicit wavelengths).</summary>
     public SpectrumSetting WithSampling(SpectralSampling s) => Kind is SpectrumKind.Design or SpectrumKind.Explicit ? this : this with { Sampling = s };
@@ -205,19 +206,19 @@ public sealed record SpectrumSetting(SpectrumKind Kind, SpectralSampling? Sampli
             var s = Sampling ?? SpectralSampling.Default;
             switch (Kind)
             {
-                case SpectrumKind.Photopic: return [.. s.Issues, .. RangeIssue(s, PhotopicLo, PhotopicHi, "the photopic table")];
-                case SpectrumKind.Scotopic: return [.. s.Issues, .. RangeIssue(s, ScotopicLo, ScotopicHi, "the scotopic table")];
-                case SpectrumKind.Blackbody: return [.. TemperatureK > 0 && double.IsFinite(TemperatureK) ? [] : new[] { "The temperature must be positive." }, .. s.Issues];
+                case SpectrumKind.Photopic: return [.. s.Issues, .. RangeIssue(s, PhotopicLo, PhotopicHi, "Analysis_Spectrum_IssueRangePhotopic")];
+                case SpectrumKind.Scotopic: return [.. s.Issues, .. RangeIssue(s, ScotopicLo, ScotopicHi, "Analysis_Spectrum_IssueRangeScotopic")];
+                case SpectrumKind.Blackbody: return [.. TemperatureK > 0 && double.IsFinite(TemperatureK) ? [] : new[] { Loc.S("Analysis_Spectrum_IssueTemperature") }, .. s.Issues];
                 case SpectrumKind.Explicit:
                     var e = new List<string>();
-                    if (List.Count == 0) e.Add("Add at least one wavelength.");
-                    if (List.Any(w => !(w.Um > 0 && double.IsFinite(w.Um)))) e.Add("Wavelengths must be positive.");
-                    if (List.Any(w => !(w.Weight >= 0 && double.IsFinite(w.Weight)))) e.Add("Weights must not be negative.");
+                    if (List.Count == 0) e.Add(Loc.S("Analysis_Spectrum_IssueNoWavelength"));
+                    if (List.Any(w => !(w.Um > 0 && double.IsFinite(w.Um)))) e.Add(Loc.S("Analysis_Spectrum_IssueWavelengthPositive"));
+                    if (List.Any(w => !(w.Weight >= 0 && double.IsFinite(w.Weight)))) e.Add(Loc.S("Analysis_Spectrum_IssueWeightNegative"));
                     return e;
                 case SpectrumKind.Sensor:
                     var o = new List<string>(s.Issues);
                     if (TableIssue(List) is string problem) o.Add(problem);
-                    else o.AddRange(RangeIssue(s, List[0].Um, List[^1].Um, "the response table"));
+                    else o.AddRange(RangeIssue(s, List[0].Um, List[^1].Um, "Analysis_Spectrum_IssueRangeTable"));
                     return o;
                 default: return [];
             }
@@ -226,17 +227,18 @@ public sealed record SpectrumSetting(SpectrumKind Kind, SpectralSampling? Sampli
 
     public static string? TableIssue(IReadOnlyList<SpectrumSample> t)
     {
-        if (t.Count < 2) return "The response table needs at least two rows.";
-        if (t.Any(w => !(w.Um > 0 && double.IsFinite(w.Um) && w.Weight >= 0 && double.IsFinite(w.Weight)))) return "Responses must not be negative.";
-        for (var i = 1; i < t.Count; i++) if (t[i - 1].Um >= t[i].Um) return "Wavelengths must increase.";
+        if (t.Count < 2) return Loc.S("Analysis_Spectrum_IssueTableRows");
+        if (t.Any(w => !(w.Um > 0 && double.IsFinite(w.Um) && w.Weight >= 0 && double.IsFinite(w.Weight)))) return Loc.S("Analysis_Spectrum_IssueResponseNegative");
+        for (var i = 1; i < t.Count; i++) if (t[i - 1].Um >= t[i].Um) return Loc.S("Analysis_Spectrum_IssueWavelengthsIncrease");
         return null;
     }
 
-    static IEnumerable<string> RangeIssue(SpectralSampling s, double lo, double hi, string what)
+    /// <param name="key">The message, with the table's range as {0} and {1}.</param>
+    static IEnumerable<string> RangeIssue(SpectralSampling s, double lo, double hi, string key)
     {
         if (!(s.LowerUm > 0 && s.UpperUm > s.LowerUm)) yield break;
         if (s.LowerUm < lo - 1e-12 || s.UpperUm > hi + 1e-12)
-            yield return string.Create(CultureInfo.InvariantCulture, $"The range must lie inside {what} ({lo:0.000}–{hi:0.000} µm).");
+            yield return Loc.F(key, lo.ToString("0.000", CultureInfo.InvariantCulture), hi.ToString("0.000", CultureInfo.InvariantCulture));
     }
 
     // MARK: Text
@@ -244,12 +246,12 @@ public sealed record SpectrumSetting(SpectrumKind Kind, SpectralSampling? Sampli
     /// <summary>A short description for summaries: "photopic", "blackbody 5500 K", "3 wavelengths", "sensor (42 rows)".</summary>
     public string Summary => Kind switch
     {
-        SpectrumKind.Design => "design",
-        SpectrumKind.Photopic => "photopic" + SamplesSuffix,
-        SpectrumKind.Scotopic => "scotopic" + SamplesSuffix,
-        SpectrumKind.Blackbody => "blackbody " + Kelvin(TemperatureK) + SamplesSuffix,
-        SpectrumKind.Explicit => List.Count == 1 ? List[0].Um.ToString("G4", CultureInfo.InvariantCulture) + " µm" : $"{List.Count.ToString(CultureInfo.InvariantCulture)} wavelengths",
-        _ => $"sensor ({List.Count.ToString(CultureInfo.InvariantCulture)} rows)" + SamplesSuffix,
+        SpectrumKind.Design => Loc.S("Analysis_Spectrum_SummaryDesign"),
+        SpectrumKind.Photopic => Loc.S("Analysis_Spectrum_SummaryPhotopic") + SamplesSuffix,
+        SpectrumKind.Scotopic => Loc.S("Analysis_Spectrum_SummaryScotopic") + SamplesSuffix,
+        SpectrumKind.Blackbody => Loc.F("Analysis_Spectrum_SummaryBlackbody", Kelvin(TemperatureK)) + SamplesSuffix,
+        SpectrumKind.Explicit => List.Count == 1 ? List[0].Um.ToString("G4", CultureInfo.InvariantCulture) + " µm" : Loc.F("Analysis_Spectrum_SummaryWavelengths", List.Count),
+        _ => Loc.F("Analysis_Spectrum_SummarySensor", List.Count) + SamplesSuffix,
     };
 
     string SamplesSuffix => (Sampling ?? SpectralSampling.Default).Samples is var n && n != SpectralSampling.Default.Samples ? " ×" + n.ToString(CultureInfo.InvariantCulture) : "";

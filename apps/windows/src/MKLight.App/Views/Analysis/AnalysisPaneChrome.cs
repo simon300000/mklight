@@ -1,3 +1,6 @@
+using MKLight.App.Support;
+using MKLight.Model;
+
 namespace MKLight.App.Views.Analysis;
 
 /// <summary>What an analysis pane without a result shows instead (the Mac app's placeholders).</summary>
@@ -44,22 +47,24 @@ public static class AnalysisPaneChrome
     /// <summary>The placeholder of a pane (<see cref="PanePlaceholderKind.None"/> while it has a result).</summary>
     public static PanePlaceholder Placeholder(PaneFacts f, string analysisGlyph = "")
     {
+        // The engine's messages and stages are engine text; the rest is the app's.
         if (f.Unavailable)
-            return new(PanePlaceholderKind.Unavailable, GlyphNotAvailable, "Not Available",
-                string.IsNullOrEmpty(f.Message) ? "This engine build does not provide this analysis." : f.Message, null);
+            return new(PanePlaceholderKind.Unavailable, GlyphNotAvailable, Loc.S("Analysis_Placeholder_NotAvailable"),
+                string.IsNullOrEmpty(f.Message) ? Loc.S("Analysis_Placeholder_NotAvailableText") : EngineText.T(f.Message), null);
         if (f.HasOutput) return new(PanePlaceholderKind.None, "", "", "", null);
         if (f.Running)
-            return new(PanePlaceholderKind.Running, "", "", string.IsNullOrEmpty(f.Stage) ? "Computing…" : f.Stage, "Cancel");
+            return new(PanePlaceholderKind.Running, "", "", string.IsNullOrEmpty(f.Stage) ? Loc.S("Analysis_Placeholder_Computing") : EngineText.T(f.Stage), Loc.S("Common_Cancel"));
         if (f.Failed)
             return f.DesignHasErrors
-                ? new(PanePlaceholderKind.DesignHasErrors, GlyphErrors, "Design Has Errors", f.Message ?? "", "Show Issues")
-                : new(PanePlaceholderKind.Failed, GlyphFailed, "Analysis Failed", string.IsNullOrEmpty(f.Message) ? "The analysis failed." : f.Message, "Try Again");
+                ? new(PanePlaceholderKind.DesignHasErrors, GlyphErrors, Loc.S("Analysis_Placeholder_DesignHasErrors"), EngineText.T(f.Message ?? ""), Loc.S("Analysis_Placeholder_ShowIssues"))
+                : new(PanePlaceholderKind.Failed, GlyphFailed, Loc.S("Analysis_Placeholder_Failed"),
+                    string.IsNullOrEmpty(f.Message) ? Loc.S("Analysis_Placeholder_FailedText") : EngineText.T(f.Message), Loc.S("Analysis_Placeholder_TryAgain"));
         if (!string.IsNullOrEmpty(f.ModelError))
-            return new(PanePlaceholderKind.NotReady, GlyphErrors, "Design Not Ready", f.ModelError, "Show Issues");
-        if (f.Cancelled) return new(PanePlaceholderKind.Cancelled, GlyphCancelled, "Cancelled", "", "Run");
+            return new(PanePlaceholderKind.NotReady, GlyphErrors, Loc.S("Analysis_Placeholder_NotReady"), EngineText.T(f.ModelError), Loc.S("Analysis_Placeholder_ShowIssues"));
+        if (f.Cancelled) return new(PanePlaceholderKind.Cancelled, GlyphCancelled, Loc.S("Analysis_Placeholder_Cancelled"), "", Loc.S("Analysis_Placeholder_Run"));
         return f.AutoUpdate
             ? new(PanePlaceholderKind.Waiting, "", "", "", null)
-            : new(PanePlaceholderKind.OnRequest, analysisGlyph, "Not Run Yet", "This analysis runs on request.", "Run");
+            : new(PanePlaceholderKind.OnRequest, analysisGlyph, Loc.S("Analysis_Placeholder_NotRunYet"), Loc.S("Analysis_Placeholder_OnRequest"), Loc.S("Analysis_Placeholder_Run"));
     }
 
     /// <summary>A rerun failed while the pane has a result: the result stays, a capsule says the update failed.</summary>
@@ -88,9 +93,9 @@ public static class AnalysisPaneChrome
     public static string AutomationId(string analysis, string part) => $"Pane.{analysis}.{part}";
 
     /// <summary>The preview banner's label.</summary>
-    public static string PreviewLabel(string candidate) => $"Previewing {candidate} · not applied";
+    public static string PreviewLabel(string candidate) => Loc.F("Analysis_Pane_PreviewLabel", candidate);
 
     /// <summary>The pane's accessibility name: the analysis, and the preview while one is shown.</summary>
     public static string AccessibleName(string title, string? preview) =>
-        preview is null ? $"{title} pane" : $"{title} pane, {PreviewLabel(preview)}";
+        preview is null ? Loc.F("Analysis_Pane_AccessibleName", title) : Loc.F("Analysis_Pane_AccessibleNamePreview", title, PreviewLabel(preview));
 }

@@ -8,6 +8,7 @@
 // `ToleranceSpec` plus the app's rows under `app`. Pure model code: no optics.
 
 import type { Json, JsonObject } from '@/engine/types'
+import { engineText, t, type Key, type Params } from '@/i18n'
 import { nf, sig } from './format'
 import { getParam, paramKey, paramTitle, paramUnit, surfaceIndexOfId, type ParamPath } from './params'
 import { imageIndex, type Surface, type System } from './system'
@@ -42,22 +43,45 @@ interface KindInfo {
   component?: PlacementComponent
 }
 
+/** A string by a key built at run time (the catalog's own keys, see `tolerance.*`). */
+const tx = (key: string, params?: Params) => t(key as Key, params)
+
+/** A value with a title read in the current language when used. */
+const titled = <V extends string>(value: V, key: string): { value: V; title: string } => ({
+  value,
+  get title() {
+    return tx(key)
+  },
+})
+
+/** A kind's info; its titles are read in the current language when used. */
+const kindInfo = (k: ToleranceKind, units: ToleranceUnit[], component?: PlacementComponent): KindInfo => ({
+  get title() {
+    return tx(`tolerance.kinds.${k}.title`)
+  },
+  get short() {
+    return tx(`tolerance.kinds.${k}.short`)
+  },
+  units,
+  component,
+})
+
 export const KINDS: Record<ToleranceKind, KindInfo> = {
-  radius: { title: 'Radius', short: 'Radius', units: ['fringes', 'radius_mm', 'percent'] },
-  irregularity_astigmatism: { title: 'Astig. irregularity', short: 'Irreg. astig.', units: ['fringes'] },
-  irregularity_spherical: { title: 'Sph. irregularity', short: 'Irreg. sph.', units: ['fringes'] },
-  thickness: { title: 'Thickness', short: 'Thickness', units: ['mm'] },
-  decenter_x: { title: 'Surface decenter x', short: 'Decenter x', units: ['mm'] },
-  decenter_y: { title: 'Surface decenter y', short: 'Decenter y', units: ['mm'] },
-  tilt_x: { title: 'Surface tilt x', short: 'Tilt x', units: ['arcmin', 'degrees'] },
-  tilt_y: { title: 'Surface tilt y', short: 'Tilt y', units: ['arcmin', 'degrees'] },
-  element_decenter_x: { title: 'Element decenter x', short: 'Decenter x', units: ['mm'], component: 'decenter_x' },
-  element_decenter_y: { title: 'Element decenter y', short: 'Decenter y', units: ['mm'], component: 'decenter_y' },
-  element_tilt_x: { title: 'Element tilt x', short: 'Tilt x', units: ['arcmin', 'degrees'], component: 'tilt_x' },
-  element_tilt_y: { title: 'Element tilt y', short: 'Tilt y', units: ['arcmin', 'degrees'], component: 'tilt_y' },
-  index: { title: 'Index', short: 'Index', units: ['index'] },
-  abbe: { title: 'Abbe', short: 'Abbe', units: ['percent', 'abbe'] },
-  other: { title: 'Parameter', short: 'Parameter', units: ['native'] },
+  radius: kindInfo('radius', ['fringes', 'radius_mm', 'percent']),
+  irregularity_astigmatism: kindInfo('irregularity_astigmatism', ['fringes']),
+  irregularity_spherical: kindInfo('irregularity_spherical', ['fringes']),
+  thickness: kindInfo('thickness', ['mm']),
+  decenter_x: kindInfo('decenter_x', ['mm']),
+  decenter_y: kindInfo('decenter_y', ['mm']),
+  tilt_x: kindInfo('tilt_x', ['arcmin', 'degrees']),
+  tilt_y: kindInfo('tilt_y', ['arcmin', 'degrees']),
+  element_decenter_x: kindInfo('element_decenter_x', ['mm'], 'decenter_x'),
+  element_decenter_y: kindInfo('element_decenter_y', ['mm'], 'decenter_y'),
+  element_tilt_x: kindInfo('element_tilt_x', ['arcmin', 'degrees'], 'tilt_x'),
+  element_tilt_y: kindInfo('element_tilt_y', ['arcmin', 'degrees'], 'tilt_y'),
+  index: kindInfo('index', ['index']),
+  abbe: kindInfo('abbe', ['percent', 'abbe']),
+  other: kindInfo('other', ['native']),
 }
 
 const ALL_KINDS = Object.keys(KINDS) as ToleranceKind[]
@@ -72,16 +96,23 @@ export const ADDABLE_SURFACE_KINDS: ToleranceKind[] = [
 /** Kinds offered when adding a row on an element. */
 export const ADDABLE_ELEMENT_KINDS: ToleranceKind[] = ['element_decenter_x', 'element_decenter_y', 'element_tilt_x', 'element_tilt_y']
 
+const unitInfo = (u: ToleranceUnit, label: string): { label: string; title: string } => ({
+  label,
+  get title() {
+    return tx(`tolerance.units.${u}`)
+  },
+})
+
 export const UNITS: Record<ToleranceUnit, { label: string; title: string }> = {
-  fringes: { label: 'fr', title: 'Test fringes' },
-  radius_mm: { label: 'mm', title: 'ΔR (mm)' },
-  percent: { label: '%', title: 'Percent' },
-  mm: { label: 'mm', title: 'mm' },
-  arcmin: { label: '′', title: 'Arc minutes' },
-  degrees: { label: '°', title: 'Degrees' },
-  index: { label: 'Δn', title: 'Δn' },
-  abbe: { label: 'ΔV', title: 'ΔV_d' },
-  native: { label: '', title: 'Parameter units' },
+  fringes: unitInfo('fringes', 'fr'),
+  radius_mm: unitInfo('radius_mm', 'mm'),
+  percent: unitInfo('percent', '%'),
+  mm: unitInfo('mm', 'mm'),
+  arcmin: unitInfo('arcmin', '′'),
+  degrees: unitInfo('degrees', '°'),
+  index: unitInfo('index', 'Δn'),
+  abbe: unitInfo('abbe', 'ΔV'),
+  native: unitInfo('native', ''),
 }
 
 // MARK: Distributions
@@ -110,8 +141,8 @@ export function distributionJson(d: Distribution): JsonObject {
 }
 
 export function distributionTitle(d: Distribution): string {
-  if (d.type === 'truncated_normal') return `Normal (limits at ±${short(d.sigmas)} σ)`
-  return d.type === 'end_point' ? 'End points' : 'Uniform'
+  if (d.type === 'truncated_normal') return t('tolerance.distributions.normal', { sigmas: short(d.sigmas) })
+  return d.type === 'end_point' ? t('tolerance.distributions.endPoint') : t('tolerance.distributions.uniform')
 }
 
 export const sameDistribution = (a: Distribution, b: Distribution) => JSON.stringify(distributionJson(a)) === JSON.stringify(distributionJson(b))
@@ -302,9 +333,9 @@ export function rowLabel(r: ToleranceRow, s: System): string {
   if (r.kind === 'other') return paramTitle(s, rowPath(r, s))
   if (isElementKind(r.kind)) {
     const e = elementTitle(r, s)
-    if (e) return `${KINDS[r.kind].title} ${e}`
+    if (e) return t('tolerance.rowLabel', { kind: KINDS[r.kind].title, where: e })
   }
-  return `${KINDS[r.kind].title} ${surfaceLabel(r, s)}`
+  return t('tolerance.rowLabel', { kind: KINDS[r.kind].title, where: surfaceLabel(r, s) })
 }
 
 const unitSuffix = (u: ToleranceUnit) => (UNITS[u].label === '' ? '' : u === 'arcmin' ? UNITS[u].label : ' ' + UNITS[u].label)
@@ -328,13 +359,14 @@ export function unitLabel(r: ToleranceRow, s: System): string {
 export type Limits = { ok: true; minus: number; plus: number } | { ok: false; issue: string }
 
 const fail = (issue: string): Limits => ({ ok: false, issue })
+const issue = (key: string, params?: Params) => fail(tx(`tolerance.issues.${key}`, params))
 
 /** Why an element row's range or pivot cannot be moved, if it cannot. */
 function elementProblem(r: ToleranceRow, s: System, i: number): string | null {
   const l = surfaceIndexOfId(s, r.last ?? r.surface)
-  if (l < 0) return "The element's last surface no longer exists."
-  if (!(i > 0 && l >= i && l < imageIndex(s))) return 'An element moves surfaces between the object and the image, first to last.'
-  if (r.pivot != null && surfaceIndexOfId(s, r.pivot) < 0) return 'The pivot surface no longer exists.'
+  if (l < 0) return t('tolerance.issues.elementLastGone')
+  if (!(i > 0 && l >= i && l < imageIndex(s))) return t('tolerance.issues.elementRange')
+  if (r.pivot != null && surfaceIndexOfId(s, r.pivot) < 0) return t('tolerance.issues.pivotGone')
   const e = obj(s.surfaces[i].element_placement)
   if (e) {
     const eLast = int(e.last)
@@ -342,7 +374,7 @@ function elementProblem(r: ToleranceRow, s: System, i: number): string | null {
     if (eLast !== (r.last ?? r.surface) || ePivot !== r.pivot) {
       const el = eLast != null && surfaceIndexOfId(s, eLast) >= 0 ? String(surfaceIndexOfId(s, eLast)) : '?'
       const pi = surfaceIndexOfId(s, ePivot ?? r.surface)
-      return `The design already moves S${i}–${el} as an element about S${pi >= 0 ? pi : '?'}: use that range and pivot.`
+      return t('tolerance.issues.elementExists', { first: i, last: el, pivot: pi >= 0 ? pi : '?' })
     }
   }
   return null
@@ -352,41 +384,41 @@ function elementProblem(r: ToleranceRow, s: System, i: number): string | null {
  *  cannot be expanded. */
 export function engineLimits(r: ToleranceRow, c: ToleranceContext): Limits {
   const { minus, plus } = r
-  if (!(Number.isFinite(minus) && Number.isFinite(plus) && minus >= 0 && plus >= 0)) return fail('Limits must be zero or positive numbers.')
-  if (!(minus > 0 || plus > 0)) return fail('Both limits are zero.')
+  if (!(Number.isFinite(minus) && Number.isFinite(plus) && minus >= 0 && plus >= 0)) return issue('limitsInvalid')
+  if (!(minus > 0 || plus > 0)) return issue('bothZero')
   const s = c.system
   const i = surfaceIndexOfId(s, r.surface)
-  if (i < 0) return fail('The surface no longer exists.')
+  if (i < 0) return issue('surfaceGone')
   const sf = s.surfaces[i]
   switch (r.kind) {
     case 'radius': {
       const curv = curvature(s, r.surface)
-      if (curv == null) return fail(`Surface ${i} has no radius.`)
+      if (curv == null) return issue('noRadius', { n: i })
       if (r.unit === 'fringes') {
         const h = semiDiameterOf(c, r.surface)
-        if (!(h != null && h > 0)) return fail(`Fringes need the clear aperture of surface ${i}; run the layout or set a semi-diameter.`)
+        if (!(h != null && h > 0)) return issue('fringesNeedAperture', { n: i })
         // N fringes of power: sag change N·λ/2 at the rim, Δc = N·λ/h².
         const k = (c.testWavelengthUm * 1e-3) / (h * h)
         return { ok: true, minus: minus * k, plus: plus * k }
       }
       if (r.unit === 'radius_mm' || r.unit === 'percent') {
-        if (curv === 0) return fail(`Surface ${i} is flat: give its power in fringes.`)
+        if (curv === 0) return issue('flatNeedsFringes', { n: i })
         const R = 1 / curv
         const dm = r.unit === 'percent' ? (Math.abs(R) * minus) / 100 : minus
         const dp = r.unit === 'percent' ? (Math.abs(R) * plus) / 100 : plus
         // R in [R − ΔR−, R + ΔR+]: c in [1/(R + ΔR+), 1/(R − ΔR−)].
         const lo = R + dp, hi = R - dm
-        if (lo === 0 || hi === 0 || lo > 0 !== R > 0 || hi > 0 !== R > 0) return fail(`ΔR must stay below |R| = ${short(Math.abs(R))} mm.`)
+        if (lo === 0 || hi === 0 || lo > 0 !== R > 0 || hi > 0 !== R > 0) return issue('radiusChangeTooBig', { r: short(Math.abs(R)) })
         return { ok: true, minus: curv - 1 / lo, plus: 1 / hi - curv }
       }
-      return fail('Radius tolerances are in fringes, mm or %.')
+      return issue('radiusUnits')
     }
     case 'thickness':
-      if (i >= imageIndex(s)) return fail('The image surface has no thickness.')
+      if (i >= imageIndex(s)) return issue('imageNoThickness')
       return { ok: true, minus, plus }
     case 'decenter_x':
     case 'decenter_y':
-      if (!(i > 0 && i < imageIndex(s))) return fail('Decenter a surface between the object and the image.')
+      if (!(i > 0 && i < imageIndex(s))) return issue('decenterRange')
       return { ok: true, minus, plus }
     case 'tilt_x':
     case 'tilt_y':
@@ -397,25 +429,25 @@ export function engineLimits(r: ToleranceRow, c: ToleranceContext): Limits {
       if (isElementKind(r.kind)) {
         const why = elementProblem(r, s, i)
         if (why) return fail(why)
-      } else if (i === 0 || i >= imageIndex(s)) return fail('Tilt a surface between the object and the image.')
+      } else if (i === 0 || i >= imageIndex(s)) return issue('tiltRange')
       const k = isTiltKind(r.kind) && r.unit === 'arcmin' ? 1 / 60 : 1
       return { ok: true, minus: minus * k, plus: plus * k }
     }
     case 'irregularity_astigmatism':
     case 'irregularity_spherical':
-      if (!(i > 0 && i < imageIndex(s)) || isCoordinateBreak(sf) || sf.shape.type === 'paraxial') return fail(`Surface ${i} has no form to make irregular.`)
+      if (!(i > 0 && i < imageIndex(s)) || isCoordinateBreak(sf) || sf.shape.type === 'paraxial') return issue('noForm', { n: i })
       return { ok: true, minus, plus }
     case 'index':
     case 'abbe': {
       if (!hasGlass(sf.material)) {
-        const name = isAir(sf.material) ? 'air' : materialName(sf.material)
-        return fail(`Surface ${i} is followed by ${name}, not a glass with n_d and V_d.`)
+        const name = isAir(sf.material) ? t('tolerance.issues.air') : materialName(sf.material)
+        return issue('noGlass', { n: i, name })
       }
       let lim: [number, number] = [minus, plus]
       if (r.kind === 'abbe' && r.unit === 'percent') {
         const vd = abbeNumberOf(c, r.surface)
         if (!(vd != null && vd > 0)) {
-          return fail(`The Abbe number of ${materialName(sf.material)} is not known yet: give the limit as ΔV_d, or wait for the glass data.`)
+          return issue('abbeUnknown', { name: materialName(sf.material) })
         }
         lim = [(vd * minus) / 100, (vd * plus) / 100]
       }
@@ -424,13 +456,13 @@ export function engineLimits(r: ToleranceRow, c: ToleranceContext): Limits {
         const o = obj(sf.material.offset) ?? {}
         const [base, cap, what] = r.kind === 'index' ? [nf(o.dn_d ?? 0), MAX_DN_D, 'Δn_d'] : [nf(o.dv_d ?? 0), MAX_DV_D, 'ΔV_d']
         if (Math.abs(base - lim[0]) > cap + 1e-12 || Math.abs(base + lim[1]) > cap + 1e-12) {
-          return fail(`With the melt offset (${short(base)}), ${what} would pass ±${short(cap)}, the engine's limit.`)
+          return issue('meltOffset', { base: short(base), what, cap: short(cap) })
         }
       }
       return { ok: true, minus: lim[0], plus: lim[1] }
     }
     case 'other': {
-      if (!r.param || getParam(s, r.param) == null) return fail('The parameter no longer exists.')
+      if (!r.param || getParam(s, r.param) == null) return issue('paramGone')
       return { ok: true, minus, plus }
     }
   }
@@ -604,14 +636,19 @@ export function lensGroups(s: System): LensGroup[] {
 /** The group a row belongs to: its element (an air space goes with the element
  *  before it), else the surface itself (`Stop S6`). */
 export function groupTitleOf(r: ToleranceRow, s: System, groups: LensGroup[]): string {
+  return groupInfo(r, s, groups).title
+}
+
+/** The group's title and whether it is the air space after an element. */
+function groupInfo(r: ToleranceRow, s: System, groups: LensGroup[]): { title: string; air: boolean } {
   const i = surfaceIndexOfId(s, r.surface)
-  if (i < 0) return 'Other'
+  if (i < 0) return { title: t('tolerance.groups.other'), air: false }
   const g = groups.find((x) => x.surfaces.includes(i))
   if (g) {
-    if (r.kind === 'thickness' && g.surfaces[g.surfaces.length - 1] === i) return `Air after ${g.title}`
-    return g.title
+    if (r.kind === 'thickness' && g.surfaces[g.surfaces.length - 1] === i) return { title: t('tolerance.groups.airAfter', { element: g.title }), air: true }
+    return { title: g.title, air: false }
   }
-  return i === s.stop ? `Stop S${i}` : `S${i}`
+  return { title: i === s.stop ? t('tolerance.groups.stop', { surface: `S${i}` }) : `S${i}`, air: false }
 }
 
 export interface RowGroup {
@@ -627,25 +664,25 @@ export function groupRows(rows: ToleranceRow[], s: System): RowGroup[] {
   const by = new Map<string, ToleranceRow[]>()
   const key = new Map<string, [number, number]>()
   for (const r of rows) {
-    const t = groupTitleOf(r, s, lens)
-    if (!by.has(t)) {
-      order.push(t)
-      by.set(t, [])
+    const { title, air } = groupInfo(r, s, lens)
+    if (!by.has(title)) {
+      order.push(title)
+      by.set(title, [])
     }
-    by.get(t)!.push(r)
+    by.get(title)!.push(r)
     const i = surfaceIndexOfId(s, r.surface)
-    const k: [number, number] = [i < 0 ? Number.MAX_SAFE_INTEGER : i, t.startsWith('Air') ? 1 : 0]
-    const old = key.get(t)
-    if (!old || k[0] < old[0] || (k[0] === old[0] && k[1] < old[1])) key.set(t, k)
+    const k: [number, number] = [i < 0 ? Number.MAX_SAFE_INTEGER : i, air ? 1 : 0]
+    const old = key.get(title)
+    if (!old || k[0] < old[0] || (k[0] === old[0] && k[1] < old[1])) key.set(title, k)
   }
   order.sort((a, b) => {
     const x = key.get(a)!, y = key.get(b)!
     return x[0] - y[0] || x[1] - y[1]
   })
-  return order.map((t) => {
-    const g = lens.find((x) => x.title === t)
+  return order.map((title) => {
+    const g = lens.find((x) => x.title === title)
     const glasses = g && g.glasses.length ? ' · ' + g.glasses.join(', ') : ''
-    return { key: t, title: t + glasses, rows: by.get(t)! }
+    return { key: title, title: title + glasses, rows: by.get(title)! }
   })
 }
 
@@ -676,9 +713,9 @@ export function surfacesFor(k: ToleranceKind, s: System): number[] {
 
 export type Preset = 'commercial' | 'precision' | 'high_precision'
 export const PRESETS: { value: Preset; title: string }[] = [
-  { value: 'commercial', title: 'Commercial' },
-  { value: 'precision', title: 'Precision' },
-  { value: 'high_precision', title: 'High precision' },
+  titled<Preset>('commercial', 'tolerance.presets.commercial'),
+  titled<Preset>('precision', 'tolerance.presets.precision'),
+  titled<Preset>('high_precision', 'tolerance.presets.high_precision'),
 ]
 
 /** The "Default tolerances" generator: a class of manufacture and its values
@@ -835,7 +872,7 @@ export function isBackFocus(p: ParamPath, s: System): boolean {
   return p.param === 'thickness' && img >= 1 && s.surfaces[img - 1].id === p.surface
 }
 
-export const compensatorTitle = (p: ParamPath, s: System) => (isBackFocus(p, s) ? 'Back focus' : paramTitle(s, p))
+export const compensatorTitle = (p: ParamPath, s: System) => (isBackFocus(p, s) ? t('tolerance.compensators.backFocus') : paramTitle(s, p))
 
 export const compensatorJson = (c: Compensator): JsonObject => ({ param: c.param, range: c.range })
 export const compensatorKey = (c: Compensator) => JSON.stringify(compensatorJson(c))
@@ -861,7 +898,7 @@ export function defaultCompensatorRange(p: ParamPath): number | null {
 /** Parameters a compensator can take: the back focus, every air space, the
  *  design's variables and the surfaces' decentres, tilts, thicknesses and
  *  curvatures, each once. */
-export function compensatorCandidates(s: System, variables: ParamPath[]): { group: string; params: ParamPath[] }[] {
+export function compensatorCandidates(s: System, variables: ParamPath[]): { group: string; title: string; params: ParamPath[] }[] {
   const seen = new Set<string>()
   const fresh = (ps: ParamPath[]) => ps.filter((p) => !seen.has(paramKey(p)) && (seen.add(paramKey(p)), true))
   const img = imageIndex(s)
@@ -869,9 +906,9 @@ export function compensatorCandidates(s: System, variables: ParamPath[]): { grou
   const air: ParamPath[] = []
   for (let i = 1; i < Math.max(img - 1, 1); i++) if (isAir(s.surfaces[i].material)) air.push({ param: 'thickness', surface: s.surfaces[i].id })
   const out = [
-    { group: 'Back focus', params: fresh(bf ? [bf.param] : []) },
-    { group: 'Air spaces', params: fresh(air) },
-    { group: 'Design variables', params: fresh(variables) },
+    { group: 'Back focus', title: t('tolerance.compensators.backFocus'), params: fresh(bf ? [bf.param] : []) },
+    { group: 'Air spaces', title: t('tolerance.compensators.airSpaces'), params: fresh(air) },
+    { group: 'Design variables', title: t('tolerance.compensators.designVariables'), params: fresh(variables) },
   ]
   const other: ParamPath[] = []
   for (let i = 1; i < Math.max(img, 1); i++) {
@@ -880,7 +917,7 @@ export function compensatorCandidates(s: System, variables: ParamPath[]): { grou
     const sh = s.surfaces[i].shape.type
     if (sh !== 'plane' && sh !== 'coordinate_break' && sh !== 'paraxial') other.push({ param: 'curvature', surface: id })
   }
-  out.push({ group: 'Surfaces', params: fresh(other.filter((p) => getParam(s, p) != null)) })
+  out.push({ group: 'Surfaces', title: t('tolerance.compensators.surfaces'), params: fresh(other.filter((p) => getParam(s, p) != null)) })
   return out.filter((g) => g.params.length > 0)
 }
 
@@ -888,10 +925,10 @@ export function compensatorCandidates(s: System, variables: ParamPath[]): { grou
 
 export type CriterionKind = 'rms_spot' | 'wavefront' | 'mtf' | 'design_merit'
 export const CRITERION_KINDS: { value: CriterionKind; title: string }[] = [
-  { value: 'rms_spot', title: 'RMS spot radius' },
-  { value: 'wavefront', title: 'RMS wavefront' },
-  { value: 'mtf', title: 'MTF' },
-  { value: 'design_merit', title: 'Optimizer’s merit' },
+  titled<CriterionKind>('rms_spot', 'tolerance.criterion.kinds.rms_spot'),
+  titled<CriterionKind>('wavefront', 'tolerance.criterion.kinds.wavefront'),
+  titled<CriterionKind>('mtf', 'tolerance.criterion.kinds.mtf'),
+  titled<CriterionKind>('design_merit', 'tolerance.criterion.kinds.design_merit'),
 ]
 
 /** The merit editor's generator settings the criterion uses (`DefaultMeritSpec`). */
@@ -1010,12 +1047,16 @@ export function criterionJobSettings(c: Criterion, merit: MeritInfo): JsonObject
 
 /** A one-line description of the design's merit. */
 export function meritInfoSummary(m: MeritInfo): string {
-  if (m.mode === 'custom') return `The Optimize panel's custom merit (${m.operandCount} operands).`
+  if (m.mode === 'custom') return t('tolerance.criterion.customMerit', { count: m.operandCount })
   const d = readCriterionDefaults(m.defaultMerit, defaultCriterion().defaults)
   const type = obj(m.defaultMerit.criterion)?.type
-  let s = type === 'wavefront' ? 'RMS wavefront' : type === 'mtf' ? `MTF ≥ ${short(d.mtfTarget)} at ${d.mtfFrequencies.map(short).join(', ')} cyc/mm` : 'RMS spot radius'
-  s += ` · ${d.rings} rings × ${d.arms} arms`
-  return `The Optimize panel's merit: ${s}.`
+  const s =
+    type === 'wavefront'
+      ? t('tolerance.criterion.summaryWavefront')
+      : type === 'mtf'
+        ? t('tolerance.criterion.summaryMtf', { target: short(d.mtfTarget), frequencies: d.mtfFrequencies.map(short).join(', ') })
+        : t('tolerance.criterion.summarySpot')
+  return t('tolerance.criterion.meritSummary', { summary: t('tolerance.criterion.summarySampling', { summary: s, rings: d.rings, arms: d.arms }) })
 }
 
 /** How criterion values (merits) read: the engine's criterion is a weighted
@@ -1039,8 +1080,8 @@ export function criterionDisplay(c: Criterion, merit: MeritInfo): CriterionDispl
 }
 
 export const DISPLAY = {
-  title: (d: CriterionDisplay) => ({ spot: 'RMS spot', wavefront: 'RMS wavefront', mtf: 'MTF', merit: 'Merit' })[d],
-  unit: (d: CriterionDisplay) => ({ spot: 'µm', wavefront: 'waves', mtf: '', merit: '' })[d],
+  title: (d: CriterionDisplay) => tx(`tolerance.criterion.display.${d}`),
+  unit: (d: CriterionDisplay) => ({ spot: 'µm', wavefront: t('tolerance.criterion.waves'), mtf: '', merit: '' })[d],
   higherIsBetter: (d: CriterionDisplay) => d === 'mtf',
   value(d: CriterionDisplay, c: number): number {
     if (!Number.isFinite(c)) return NaN
@@ -1082,21 +1123,16 @@ export const DISPLAY = {
 }
 
 export function criterionCaption(d: CriterionDisplay): string {
-  switch (d) {
-    case 'spot': return 'RMS spot radius over the chosen fields and wavelengths (root of the weighted mean square), after the compensators.'
-    case 'wavefront': return 'RMS wavefront error in waves over the chosen fields and wavelengths, after the compensators.'
-    case 'mtf': return 'Polychromatic tangential and sagittal MTF, the root-mean-square shortfall from 1 shown as an MTF. Each trial costs as much as an MTF analysis per compensator step: start with a few dozen trials.'
-    case 'merit': return 'The merit value itself (lower is better).'
-  }
+  return tx(`tolerance.criterion.captions.${d}`)
 }
 
 // MARK: The saved set
 
 export type Mode = 'sensitivity' | 'monte_carlo' | 'both'
 export const MODES: { value: Mode; title: string }[] = [
-  { value: 'sensitivity', title: 'Sensitivity' },
-  { value: 'monte_carlo', title: 'Monte Carlo' },
-  { value: 'both', title: 'Both' },
+  titled<Mode>('sensitivity', 'tolerance.modes.sensitivity'),
+  titled<Mode>('monte_carlo', 'tolerance.modes.monte_carlo'),
+  titled<Mode>('both', 'tolerance.modes.both'),
 ]
 
 /** He–Ne, the usual interferometer. */
@@ -1328,32 +1364,32 @@ export function setElement(t: ToleranceSettings, id: string, first: number, last
 }
 
 /** The rows that cannot run, with why. */
-export function settingsIssues(t: ToleranceSettings, c: ToleranceContext): Map<string, string> {
-  const ctx = withWavelength(t, c)
+export function settingsIssues(ts: ToleranceSettings, c: ToleranceContext): Map<string, string> {
+  const ctx = withWavelength(ts, c)
   const out = new Map<string, string>()
-  for (const r of t.rows) {
+  for (const r of ts.rows) {
     const l = engineLimits(r, ctx)
     if (!l.ok) out.set(r.id, l.issue)
   }
   // Element rows that start on one surface share their range and pivot.
   const groups = new Map<number, ToleranceRow[]>()
-  for (const r of t.rows) if (isElementKind(r.kind) && !out.has(r.id)) groups.set(r.surface, [...(groups.get(r.surface) ?? []), r])
+  for (const r of ts.rows) if (isElementKind(r.kind) && !out.has(r.id)) groups.set(r.surface, [...(groups.get(r.surface) ?? []), r])
   for (const [first, group] of groups) {
     const ranges = new Set(group.map((r) => `${r.last ?? first}/${r.pivot ?? first}`))
     if (ranges.size <= 1) continue
     const i = surfaceIndexOfId(ctx.system, first)
-    const at = i >= 0 ? `S${i}` : 'one surface'
-    for (const r of group) out.set(r.id, `Element tolerances starting at ${at} move one group: give them the same last surface and pivot.`)
+    const at = i >= 0 ? `S${i}` : t('tolerance.issues.oneSurface')
+    for (const r of group) out.set(r.id, t('tolerance.issues.elementGroup', { at }))
   }
   return out
 }
 
 /** Why the run cannot start, if it cannot. */
-export function runProblem(t: ToleranceSettings, c: ToleranceContext): string | null {
-  const n = settingsIssues(t, c).size
-  if (n > 0) return n === 1 ? 'Fix the tolerance marked in red first.' : `Fix the ${n} tolerances marked in red first.`
-  if (!t.rows.length) return 'Add a tolerance first.'
-  if (t.mode !== 'sensitivity' && t.trials < 2) return 'Run at least 2 Monte Carlo trials.'
+export function runProblem(ts: ToleranceSettings, c: ToleranceContext): string | null {
+  const n = settingsIssues(ts, c).size
+  if (n > 0) return n === 1 ? t('tolerance.validation.fixOne') : t('tolerance.validation.fixMany', { count: n })
+  if (!ts.rows.length) return t('tolerance.validation.addOne')
+  if (ts.mode !== 'sensitivity' && ts.trials < 2) return t('tolerance.validation.minTrials')
   return null
 }
 
@@ -1648,14 +1684,27 @@ export function readPreview(j: Json | undefined): PreviewBuild | null {
   return { system: s as System, criterion: nf(o.criterion), compensators: nums(o.compensators), perturbations: nums(o.perturbations) }
 }
 
+/** "trial 17, compensated", "Surface decenter y S3 at +0.02 mm" (the title without its "Tolerance: "). */
+export function previewSubject(c: PreviewCase, rows: ToleranceRow[], system: System | null, result: ToleranceResult | null): string {
+  let subject: string
+  if (c.type === 'trial') subject = t('tolerance.preview.trial', { n: c.trial + 1 })
+  else {
+    const row = rows[c.operand]
+    subject =
+      row && system
+        ? t('tolerance.preview.sensitivityAt', { row: rowLabel(row, system), limit: limitText(row, c.positive) })
+        : (result?.sensitivities.find((x) => x.id === c.operand)?.label ?? t('tolerance.preview.operand', { n: c.operand + 1 }))
+  }
+  return result && result.compensators.length ? t('tolerance.preview.compensated', { subject }) : subject
+}
+
 /** "Tolerance: trial 17, compensated", "Tolerance: Surface decenter y S3 at +0.02 mm". */
 export function previewTitle(c: PreviewCase, rows: ToleranceRow[], system: System | null, result: ToleranceResult | null): string {
-  const compensated = result && result.compensators.length ? ', compensated' : ''
-  if (c.type === 'trial') return `Tolerance: trial ${c.trial + 1}${compensated}`
-  const row = rows[c.operand]
-  const what = row && system ? `${rowLabel(row, system)} at ${limitText(row, c.positive)}` : (result?.sensitivities.find((x) => x.id === c.operand)?.label ?? `operand ${c.operand + 1}`)
-  return `Tolerance: ${what}${compensated}`
+  return t('tolerance.preview.title', { subject: previewSubject(c, rows, system, result) })
 }
+
+/** Whether a workspace preview's label is a tolerance preview's (in any language). */
+export const isPreviewLabel = (label: string) => label.startsWith('Tolerance') || label.startsWith(t('tolerance.preview.title', { subject: '' }).trim())
 
 export interface BuildChange {
   id: number
@@ -1742,11 +1791,11 @@ export function timing(a: {
 /** "Monte Carlo 40 / 200", "Sensitivity". */
 export function stageText(stage: string | null | undefined, trialsDone: number | null, trials: number | null): string {
   const s = (stage ?? '').toLowerCase()
-  if (s.includes('monte carlo') || s.includes('trial')) return trialsDone != null && trials != null ? `Monte Carlo ${trialsDone} / ${trials}` : 'Monte Carlo'
-  if (s.includes('sensitiv')) return 'Sensitivity'
-  if (!s || s === 'queued') return 'Starting'
-  if (s === 'stopping') return 'Stopping'
-  return stage!.charAt(0).toUpperCase() + stage!.slice(1)
+  if (s.includes('monte carlo') || s.includes('trial')) return trialsDone != null && trials != null ? t('tolerance.timing.monteCarloProgress', { done: trialsDone, trials }) : t('tolerance.timing.monteCarlo')
+  if (s.includes('sensitiv')) return t('tolerance.timing.sensitivity')
+  if (!s || s === 'queued') return t('tolerance.timing.starting')
+  if (s === 'stopping') return t('tolerance.timing.stopping')
+  return engineText(stage!.charAt(0).toUpperCase() + stage!.slice(1))
 }
 
 /** "0.021 s", "12 ms". */
@@ -1759,23 +1808,23 @@ export function secondsText(s: number): string {
 /** "4 s", "2 min", "1 h 5 min". */
 export function durationText(s: number): string {
   if (!Number.isFinite(s)) return '—'
-  if (s < 1) return 'under a second'
-  if (s < 90) return `${Math.round(s)} s`
+  if (s < 1) return t('tolerance.timing.underSecond')
+  if (s < 90) return t('tolerance.timing.seconds', { n: Math.round(s) })
   const m = Math.round(s / 60)
-  return m < 90 ? `${m} min` : `${Math.floor(m / 60)} h ${m % 60} min`
+  return m < 90 ? t('tolerance.timing.minutes', { n: m }) : t('tolerance.timing.hoursMinutes', { h: Math.floor(m / 60), m: m % 60 })
 }
 
 /** "0:42 elapsed · 0.021 s per trial · about 2 min left". */
-export function timingText(elapsed: number, t: Timing): string {
+export function timingText(elapsed: number, tm: Timing): string {
   const clock = (s: number) => `${Math.floor(s / 60)}:${String(Math.floor(s) % 60).padStart(2, '0')}`
-  const parts = [clock(elapsed) + ' elapsed']
-  if (t.secondsPerTrial != null) parts.push(secondsText(t.secondsPerTrial) + ' per trial')
-  if (t.secondsLeft != null) parts.push(t.secondsLeft < 1 ? 'almost done' : `about ${durationText(t.secondsLeft)} left`)
+  const parts = [t('tolerance.timing.elapsed', { clock: clock(elapsed) })]
+  if (tm.secondsPerTrial != null) parts.push(t('tolerance.timing.perTrial', { time: secondsText(tm.secondsPerTrial) }))
+  if (tm.secondsLeft != null) parts.push(tm.secondsLeft < 1 ? t('tolerance.timing.almostDone') : t('tolerance.timing.left', { duration: durationText(tm.secondsLeft) }))
   return parts.join(' · ')
 }
 
 /** "Last run: 21 ms per trial, so 200 trials take about 4 s." */
-export const estimateText = (spt: number, trials: number) => `Last run: ${secondsText(spt)} per trial, so ${trials} trials take about ${durationText(spt * trials)}.`
+export const estimateText = (spt: number, trials: number) => t('tolerance.timing.estimate', { time: secondsText(spt), trials, duration: durationText(spt * trials) })
 
 // MARK: Export
 
@@ -1791,29 +1840,35 @@ export const sensLimits = (s: Sensitivity, rows: ToleranceRow[]) => (rows[s.id] 
 export function summaryText(r: ToleranceResult, rows: ToleranceRow[], system: System, title: string): string {
   const d = r.display
   const unit = DISPLAY.unit(d)
-  const lines = [`Tolerance analysis: ${title}`, `Criterion: ${DISPLAY.title(d)}${unit ? ` (${unit})` : ''}`]
-  if (r.stopped) lines.push('Stopped early: statistics of the completed evaluations.')
+  const lines = [t('tolerance.report.title', { title }), unit ? t('tolerance.report.criterionUnit', { name: DISPLAY.title(d), unit }) : t('tolerance.report.criterion', { name: DISPLAY.title(d) })]
+  if (r.stopped) lines.push(t('tolerance.report.stopped'))
   if (r.hasSensitivity) {
-    lines.push(`Nominal: ${DISPLAY.format(d, DISPLAY.value(d, r.nominal))}`)
-    lines.push(`Predicted (nominal + RSS): ${DISPLAY.format(d, DISPLAY.value(d, r.predicted))}`)
+    lines.push(t('tolerance.report.nominal', { value: DISPLAY.format(d, DISPLAY.value(d, r.nominal)) }))
+    lines.push(t('tolerance.report.predicted', { value: DISPLAY.format(d, DISPLAY.value(d, r.predicted)) }))
   }
   if (hasMonteCarlo(r)) {
-    lines.push(`Monte Carlo: ${r.trials} trials, seed ${r.seed}${r.failures > 0 ? `, ${r.failures} failed` : ''}`)
-    if (r.secondsPerTrial != null) lines.push(`  ${short(r.secondsPerTrial)} s per trial`)
-    for (const p of r.percentiles) lines.push(`  ${short(p.percentile)} % of builds ${DISPLAY.higherIsBetter(d) ? 'at least' : 'at most'}: ${DISPLAY.format(d, DISPLAY.value(d, p.value))}`)
-    if (r.yieldFraction != null) lines.push(`  Yield: ${pct(r.yieldFraction)}`)
+    lines.push(
+      r.failures > 0
+        ? t('tolerance.report.monteCarloFailed', { trials: r.trials, seed: r.seed, failed: r.failures })
+        : t('tolerance.report.monteCarlo', { trials: r.trials, seed: r.seed }),
+    )
+    if (r.secondsPerTrial != null) lines.push(t('tolerance.report.perTrial', { time: short(r.secondsPerTrial) }))
+    for (const p of r.percentiles) {
+      lines.push(t(DISPLAY.higherIsBetter(d) ? 'tolerance.report.atLeast' : 'tolerance.report.atMost', { p: short(p.percentile), value: DISPLAY.format(d, DISPLAY.value(d, p.value)) }))
+    }
+    if (r.yieldFraction != null) lines.push(t('tolerance.report.yield', { value: pct(r.yieldFraction) }))
   }
   if (r.hasSensitivity) {
-    lines.push('Largest contributors:')
-    for (const s of r.sensitivities.slice(0, 5)) lines.push(`  ${sensLabel(s, rows, system)} ${sensLimits(s, rows)}: ${pct(share(r, s), 0)} of the RSS`)
+    lines.push(t('tolerance.report.contributors'))
+    for (const s of r.sensitivities.slice(0, 5)) lines.push(t('tolerance.report.contributor', { label: sensLabel(s, rows, system), limits: sensLimits(s, rows), share: pct(share(r, s), 0) }))
   }
   r.compensators.forEach((c, j) => {
-    let t = `Compensator ${compensatorTitle(c.param, system)}`
+    let line = t('tolerance.report.compensator', { name: compensatorTitle(c.param, system) })
     const used = compensatorRange(r, j)
-    if (used) t += `: moved ${short(used[0])} to +${short(used[1])} ${paramUnit(c.param)}`
-    if (c.range != null) t += ` of ±${short(c.range)}`
-    if (j < r.compensatorStd.length) t += `; Monte Carlo σ ${short(r.compensatorStd[j])}`
-    lines.push(t)
+    if (used) line += t('tolerance.report.compensatorMoved', { lo: short(used[0]), hi: short(used[1]), unit: paramUnit(c.param) })
+    if (c.range != null) line += t('tolerance.report.compensatorRange', { range: short(c.range) })
+    if (j < r.compensatorStd.length) line += t('tolerance.report.compensatorSigma', { sd: short(r.compensatorStd[j]) })
+    lines.push(line)
   })
   return lines.join('\n')
 }

@@ -1,4 +1,5 @@
 using System.Text.Json.Nodes;
+using MKLight.App.Support;
 
 namespace MKLight.App.Views.Analysis.Results.Readers;
 
@@ -22,7 +23,15 @@ public static class GlassStatuses
         return (GlassStatus.Unknown, Json.Int(Json.At(n, "other")));
     }
 
-    public static string Label(this GlassStatus s) => s.ToString();
+    public static string Label(this GlassStatus s) => s switch
+    {
+        GlassStatus.Preferred => Loc.S("Results_GlassMap_StatusPreferred"),
+        GlassStatus.Standard => Loc.S("Results_GlassMap_StatusStandard"),
+        GlassStatus.Special => Loc.S("Results_GlassMap_StatusSpecial"),
+        GlassStatus.Melt => Loc.S("Results_GlassMap_StatusMelt"),
+        GlassStatus.Obsolete => Loc.S("Results_GlassMap_StatusObsolete"),
+        _ => Loc.S("Results_GlassMap_StatusUnknown"),
+    };
 
     /// <summary>The categorical palette slot (green, blue, violet, yellow, red); -1 neutral grey.</summary>
     public static int Slot(this GlassStatus s) => s switch
@@ -54,14 +63,14 @@ public sealed record GlassPoint(string Id, string? Catalog, string Name, string 
 
     public string DisplayName => Kind switch
     {
-        "model" => Name + " (model)",
+        "model" => Loc.F("Results_GlassMap_ModelName", Name),
         "offset" => $"{Name} {OffsetText}",
         _ => Name,
     };
 
     public string OffsetText => $"Δn {Fmt.Signed(Dnd, 4).Trim()} ΔV {Fmt.Signed(Dvd, 2).Trim()}";
 
-    public string StatusLabel => OtherStatus is int n ? $"Status {n}" : Status.Label();
+    public string StatusLabel => OtherStatus is int n ? Loc.F("Results_GlassMap_StatusOther", n) : Status.Label();
 
     /// <summary>The id of the catalogue point an offset glass is shifted from.</summary>
     public string NominalId => $"{Catalog}/{Name}";

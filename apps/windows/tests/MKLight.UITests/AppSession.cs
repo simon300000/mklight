@@ -59,7 +59,7 @@ sealed class AppSession : IDisposable
             UseShellExecute = false, WorkingDirectory = Path.GetDirectoryName(exe)!,
             RedirectStandardOutput = true, RedirectStandardError = true,
         };
-        foreach (var a in (string[])["--sample", "double_gauss", "--size", "1600x1000", "--theme", "light", .. extra]) info.ArgumentList.Add(a);
+        foreach (var a in (string[])["--sample", "double_gauss", "--size", "1600x1000", "--theme", "light", "--language", "en-US", .. extra]) info.ArgumentList.Add(a);
         info.Environment["MKLIGHT_SUPPORT_DIRECTORY"] = scratch;
         var process = Process.Start(info) ?? throw new InvalidOperationException($"Could not start {exe}");
         process.OutputDataReceived += (_, _) => { };

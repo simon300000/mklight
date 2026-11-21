@@ -8,6 +8,7 @@ import type { AnalysisResult } from '@/engine/types'
 import { Button } from '@/components/ui/button'
 import { Segmented } from '@/components/ui/segmented'
 import { Select } from '@/components/ui/select'
+import { useT } from '@/i18n'
 import { fmt, nf, sig } from '@/model/format'
 import { displayName, inDesign, mapCatalogs, mapStatuses, readGlassInfo, readGlassMap, surfaceLabel, type GlassInfo } from '@/model/glass'
 import type { System } from '@/model/system'
@@ -18,6 +19,7 @@ import { Legend, Swatch } from '../results/Legend'
 import { GlassCard, GlassMapChart, GlassStatusLegend, Sub, type GlassMapPlane } from './GlassMapChart'
 
 export function GlassMapResultView({ result, system }: { result: AnalysisResult; system: System }) {
+  const t = useT()
   const glasses = useMemo(() => readGlassMap(result), [result])
   const [plane, setPlane] = useState<GlassMapPlane>('nd')
   const [selection, setSelection] = useState<string | null>(null)
@@ -27,16 +29,16 @@ export function GlassMapResultView({ result, system }: { result: AnalysisResult;
   const design = glasses.filter(inDesign)
   const selected = selection ? glasses.find((g) => g.id === selection) : null
   const wide = size.w >= 600
-  if (!glasses.length) return <p className="p-4 text-[12px] text-secondary">No glasses are loaded.</p>
+  if (!glasses.length) return <p className="p-4 text-[12px] text-secondary">{t('glass.view.none')}</p>
 
   const selectedCard = selected ? (
     <div className="rounded-lg bg-hover p-2.5" data-testid="glass-selected">
       <GlassCard glass={selected} />
       {selected.surfaces.length > 0 && (
         <div className="mt-2 flex flex-wrap items-center gap-1 text-[11px] text-secondary">
-          Select
+          {t('glass.view.select')}
           {selected.surfaces.map((s) => (
-            <Button key={s} size="sm" title={`Select surface ${s} in the lens table`} onClick={() => useView.getState().select(s)}>
+            <Button key={s} size="sm" title={t('glass.view.selectSurface', { n: s })} onClick={() => useView.getState().select(s)}>
               S{s}
             </Button>
           ))}
@@ -44,24 +46,24 @@ export function GlassMapResultView({ result, system }: { result: AnalysisResult;
       )}
     </div>
   ) : (
-    <p className="text-[11px] text-secondary">Click a glass to inspect it.</p>
+    <p className="text-[11px] text-secondary">{t('glass.view.clickHint')}</p>
   )
 
   return (
     <div ref={box} className="flex h-full min-h-0 flex-col gap-2 overflow-auto p-3" data-testid="glass-map-view">
       <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5">
         <Segmented
-          label="Plane"
+          label={t('glass.map.plane')}
           value={plane}
           onChange={setPlane}
           options={[
-            { value: 'nd', title: <Sub base="n" sub="d" />, help: 'Refractive index n_d against Abbe number V_d' },
-            { value: 'pgf', title: <Sub base="P" sub="g,F" />, help: 'Partial dispersion P_g,F against Abbe number V_d' },
+            { value: 'nd', title: <Sub base="n" sub="d" />, help: t('glass.view.ndHelp') },
+            { value: 'pgf', title: <Sub base="P" sub="g,F" />, help: t('glass.view.pgfHelp') },
           ]}
         />
         {catalogs.length > 1 && (
-          <Select aria-label="Catalog" value={catalog ?? ''} onChange={(e) => setCatalog(e.target.value || null)}>
-            <option value="">All catalogs</option>
+          <Select aria-label={t('glass.view.catalog')} value={catalog ?? ''} onChange={(e) => setCatalog(e.target.value || null)}>
+            <option value="">{t('glass.view.allCatalogs')}</option>
             {catalogs.map((c) => (
               <option key={c} value={c}>
                 {c}
@@ -87,14 +89,14 @@ export function GlassMapResultView({ result, system }: { result: AnalysisResult;
           {selectedCard}
           {wide && design.length > 0 && (
             <div>
-              <div className="mb-1 text-[11px] font-semibold">In the design</div>
+              <div className="mb-1 text-[11px] font-semibold">{t('glass.legend.inDesign')}</div>
               {design.map((g) => (
                 <button
                   key={g.id}
                   type="button"
                   className="flex w-full cursor-default items-center justify-between gap-2 rounded px-1 py-0.5 text-left text-[12px] hover:bg-hover"
                   onClick={() => setSelection(g.id)}
-                  aria-label={`${g.name}, surfaces ${surfaceLabel(g)}`}
+                  aria-label={t('glass.view.designGlass', { name: g.name, surfaces: surfaceLabel(g) })}
                 >
                   <span className="truncate">{displayName(g)}</span>
                   <span className="shrink-0 text-secondary">{surfaceLabel(g)}</span>
@@ -111,8 +113,9 @@ export function GlassMapResultView({ result, system }: { result: AnalysisResult;
 // MARK: Glass data
 
 export function GlassInfoResultView({ result, system }: { result: AnalysisResult; system: System }) {
+  const t = useT()
   const d = useMemo(() => readGlassInfo(result), [result])
-  if (!d) return <p className="p-4 text-[12px] text-secondary">No glass data.</p>
+  if (!d) return <p className="p-4 text-[12px] text-secondary">{t('glass.info.none')}</p>
   const settingsWl = result.runInfo.settings?.spectrum
   const primaryUm =
     settingsWl == null && system.wavelengths?.wavelengths?.[system.wavelengths.primary] ? nf(system.wavelengths.wavelengths[system.wavelengths.primary].um) : null
@@ -122,12 +125,12 @@ export function GlassInfoResultView({ result, system }: { result: AnalysisResult
     .join(', ')
   const range = Number.isFinite(d.minUm) && Number.isFinite(d.maxUm) ? `${fmt(d.minUm, 3)}–${fmt(d.maxUm, 3)} µm` : ''
   const props: [string, string][] = []
-  if (d.formula) props.push(['Dispersion formula', d.formula])
-  if (range) props.push(['Valid range', range])
-  props.push(['Thermo-optic data (dn/dT)', d.hasThermalData ? 'Yes' : 'None'])
-  props.push(['Thermal expansion', d.cte != null ? `${fmt(d.cte * 1e6, 2)} × 10⁻⁶/K` : '–'])
-  if (d.density != null) props.push(['Density', `${fmt(d.density, 3)} g/cm³`])
-  if (d.relativeCost != null) props.push(['Relative cost', fmt(d.relativeCost, 2)])
+  if (d.formula) props.push([t('glass.info.formula'), d.formula])
+  if (range) props.push([t('glass.info.validRange'), range])
+  props.push([t('glass.info.thermoOptic'), d.hasThermalData ? t('common.yes') : t('common.none')])
+  props.push([t('glass.info.expansion'), d.cte != null ? `${fmt(d.cte * 1e6, 2)} × 10⁻⁶/K` : '–'])
+  if (d.density != null) props.push([t('glass.info.density'), `${fmt(d.density, 3)} g/cm³`])
+  if (d.relativeCost != null) props.push([t('glass.card.cost'), fmt(d.relativeCost, 2)])
 
   return (
     <div className="flex h-full flex-col gap-4 overflow-auto p-3 text-[12px]" data-testid="glass-info-view">
@@ -138,27 +141,27 @@ export function GlassInfoResultView({ result, system }: { result: AnalysisResult
           {hasOffset && (
             <span
               className="rounded-full bg-accent-soft px-2 text-[11px] font-medium"
-              title={`Δn_d ${sig(d.dnd, 5)}, ΔV_d ${sig(d.dvd, 4)} from the catalog values`}
+              title={t('glass.info.offsetHelp', { dn: sig(d.dnd, 5), dv: sig(d.dvd, 4) })}
             >
-              Offset
+              {t('glass.card.offset')}
             </span>
           )}
         </div>
         <div className="mt-2 flex flex-wrap gap-x-6 gap-y-2">
-          <Stat label={<Sub base="n" sub="d" />} value={fmt(d.nd, 6)} help="Refractive index at the d line (587.56 nm)" />
-          <Stat label={<Sub base="V" sub="d" />} value={fmt(d.vd, 2)} help="Abbe number (n_d − 1) / (n_F − n_C)" />
-          <Stat label={<Sub base="P" sub="g,F" />} value={fmt(d.pgf, 4)} help="Relative partial dispersion (n_g − n_F) / (n_F − n_C)" />
-          <Stat label={<Sub base="n" sub="e" />} value={fmt(d.ne, 6)} help="Refractive index at the e line (546.07 nm)" />
+          <Stat label={<Sub base="n" sub="d" />} value={fmt(d.nd, 6)} help={t('glass.info.ndHelp')} />
+          <Stat label={<Sub base="V" sub="d" />} value={fmt(d.vd, 2)} help={t('glass.info.vdHelp')} />
+          <Stat label={<Sub base="P" sub="g,F" />} value={fmt(d.pgf, 4)} help={t('glass.info.pgfHelp')} />
+          <Stat label={<Sub base="n" sub="e" />} value={fmt(d.ne, 6)} help={t('glass.info.neHelp')} />
         </div>
         {hasOffset && (
           <p className="mt-1 text-[11px] text-secondary">
-            Catalog <Sub base="n" sub="d" /> {fmt(d.catalogNd, 6)}, <Sub base="V" sub="d" /> {fmt(d.catalogVd, 2)}
+            {t('glass.info.catalog')} <Sub base="n" sub="d" /> {fmt(d.catalogNd, 6)}, <Sub base="V" sub="d" /> {fmt(d.catalogVd, 2)}
           </p>
         )}
       </div>
       <section>
         <h4 className="mb-1 font-semibold">
-          Dispersion {range && <span className="font-normal text-secondary">valid {range}</span>}
+          {t('glass.info.dispersion')} {range && <span className="font-normal text-secondary">{t('glass.info.valid', { range })}</span>}
         </h4>
         {d.curve.length > 1 ? (
           <>
@@ -166,25 +169,25 @@ export function GlassInfoResultView({ result, system }: { result: AnalysisResult
             {d.indices.length > 0 && <WavelengthLegend um={d.indices.map((r) => r.um)} />}
           </>
         ) : (
-          <p className="text-secondary">Set Curve Samples above zero to plot the index over the glass’s range.</p>
+          <p className="text-secondary">{t('glass.info.noCurve')}</p>
         )}
       </section>
       {d.indices.length > 0 && (
         <section>
           <h4 className="mb-1 font-semibold">
-            Indices {env && <span className="font-normal text-secondary">{env}</span>}
+            {t('glass.info.indices')} {env && <span className="font-normal text-secondary">{env}</span>}
           </h4>
           <table className="num select-text">
             <thead className="text-[11px] text-secondary">
               <tr>
                 <th className="pr-4 text-left font-medium">λ (µm)</th>
-                <th className="pr-4 text-right font-medium" title="Index relative to air at the analysis temperature and pressure">
+                <th className="pr-4 text-right font-medium" title={t('glass.info.nHelp')}>
                   n
                 </th>
-                <th className="pr-4 text-right font-medium" title="Index at the catalog's reference conditions">
-                  n cat.
+                <th className="pr-4 text-right font-medium" title={t('glass.info.nCatHelp')}>
+                  {t('glass.info.nCat')}
                 </th>
-                <th className="text-right font-medium" title="Internal absorption coefficient">
+                <th className="text-right font-medium" title={t('glass.info.absorptionHelp')}>
                   α (1/mm)
                 </th>
               </tr>
@@ -198,7 +201,7 @@ export function GlassInfoResultView({ result, system }: { result: AnalysisResult
                       <span className="mr-1.5 inline-block size-2 rounded-full" style={{ background: wavelengthColor(r.um) }} />
                       {fmt(r.um, 4)}
                       {!r.inRange && (
-                        <span className="ml-1 text-warning" title="Outside the glass's data range: the index is extrapolated">
+                        <span className="ml-1 text-warning" title={t('glass.info.extrapolated')}>
                           ⚠
                         </span>
                       )}
@@ -214,7 +217,7 @@ export function GlassInfoResultView({ result, system }: { result: AnalysisResult
         </section>
       )}
       <section>
-        <h4 className="mb-1 font-semibold">Properties</h4>
+        <h4 className="mb-1 font-semibold">{t('glass.info.properties')}</h4>
         <div className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-0.5">
           {props.map(([k, v]) => (
             <div key={k} className="contents">
@@ -253,6 +256,7 @@ function Stat({ label, value, help }: { label: React.ReactNode; value: string; h
 /** n against λ over the glass's range, the system wavelengths marked on the curve
  *  (triangles when outside the data range). */
 function DispersionChart({ info }: { info: GlassInfo }) {
+  const t = useT()
   const [box, size] = useSize<HTMLDivElement>()
   const dark = useDark()
   const ref = useRef<HTMLCanvasElement>(null)
@@ -301,7 +305,7 @@ function DispersionChart({ info }: { info: GlassInfo }) {
     }
     g.textAlign = 'center'
     g.textBaseline = 'alphabetic'
-    g.fillText('Wavelength (µm)', L + pw / 2, H - 3)
+    g.fillText(t('glass.info.wavelengthUm'), L + pw / 2, H - 3)
     g.strokeStyle = cssVar('--label') || '#333'
     g.globalAlpha = 0.75
     g.lineWidth = 1.6
@@ -332,10 +336,10 @@ function DispersionChart({ info }: { info: GlassInfo }) {
       }
       g.fill()
     }
-  }, [info, size.w, dark])
+  }, [info, size.w, dark, t])
   return (
     <div ref={box} className="w-full" style={{ height: H }}>
-      <canvas ref={ref} role="img" aria-label="Refractive index versus wavelength" />
+      <canvas ref={ref} role="img" aria-label={t('glass.info.chartLabel')} />
     </div>
   )
 }

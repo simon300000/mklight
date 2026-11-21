@@ -10,6 +10,7 @@ import { useEffect, useMemo } from 'react'
 import { Button } from '@/components/ui/button'
 import { Segmented } from '@/components/ui/segmented'
 import { Select } from '@/components/ui/select'
+import { engineText, useT } from '@/i18n'
 import { sig } from '@/model/format'
 import {
   ALGORITHMS,
@@ -30,7 +31,7 @@ import {
 import { paramTitle, variablesOf, type ParamPath } from '@/model/params'
 import { radiusFromCurvature, type System } from '@/model/system'
 import { useDocument } from '@/state/document'
-import { combinationOf, useGlassSubstitution } from '@/state/glassSubstitution'
+import { combinationOf, isCandidateLabel, useGlassSubstitution } from '@/state/glassSubstitution'
 import { useJobs } from '@/state/jobs'
 import { useView } from '@/state/view'
 import { useWorkspace } from '@/state/workspace'
@@ -47,6 +48,7 @@ const short = (v: number) => sig(v, 4)
 const WIDE = 'grid-cols-[minmax(0,1.4fr)_minmax(0,1fr)_2rem]'
 
 export function GlassSubstitutionPanel() {
+  const t = useT()
   const system = useDocument((s) => s.project.system)
   const job = useJobs((s) => s.jobs.glass)
   const selected = useGlassSubstitution((s) => s.selected)
@@ -61,13 +63,13 @@ export function GlassSubstitutionPanel() {
   useEffect(
     () => () => {
       const p = useWorkspace.getState().preview
-      if (useJobs.getState().jobs.glass.phase !== 'running' && p && /^Candidate \d+$/.test(p.label)) void useWorkspace.getState().setPreview(null)
+      if (useJobs.getState().jobs.glass.phase !== 'running' && p && isCandidateLabel(p.label)) void useWorkspace.getState().setPreview(null)
     },
     [],
   )
 
   const n = selected.length
-  const subtitle = n === 0 ? 'Snap model glasses to real glasses' : `${n} glass${n === 1 ? '' : 'es'} may change`
+  const subtitle = n === 0 ? t('glass.panel.subtitleSnap') : t('glass.panel.subtitle', { count: n })
   const cannotRun = !snapshot || modelIssues.length > 0 || (n === 0 && !slots.some((s) => s.isModel))
   const g = useGlassSubstitution.getState()
 
@@ -76,17 +78,17 @@ export function GlassSubstitutionPanel() {
   switch (job.phase) {
     case 'setup':
       body = <Setup system={system} slots={slots} />
-      actions = JobActions.start('Find Glasses', () => g.start(), {
+      actions = JobActions.start(t('glass.panel.find'), () => g.start(), {
         disabled: cannotRun,
-        help: cannotRun ? (slots.length ? 'Tick a glass, or use model glasses to snap' : 'The design has no glass to replace') : undefined,
+        help: cannotRun ? (slots.length ? t('glass.panel.tickHelp') : t('glass.panel.noGlass')) : undefined,
       })
       break
     case 'running':
       body = <Running slots={slots} />
       actions = JobActions.running('glass', job, {
-        detail: progress ? `${progress.combinations} combinations` : 'Preparing',
+        detail: progress ? t('glass.panel.combinationsCount', { n: progress.combinations }) : t('glass.panel.preparing'),
         canStop: true,
-        stopHelp: 'End now and keep the combinations ranked so far',
+        stopHelp: t('glass.panel.stopHelp'),
       })
       break
     case 'review':
@@ -94,11 +96,11 @@ export function GlassSubstitutionPanel() {
       body = <Results system={system} applied={job.phase === 'done'} />
       actions =
         job.phase === 'done'
-          ? JobActions.done('glass', 'Back to the glasses and the search settings')
+          ? JobActions.done('glass', t('glass.panel.backHelp'))
           : JobActions.review('glass', () => g.apply(), { applyDisabled: !combinationOf(g.selectedRank)?.system })
       break
     case 'failed':
-      body = <JobFailure title="Glass Substitution Failed" reason={job.error ?? 'The search failed.'} />
+      body = <JobFailure title={t('glass.panel.failed')} reason={job.error ? engineText(job.error) : t('glass.panel.searchFailed')} />
       // Back, and Try Again with the same settings recomputed.
       actions = JobActions.failed('glass', { retryDisabled: cannotRun })
       break
@@ -113,6 +115,7 @@ export function GlassSubstitutionPanel() {
 // MARK: Setup
 
 function Setup({ system, slots }: { system: System; slots: GlassSlot[] }) {
+  const t = useT()
   const s = useGlassSubstitution()
   const merit = useDocument((d) => d.project.merit)
   const rawVariables = useDocument((d) => d.project.variables)
@@ -129,10 +132,10 @@ function Setup({ system, slots }: { system: System; slots: GlassSlot[] }) {
   return (
     <div className="text-[13px]">
       <Section
-        title="Glasses That May Change"
-        footer={s.selected.length === 0 && slots.length > 0 ? 'With no glass ticked, every model glass (n_d, V_d) snaps to its nearest real glasses.' : undefined}
+        title={t('glass.setup.mayChange')}
+        footer={s.selected.length === 0 && slots.length > 0 ? t('glass.setup.mayChangeFooter') : undefined}
       >
-        {slots.length === 0 && <p className="py-1 text-[12px] text-secondary">The design has no glass to replace.</p>}
+        {slots.length === 0 && <p className="py-1 text-[12px] text-secondary">{t('glass.panel.noGlass')}</p>}
         {slots.map((slot) => (
           <div key={slot.id} className="flex items-center gap-2 py-[3px]" data-testid={`glass-slot-${slot.index}`}>
             <label className="flex min-w-0 flex-1 items-center gap-2">
@@ -141,9 +144,9 @@ function Setup({ system, slots }: { system: System; slots: GlassSlot[] }) {
                 <span className="flex min-w-0 items-center gap-1.5">
                   <span className="num text-secondary">S{slot.index}</span>
                   <span className="truncate font-medium">{slot.material}</span>
-                  {slot.isModel && <span className="rounded-full bg-selected px-1.5 text-[10px] text-secondary">model</span>}
+                  {slot.isModel && <span className="rounded-full bg-selected px-1.5 text-[10px] text-secondary">{t('glass.setup.model')}</span>}
                   {slot.offset && (
-                    <span className="num text-[10px] text-secondary" title="Melt offset Δn_d / ΔV_d: a replacement glass is installed without it">
+                    <span className="num text-[10px] text-secondary" title={t('glass.setup.offsetHelp')}>
                       {slot.offset}
                     </span>
                   )}
@@ -157,10 +160,10 @@ function Setup({ system, slots }: { system: System; slots: GlassSlot[] }) {
         {slots.length > 0 && (
           <div className="flex gap-1 pt-1">
             <Button size="sm" variant="ghost" onClick={() => s.set({ selected: slots.map((x) => x.id) })}>
-              All
+              {t('glass.setup.all')}
             </Button>
             <Button size="sm" variant="ghost" onClick={() => s.set({ selected: [] })}>
-              None
+              {t('glass.setup.none')}
             </Button>
           </div>
         )}
@@ -171,12 +174,12 @@ function Setup({ system, slots }: { system: System; slots: GlassSlot[] }) {
           </p>
         )}
       </Section>
-      <Section title="Candidates for Every Lens">
+      <Section title={t('glass.setup.candidatesAll')}>
         <CandidateForm candidates={s.candidates} onChange={s.setCandidates} catalogs={catalogs} />
       </Section>
-      <Section title="Search" footer={ALGORITHMS.find((a) => a.value === s.algorithm)?.detail}>
-        <FormRow label="Search">
-          <Select aria-label="Search" value={s.algorithm} onChange={(e) => s.set({ algorithm: e.target.value as GlassAlgorithm })}>
+      <Section title={t('glass.setup.search')} footer={ALGORITHMS.find((a) => a.value === s.algorithm)?.detail}>
+        <FormRow label={t('glass.setup.search')}>
+          <Select aria-label={t('glass.setup.search')} value={s.algorithm} onChange={(e) => s.set({ algorithm: e.target.value as GlassAlgorithm })}>
             {ALGORITHMS.map((a) => (
               <option key={a.value} value={a.value}>
                 {a.title}
@@ -184,40 +187,40 @@ function Setup({ system, slots }: { system: System; slots: GlassSlot[] }) {
             ))}
           </Select>
         </FormRow>
-        <FormRow className={WIDE} label="Combinations to try">
-          <NumberInput ariaLabel="Combinations to try" value={s.maxCombinations} integer min={1} onCommit={(v) => v != null && s.set({ maxCombinations: v })} />
+        <FormRow className={WIDE} label={t('glass.setup.combinations')}>
+          <NumberInput ariaLabel={t('glass.setup.combinations')} value={s.maxCombinations} integer min={1} onCommit={(v) => v != null && s.set({ maxCombinations: v })} />
         </FormRow>
-        <FormRow className={WIDE} label="Time limit" unit="s">
-          <NumberInput ariaLabel="Time limit" value={s.maxSeconds} nullable placeholder="none" onCommit={(v) => s.set({ maxSeconds: v != null && v > 0 ? v : null })} />
+        <FormRow className={WIDE} label={t('glass.setup.timeLimit')} unit="s">
+          <NumberInput ariaLabel={t('glass.setup.timeLimit')} value={s.maxSeconds} nullable placeholder={t('common.none').toLowerCase()} onCommit={(v) => s.set({ maxSeconds: v != null && v > 0 ? v : null })} />
         </FormRow>
-        <FormRow className={WIDE} label="Shape iterations each" help="Damped least-squares iterations that re-optimize the shape for each glass combination">
-          <NumberInput ariaLabel="Shape iterations each" value={s.localIterations} integer min={1} onCommit={(v) => v != null && s.set({ localIterations: v })} />
+        <FormRow className={WIDE} label={t('glass.setup.iterations')} help={t('glass.setup.iterationsHelp')}>
+          <NumberInput ariaLabel={t('glass.setup.iterations')} value={s.localIterations} integer min={1} onCommit={(v) => v != null && s.set({ localIterations: v })} />
         </FormRow>
-        <FormRow className={WIDE} label="Keep the best">
-          <NumberInput ariaLabel="Keep the best" value={s.topN} integer min={1} onCommit={(v) => v != null && s.set({ topN: v })} />
+        <FormRow className={WIDE} label={t('glass.setup.keepBest')}>
+          <NumberInput ariaLabel={t('glass.setup.keepBest')} value={s.topN} integer min={1} onCommit={(v) => v != null && s.set({ topN: v })} />
         </FormRow>
       </Section>
-      <Section title="Merit">
+      <Section title={t('glass.setup.merit')}>
         <p className="py-1 text-[12px]">{meritSummary(merit)}</p>
         {variables.length === 0 ? (
-          <p className="pb-1 text-[12px] text-secondary">Each combination re-optimizes every curvature and the back focus.</p>
+          <p className="pb-1 text-[12px] text-secondary">{t('glass.setup.meritAuto')}</p>
         ) : (
-          <div className="flex flex-col gap-1 pb-1 text-[12px]" role="radiogroup" aria-label="Shape">
+          <div className="flex flex-col gap-1 pb-1 text-[12px]" role="radiogroup" aria-label={t('glass.setup.shape')}>
             <label className="flex items-center gap-2">
               <input type="radio" checked={s.useDesignVariables} onChange={() => s.set({ useDesignVariables: true })} />
-              Re-optimize the design variables ({free.length})
+              {t('glass.setup.useVariables', { n: free.length })}
             </label>
             <label className="flex items-center gap-2">
               <input type="radio" checked={!s.useDesignVariables} onChange={() => s.set({ useDesignVariables: false })} />
-              Re-optimize every curvature and the back focus
+              {t('glass.setup.useCurvatures')}
             </label>
           </div>
         )}
         <button type="button" className="cursor-default pb-1 text-[12px] text-accent hover:underline" onClick={() => useView.getState().setPage('optimize')}>
-          Edit Merit and Variables…
+          {t('glass.setup.editMerit')}
         </button>
       </Section>
-      {modelIssues.length > 0 && <p className="text-[12px] text-danger">Fix the design’s errors first.</p>}
+      {modelIssues.length > 0 && <p className="text-[12px] text-danger">{t('glass.setup.fixErrors')}</p>}
     </div>
   )
 }
@@ -225,6 +228,7 @@ function Setup({ system, slots }: { system: System; slots: GlassSlot[] }) {
 // MARK: Running
 
 function Running({ slots }: { slots: GlassSlot[] }) {
+  const t = useT()
   const progress = useGlassSubstitution((s) => s.progress)
   const trace = useGlassSubstitution((s) => s.trace)
   const selected = useGlassSubstitution((s) => s.selected)
@@ -234,12 +238,12 @@ function Running({ slots }: { slots: GlassSlot[] }) {
   return (
     <div className="flex flex-col gap-3" data-testid="glass-running">
       <div className="flex gap-6">
-        <BigNumber label="Combinations" value={progress ? `${progress.combinations}${max ? ` / ${max}` : ''}` : '—'} testId="glass-combinations" />
-        <BigNumber label="Best merit" value={progress && Number.isFinite(progress.bestMerit) ? short(progress.bestMerit) : '—'} testId="glass-best-merit" />
+        <BigNumber label={t('glass.running.combinations')} value={progress ? `${progress.combinations}${max ? ` / ${max}` : ''}` : '—'} testId="glass-combinations" />
+        <BigNumber label={t('glass.running.bestMerit')} value={progress && Number.isFinite(progress.bestMerit) ? short(progress.bestMerit) : '—'} testId="glass-best-merit" />
       </div>
       {progress && progress.glasses.length > 0 && (
         <div>
-          <div className="mb-1 text-[11px] text-secondary">Best glasses so far</div>
+          <div className="mb-1 text-[11px] text-secondary">{t('glass.running.bestGlasses')}</div>
           <div className="flex flex-wrap gap-1">
             {progress.glasses.map((name, k) => (
               <span key={k} className="num rounded-full bg-accent-soft px-2 py-[1px] text-[11px]">
@@ -252,7 +256,7 @@ function Running({ slots }: { slots: GlassSlot[] }) {
       )}
       <Sparkline values={trace} log={trace.every((v) => v > 0)} height={110} />
       <p className="text-[11px] text-secondary">
-        Stop keeps the combinations ranked so far. Cancel discards the run. You can close this panel; the search continues.
+        {t('glass.running.help')}
       </p>
     </div>
   )
@@ -261,23 +265,24 @@ function Running({ slots }: { slots: GlassSlot[] }) {
 // MARK: Results
 
 function Results({ system, applied }: { system: System; applied: boolean }) {
+  const t = useT()
   const result = useJobs((s) => s.jobs.glass.result)
   const r = useMemo(() => readSubstitution(result?.json), [result])
   const rank = useGlassSubstitution((s) => s.selectedRank)
   const select = useGlassSubstitution((s) => s.select)
-  if (!r) return <JobFailure title="No Combinations" reason="The engine returned no glass combinations." />
+  if (!r) return <JobFailure title={t('glass.results.noneTitle')} reason={t('glass.results.noneReason')} />
   const chosen = r.ranked.find((c) => c.rank === rank) ?? null
   return (
     <div className="flex flex-col gap-3 text-[13px]" data-testid="glass-results">
       {applied && <AppliedNotice />}
       <p className="text-[12px] text-secondary">{statusText(r, applied)}</p>
       {r.ranked.length === 0 ? (
-        <p className="py-6 text-center text-[12px] text-secondary">No combination could be evaluated.</p>
+        <p className="py-6 text-center text-[12px] text-secondary">{t('glass.results.noneEvaluated')}</p>
       ) : (
         <>
           <div
             role="listbox"
-            aria-label="Ranked glass combinations"
+            aria-label={t('glass.results.ranked')}
             className={cn('max-h-[280px] overflow-y-auto rounded-lg bg-content shadow-[0_0_0_0.5px_var(--separator)]', applied && 'pointer-events-none opacity-70')}
             onKeyDown={(e) => {
               if (e.key !== 'ArrowDown' && e.key !== 'ArrowUp') return
@@ -301,12 +306,13 @@ function Results({ system, applied }: { system: System; applied: boolean }) {
 }
 
 function RankRow({ c, start, selected, odd, onSelect }: { c: GlassCombination; start: number; selected: boolean; odd: boolean; onSelect: () => void }) {
+  const t = useT()
   const gain = start > 0 && Number.isFinite(c.merit) ? 1 - c.merit / start : NaN
   return (
     <div
       role="option"
       aria-selected={selected}
-      aria-label={`Rank ${c.rank}, merit ${short(c.merit)}, glasses ${c.glasses.map((g) => g.name).join(', ')}`}
+      aria-label={t('glass.results.rankLabel', { rank: c.rank, merit: short(c.merit), glasses: c.glasses.map((g) => g.name).join(', ') })}
       data-testid={`glass-rank-${c.rank}`}
       className={cn('flex cursor-default items-baseline gap-2 px-2 py-1.5', selected ? 'bg-accent text-on-accent' : odd && 'bg-hover')}
       onClick={onSelect}
@@ -319,7 +325,7 @@ function RankRow({ c, start, selected, odd, onSelect }: { c: GlassCombination; s
       <span className="shrink-0 text-right">
         <span className="num block">{short(c.merit)}</span>
         {!c.feasible ? (
-          <span className={cn('block text-[10px]', !selected && 'text-warning')}>constraints not met</span>
+          <span className={cn('block text-[10px]', !selected && 'text-warning')}>{t('glass.results.infeasible')}</span>
         ) : (
           Number.isFinite(gain) && (
             <span className={cn('num block text-[10px]', !selected && (c.merit < start ? 'text-success' : 'text-secondary'))}>
@@ -340,6 +346,7 @@ function display(v: number, p: ParamPath | null): number {
 
 /** Before / after: glasses per surface, merit, shape changes and the two layouts. */
 function Comparison({ c, start, system, applied }: { c: GlassCombination; start: number; system: System; applied: boolean }) {
+  const t = useT()
   const before = useGlassSubstitution((s) => s.startGlasses)
   const previewError = useGlassSubstitution((s) => s.previewError)
   const appliedLayouts = useGlassSubstitution((s) => s.appliedLayouts)
@@ -348,17 +355,17 @@ function Comparison({ c, start, system, applied }: { c: GlassCombination; start:
   return (
     <div className="select-text rounded-lg bg-hover p-3" data-testid="glass-comparison">
       <div className="mb-2 flex items-baseline justify-between">
-        <h3 className="text-[14px] font-semibold">Candidate {c.rank}</h3>
-        {!applied && !previewError && <span className="text-[11px] text-accent">Previewed in the window</span>}
+        <h3 className="text-[14px] font-semibold">{t('glass.candidate', { n: c.rank })}</h3>
+        {!applied && !previewError && <span className="text-[11px] text-accent">{t('glass.results.previewed')}</span>}
       </div>
       {previewError && (
         <p className="mb-2 text-[11px] text-warning" role="alert">
-          Cannot preview this candidate: {previewError}
+          {t('glass.results.previewError', { error: previewError })}
         </p>
       )}
       <div className="mb-2 flex gap-6">
-        <BigNumber label="Merit now" value={short(start)} />
-        <BigNumber label="Candidate" value={short(c.merit)} />
+        <BigNumber label={t('glass.results.meritNow')} value={short(start)} />
+        <BigNumber label={t('glass.results.candidate')} value={short(c.merit)} />
       </div>
       <div className="grid grid-cols-[auto_minmax(0,1fr)_auto_minmax(0,1fr)_auto] items-baseline gap-x-2 gap-y-0.5 text-[12px]">
         {c.glasses.map((g) => {
@@ -367,7 +374,7 @@ function Comparison({ c, start, system, applied }: { c: GlassCombination; start:
             <div key={g.surface} className="contents">
               <span className="num text-secondary">S{i >= 0 ? i : '?'}</span>
               <span className="truncate">{before[g.surface] ?? '—'}</span>
-              <ArrowRight className="size-3 text-secondary" aria-label="to" />
+              <ArrowRight className="size-3 text-secondary" aria-label={t('glass.results.to')} />
               <span className="truncate font-semibold">{g.name}</span>
               <span className="num text-[11px] text-secondary">
                 {Number.isFinite(g.nd) ? g.nd.toFixed(4) : '–'} / {Number.isFinite(g.vd) ? g.vd.toFixed(1) : '–'}
@@ -378,7 +385,7 @@ function Comparison({ c, start, system, applied }: { c: GlassCombination; start:
       </div>
       {moved.length > 0 && (
         <details className="mt-2 text-[12px]">
-          <summary className="cursor-default">Shape changes ({moved.length})</summary>
+          <summary className="cursor-default">{t('glass.results.shapeChanges', { n: moved.length })}</summary>
           <div className="mt-1 flex flex-col gap-0.5 text-[11px]">
             {moved.map((ch, k) => (
               <div key={k} className="flex justify-between gap-2">
@@ -401,6 +408,7 @@ function Comparison({ c, start, system, applied }: { c: GlassCombination; start:
 
 /** The design's glass map with the candidate's glasses ringed. */
 function CandidateMap({ c, system }: { c: GlassCombination | null; system: System }) {
+  const t = useT()
   const map = useGlassSubstitution((s) => s.map)
   const plane = useGlassSubstitution((s) => s.mapPlane)
   const set = useGlassSubstitution((s) => s.set)
@@ -415,9 +423,9 @@ function CandidateMap({ c, system }: { c: GlassCombination | null; system: Syste
   return (
     <div data-testid="glass-candidate-map">
       <div className="mb-1 flex items-center justify-between">
-        <h3 className="text-[14px] font-semibold">Glass Map</h3>
+        <h3 className="text-[14px] font-semibold">{t('glass.map.title')}</h3>
         <Segmented
-          label="Plane"
+          label={t('glass.map.plane')}
           value={plane}
           onChange={(v) => set({ mapPlane: v })}
           options={[
@@ -427,7 +435,7 @@ function CandidateMap({ c, system }: { c: GlassCombination | null; system: Syste
         />
       </div>
       <GlassMapChart map={map.result} system={system} highlighted={highlighted} plane={plane} height={260} />
-      <p className="mt-1 text-[11px] text-secondary">Ringed: the candidate’s glasses, labeled with their surfaces.</p>
+      <p className="mt-1 text-[11px] text-secondary">{t('glass.map.ringed')}</p>
     </div>
   )
 }

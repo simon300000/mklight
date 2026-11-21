@@ -1,6 +1,7 @@
 import { AlertTriangle, CheckCircle2, Info, XOctagon } from 'lucide-react'
 import { useView } from '@/state/view'
 import { allIssues, fieldIndexIn, useWorkspace, type Issue } from '@/state/workspace'
+import { engineIssue, parseStructuralIssue, useT } from '@/i18n'
 
 const RANK = { error: 0, warning: 1, info: 2 } as const
 
@@ -21,9 +22,20 @@ export function issueText(i: Issue): string {
   )
 }
 
+/** The issue's text in the current language: by the engine's code (a
+ *  sentence, the English message then as detail), a structural issue of an
+ *  invalid model by its code and path; else the English message with its field
+ *  renumbered. */
+function localIssueText(i: Issue): { text: string; detail?: string } {
+  const s = !i.code ? parseStructuralIssue(i.message) : null
+  if (s) return engineIssue(s.code, { path: s.path }, s.message)
+  return engineIssue(i.code, { surface: i.surface }, issueText(i))
+}
+
 /** The design's validation issues, errors first; choosing one selects the
  *  surface it concerns (or shows the fields) and closes the list. */
 export function IssuesList() {
+  const t = useT()
   const modelIssues = useWorkspace((s) => s.modelIssues)
   const validationIssues = useWorkspace((s) => s.validationIssues)
   const select = useView((s) => s.select)
@@ -35,7 +47,7 @@ export function IssuesList() {
     .map((x) => x.i)
   const errors = issues.filter((i) => i.severity === 'error').length
   const warnings = issues.filter((i) => i.severity === 'warning').length
-  const summary = [errors ? `${errors} error${errors === 1 ? '' : 's'}` : '', warnings ? `${warnings} warning${warnings === 1 ? '' : 's'}` : ''].filter(Boolean).join(', ')
+  const summary = [errors ? t('common.errors', { count: errors }) : '', warnings ? t('common.warnings', { count: warnings }) : ''].filter(Boolean).join(t('app.issues.separator'))
   const choose = (i: Issue) => {
     const f = fieldOf(i)
     if (i.surface != null) {
@@ -48,20 +60,21 @@ export function IssuesList() {
   return (
     <div>
       <div className="mb-2 flex items-baseline justify-between">
-        <h3 className="text-[13px] font-semibold">Issues</h3>
+        <h3 className="text-[13px] font-semibold">{t('app.sidebar.issues')}</h3>
         {summary && <span className="text-[11px] text-secondary">{summary}</span>}
       </div>
       {issues.length === 0 ? (
         <div className="flex flex-col items-center gap-1 py-4 text-center text-secondary">
           <CheckCircle2 className="size-6" />
-          <span className="font-medium text-label">No Issues</span>
-          <span className="text-[12px]">The engine checked the design and found nothing to report.</span>
+          <span className="font-medium text-label">{t('app.issues.none')}</span>
+          <span className="text-[12px]">{t('app.issues.noneDetail')}</span>
         </div>
       ) : (
         <ul className="-mx-1 max-h-[50vh] space-y-0.5 overflow-y-auto" data-testid="issues-list">
           {issues.map((i, k) => {
             const f = fieldOf(i)
-            const target = i.surface != null ? `Select surface ${i.surface}` : f != null ? `Show field ${f + 1}` : undefined
+            const text = localIssueText(i)
+            const target = i.surface != null ? t('app.issues.selectSurface', { n: i.surface }) : f != null ? t('app.issues.showField', { n: f + 1 }) : undefined
             return (
               <li key={k}>
                 <button
@@ -72,19 +85,20 @@ export function IssuesList() {
                   className="flex w-full cursor-default gap-2 rounded-md px-1 py-1 text-left text-[12px] enabled:hover:bg-hover"
                 >
                   {i.severity === 'error' ? (
-                    <XOctagon className="mt-[1px] size-3.5 shrink-0 text-danger" aria-label="error" />
+                    <XOctagon className="mt-[1px] size-3.5 shrink-0 text-danger" aria-label={t('common.error').toLowerCase()} />
                   ) : i.severity === 'warning' ? (
-                    <AlertTriangle className="mt-[1px] size-3.5 shrink-0 text-warning" aria-label="warning" />
+                    <AlertTriangle className="mt-[1px] size-3.5 shrink-0 text-warning" aria-label={t('common.warning').toLowerCase()} />
                   ) : (
-                    <Info className="mt-[1px] size-3.5 shrink-0 text-secondary" aria-label="info" />
+                    <Info className="mt-[1px] size-3.5 shrink-0 text-secondary" aria-label={t('common.info').toLowerCase()} />
                   )}
                   <span className="min-w-0">
-                    <span className="block select-text text-label">{issueText(i)}</span>
+                    <span className="block select-text text-label">{text.text}</span>
+                    {text.detail && <span className="block select-text text-[11px] text-secondary">{text.detail}</span>}
                     {(i.code || i.surface != null || f != null) && (
                       <span className="flex gap-2 text-[11px] text-secondary">
                         {i.code && <span className="font-mono">{i.code}</span>}
-                        {i.surface != null && <span>Surface {i.surface}</span>}
-                        {f != null && <span>Field {f + 1}</span>}
+                        {i.surface != null && <span>{t('common.surfaceN', { n: i.surface })}</span>}
+                        {f != null && <span>{t('common.fieldN', { n: f + 1 })}</span>}
                       </span>
                     )}
                   </span>

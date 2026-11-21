@@ -1,5 +1,6 @@
 using System.Globalization;
 using System.Text.Json.Nodes;
+using MKLight.App.Support;
 using MKLight.App.Views.Analysis.Results.Readers;
 
 namespace MKLight.App.Views.Analysis.RunDetails;
@@ -28,38 +29,38 @@ public static class RunRoute
         switch (gpu ? "gpu" : chosen, Json.Str(d["rule"]))
         {
             case ("gpu", "cost model"):
-                line = "GPU by predicted time" + Predicted(d);
+                line = Loc.F("Analysis_Route_GpuPredicted", Predicted(d));
                 break;
             case ("cpu_reference", "cost model"):
                 // The GPU is chosen only for a clear predicted advantage.
-                line = (Times(d) is (double g, double c) && g < c ? "CPU: the GPU's predicted gain is too small" : "CPU by predicted time") + Predicted(d);
+                line = Loc.F(Times(d) is (double g, double c) && g < c ? "Analysis_Route_CpuPredictedGainSmall" : "Analysis_Route_CpuPredicted", Predicted(d));
                 break;
-            case ("cpu_reference", "accuracy exclusion"): line = "CPU: this analysis is not accurate enough on the GPU"; break;
-            case ("cpu_reference", "no device share"): line = "CPU: the GPU takes no part of a run of this size and shape"; break;
-            case ("cpu_reference", "known failure"): line = "CPU: this request already failed on the GPU"; break;
+            case ("cpu_reference", "accuracy exclusion"): line = Loc.S("Analysis_Route_CpuAccuracy"); break;
+            case ("cpu_reference", "no device share"): line = Loc.S("Analysis_Route_CpuNoShare"); break;
+            case ("cpu_reference", "known failure"): line = Loc.S("Analysis_Route_CpuKnownFailure"); break;
             // The browser GPU's own rules: its measured timings, or the break-even of its prior.
-            case ("gpu", "webgpu calibration"): line = "GPU by measured timings" + Predicted(d); break;
-            case ("cpu_reference", "webgpu calibration"): line = "CPU: the GPU's measured gain is too small" + Predicted(d); break;
-            case ("gpu", "webgpu break-even"): line = "GPU: a run above the measured break-even"; break;
+            case ("gpu", "webgpu calibration"): line = Loc.F("Analysis_Route_GpuMeasured", Predicted(d)); break;
+            case ("cpu_reference", "webgpu calibration"): line = Loc.F("Analysis_Route_CpuMeasuredGainSmall", Predicted(d)); break;
+            case ("gpu", "webgpu break-even"): line = Loc.S("Analysis_Route_GpuAboveBreakEven"); break;
             case ("cpu_reference", "webgpu break-even"):
-                line = Json.Number(d["min_rays"]) is null ? "CPU: no measured GPU gain for this analysis" : "CPU: a run below the measured break-even";
+                line = Loc.S(Json.Number(d["min_rays"]) is null ? "Analysis_Route_CpuNoMeasuredGain" : "Analysis_Route_CpuBelowBreakEven");
                 break;
             case ("gpu", null):
-                line = Json.Str(d["reason"]) switch
+                line = Loc.S(Json.Str(d["reason"]) switch
                 {
-                    "no cost calibration for this device" => "GPU: no timing data for this device, so no prediction",
-                    "no calibration for this analysis" => "GPU: no timing data for this analysis, so no prediction",
-                    _ => "GPU, without a prediction",
-                };
+                    "no cost calibration for this device" => "Analysis_Route_GpuNoDeviceTimings",
+                    "no calibration for this analysis" => "Analysis_Route_GpuNoAnalysisTimings",
+                    _ => "Analysis_Route_GpuNoPrediction",
+                });
                 break;
             default:
                 return null;
         }
-        return Json.Bool(d["repeated"]) == true ? line + "; kept from the first identical request" : line;
+        return Json.Bool(d["repeated"]) == true ? Loc.F("Analysis_Route_Repeated", line) : line;
     }
 
     /// <summary>The tier of a run that was not design tier; null for design tier.</summary>
-    public static string? Tier(bool preview) => preview ? "Preview: cheaper sampling, not for final decisions" : null;
+    public static string? Tier(bool preview) => preview ? Loc.S("Analysis_Route_PreviewTier") : null;
 
     /// <summary>A backend attempt that did not compute the result: what happened ("GPU failed after 12 ms; completed on the CPU").</summary>
     public static string AttemptTitle(string backend, string outcome, double elapsedMs)
@@ -68,16 +69,16 @@ public static class RunRoute
         var took = elapsedMs > 0 ? Duration(elapsedMs) : null;
         return outcome switch
         {
-            "failed" => $"{name} failed" + (took is null ? "" : " after " + took) + "; completed on the CPU",
-            "skipped" => $"{name} not tried: the same input already failed on it",
-            "reference_completion" => $"{name} path completed the result on the CPU" + (took is null ? "" : $" ({took})"),
-            _ => $"{name} not used ({outcome.Replace('_', ' ')})",
+            "failed" => took is null ? Loc.F("Analysis_Route_AttemptFailed", name) : Loc.F("Analysis_Route_AttemptFailedAfter", name, took),
+            "skipped" => Loc.F("Analysis_Route_AttemptSkipped", name),
+            "reference_completion" => took is null ? Loc.F("Analysis_Route_AttemptCompleted", name) : Loc.F("Analysis_Route_AttemptCompletedTook", name, took),
+            _ => Loc.F("Analysis_Route_AttemptNotUsed", name, outcome.Replace('_', ' ')),
         };
     }
 
     /// <summary><c>gpu:metal</c> → <c>GPU</c>; other ids as the engine names them.</summary>
     public static string BackendName(string id) =>
-        id.StartsWith("gpu:", StringComparison.Ordinal) ? "GPU" : id == "cpu_reference" ? "CPU reference" : id;
+        id.StartsWith("gpu:", StringComparison.Ordinal) ? "GPU" : id == "cpu_reference" ? Loc.S("Analysis_Route_CpuReference") : id;
 
     /// <summary>
     /// What was requested, in words: "Automatic", "CPU reference", "GPU (cuda)"; the engine default
@@ -89,12 +90,12 @@ public static class RunRoute
         var asked = isDefault ? requested["default:".Length..] : requested;
         var name = asked switch
         {
-            "auto" => "Automatic",
-            "cpu_reference" => "CPU reference",
-            var s when s.StartsWith("gpu:", StringComparison.Ordinal) => $"GPU ({s[4..]})",
+            "auto" => Loc.S("Analysis_Route_Automatic"),
+            "cpu_reference" => Loc.S("Analysis_Route_CpuReference"),
+            var s when s.StartsWith("gpu:", StringComparison.Ordinal) => Loc.F("Analysis_Route_Gpu", s[4..]),
             var s => s,
         };
-        return isDefault ? name + " (the engine's default)" : name;
+        return isDefault ? Loc.F("Analysis_Route_EngineDefault", name) : name;
     }
 
     /// <summary>
@@ -117,7 +118,7 @@ public static class RunRoute
     }
 
     /// <summary>" (GPU predicted 12 ms, CPU 31 ms)", or nothing without both times.</summary>
-    static string Predicted(JsonObject d) => Times(d) is (double g, double c) ? $" (GPU predicted {Duration(g)}, CPU {Duration(c)})" : "";
+    static string Predicted(JsonObject d) => Times(d) is (double g, double c) ? Loc.F("Analysis_Route_Predicted", Duration(g), Duration(c)) : "";
 
     /// <summary>"12 ms", "1.2 s", with a time that rounds to nothing as "&lt;1 ms".</summary>
     public static string Duration(double ms) =>

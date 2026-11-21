@@ -10,6 +10,7 @@ using MKLight.App.Views.Analysis.RunDetails;
 using MKLight.App.Views.Analysis.Settings;
 using MKLight.App.ViewModels;
 using MKLight.Engine;
+using MKLight.Model;
 
 namespace MKLight.App.Views.Analysis;
 
@@ -56,6 +57,12 @@ public sealed partial class AnalysisPaneView : UserControl
         };
         SizeChanged += (_, e) => { if (e.NewSize.Width != e.PreviousSize.Width) UpdateFold(); };
         PointerPressed += (_, _) => Focused?.Invoke(this);
+        // The cluster's names and the More tooltip (the XAML's English is the fallback).
+        var more = Loc.S("Analysis_Pane_More");
+        ToolTipService.SetToolTip(MoreButton, more);
+        AutomationProperties.SetName(MoreButton, more);
+        AutomationProperties.SetName(AutoButton, Loc.S("Analysis_More_AutoUpdate"));
+        AutomationProperties.SetName(SettingsButton, Loc.S("Analysis_Pane_Settings"));
         BuildAnalysisMenu();
     }
 
@@ -86,16 +93,14 @@ public sealed partial class AnalysisPaneView : UserControl
     {
         var d = _session.Workspace.Descriptor(_pane.Analysis);
         var title = AnalysisCatalog.Title(_pane.Analysis, d?.Title);
-        ToolTipService.SetToolTip(TitleButton, title + (string.IsNullOrEmpty(d?.Description) ? "" : ": " + d.Description)
-            + "\nDrag to move the pane, or out of the window to open it in a window of its own.");
+        ToolTipService.SetToolTip(TitleButton, (string.IsNullOrEmpty(d?.Description) ? title : Loc.F("Analysis_Pane_TitleTip", title, EngineText.T(d.Description)))
+            + "\n" + Loc.S("Analysis_Pane_TitleTipDrag"));
         TitleGlyph.Glyph = AnalysisCatalog.Glyph(_pane.Analysis);
         if (AnalysisMenu.Items.Count == 0) BuildAnalysisMenu();
         AutoButton.IsChecked = _pane.AutoUpdate;
-        ToolTipService.SetToolTip(AutoButton, _pane.AutoUpdate
-            ? "Updates when the design changes. Click to update on request only."
-            : "Updates on request only. Click to update automatically.");
+        ToolTipService.SetToolTip(AutoButton, Loc.S(_pane.AutoUpdate ? "Analysis_Pane_AutoOnTip" : "Analysis_Pane_AutoOffTip"));
         SettingsButton.IsChecked = _pane.ShowsSettings;
-        ToolTipService.SetToolTip(SettingsButton, _pane.ShowsSettings ? "Hide the settings" : "Show the settings of this analysis");
+        ToolTipService.SetToolTip(SettingsButton, Loc.S(_pane.ShowsSettings ? "Analysis_Pane_HideSettingsTip" : "Analysis_Pane_ShowSettingsTip"));
 
         var facts = Facts();
         var stale = _pane.IsStale;
@@ -104,8 +109,8 @@ public sealed partial class AnalysisPaneView : UserControl
         if (running && Fraction > 0) { Progress.IsIndeterminate = false; Progress.Value = Fraction * 100; }
         else Progress.IsIndeterminate = true;
         RunButton.Content = running ? "\uE711" : "\uE72C";
-        ToolTipService.SetToolTip(RunButton, running ? "Cancel this analysis" : "Run again (F5)");
-        AutomationProperties.SetName(RunButton, running ? "Cancel" : "Run");
+        ToolTipService.SetToolTip(RunButton, Loc.S(running ? "Analysis_Pane_CancelTip" : "Analysis_Pane_RunTip"));
+        AutomationProperties.SetName(RunButton, Loc.S(running ? "Common_Cancel" : "Analysis_Placeholder_Run"));
 
         // Content: the result view, rebuilt only when the output or the theme changes.
         var output = _pane.Output;
@@ -151,7 +156,7 @@ public sealed partial class AnalysisPaneView : UserControl
         // Placeholders for panes without a result (or a result that could not be drawn).
         var placeholder = AnalysisPaneChrome.Placeholder(facts, AnalysisCatalog.Glyph(_pane.Analysis));
         if (placeholder.Kind == PanePlaceholderKind.None && _drawError is { } why)
-            placeholder = new(PanePlaceholderKind.Failed, AnalysisPaneChrome.GlyphFailed, "Result Not Drawn", $"This result could not be drawn: {why}", null);
+            placeholder = new(PanePlaceholderKind.Failed, AnalysisPaneChrome.GlyphFailed, Loc.S("Analysis_Placeholder_NotDrawn"), Loc.F("Analysis_Placeholder_NotDrawnText", why), null);
         ShowPlaceholder(placeholder);
         if (placeholder.Kind == PanePlaceholderKind.Unavailable) ResultHost.Content = null;
         PulseHost.Visibility = Footer.Visibility = placeholder.Kind == PanePlaceholderKind.None ? Visibility.Visible : Visibility.Collapsed;
@@ -162,27 +167,27 @@ public sealed partial class AnalysisPaneView : UserControl
         ResultHost.Opacity = showStale ? (running ? 0.55 : 0.3) : 1;
         StaleCard.Visibility = showStale && !running ? Visibility.Visible : Visibility.Collapsed;
         var blocked = _session.Workspace.ModelErrors.Count > 0;
-        StaleTitle.Text = blocked ? "The design has errors" : "Design changed";
-        StaleReason.Text = blocked ? "Fix them to update this result." : "This result is from an earlier design.";
+        StaleTitle.Text = Loc.S(blocked ? "Analysis_Pane_StaleErrors" : "Analysis_Pane_StaleChanged");
+        StaleReason.Text = Loc.S(blocked ? "Analysis_Pane_StaleErrorsReason" : "Analysis_Pane_StaleChangedReason");
         StaleUpdate.Visibility = blocked ? Visibility.Collapsed : Visibility.Visible;
         SetPulse(AnalysisPaneChrome.Pulses(facts, Motion.Enabled));
 
         // A rerun failed over a result: the result stays, the capsule says why.
         var rerunFailed = AnalysisPaneChrome.RerunFailed(facts);
         FailedCapsule.Visibility = rerunFailed ? Visibility.Visible : Visibility.Collapsed;
-        var failure = string.IsNullOrEmpty(facts.Message) ? "The analysis failed." : facts.Message;
-        FailedText.Text = "Update failed · " + failure;
+        var failure = string.IsNullOrEmpty(facts.Message) ? Loc.S("Analysis_Placeholder_FailedText") : EngineText.T(facts.Message);
+        FailedText.Text = Loc.F("Analysis_Pane_FailedCapsule", failure);
         FailedMessage.Text = failure;
-        ToolTipService.SetToolTip(FailedCapsule, rerunFailed ? "The update failed: " + failure + "\nThe result shown is from the last run that succeeded. Click for details." : null);
-        AutomationProperties.SetName(FailedCapsule, "Update failed: " + failure);
+        ToolTipService.SetToolTip(FailedCapsule, rerunFailed ? Loc.F("Analysis_Pane_FailedTip", failure) + "\n" + Loc.S("Analysis_Pane_FailedTipNote") : null);
+        AutomationProperties.SetName(FailedCapsule, Loc.F("Analysis_Pane_FailedName", failure));
 
         // Preview: the result is of a candidate, not of the design.
         var previewing = _session.Workspace.PreviewTitle;
         PreviewBanner.Visibility = previewing is null ? Visibility.Collapsed : Visibility.Visible;
-        PreviewTitleRun.Text = previewing is null ? "" : $"Previewing {previewing}";
+        PreviewTitleRun.Text = previewing is null ? "" : Loc.F("Analysis_Pane_PreviewTitle", previewing);
+        PreviewNoteRun.Text = Loc.S("Analysis_Pane_PreviewNote");
         AutomationProperties.SetName(PreviewBanner, previewing is null ? "" : AnalysisPaneChrome.PreviewLabel(previewing));
-        ToolTipService.SetToolTip(PreviewBanner, previewing is null ? null
-            : $"This pane shows {previewing}, a candidate that is not applied to the design. Apply it or end the preview in the design job.");
+        ToolTipService.SetToolTip(PreviewBanner, previewing is null ? null : Loc.F("Analysis_Pane_PreviewTip", previewing));
 
         // Settings form.
         SettingsHost.Visibility = _pane.ShowsSettings ? Visibility.Visible : Visibility.Collapsed;
@@ -199,11 +204,14 @@ public sealed partial class AnalysisPaneView : UserControl
 
     string StateLine(AnalysisDescriptor? d, PaneFacts facts, bool stale)
     {
-        if (facts.Running) return facts.Stage is { Length: > 0 } s ? s + (Fraction > 0 ? " · " + (Fraction * 100).ToString("0", CultureInfo.InvariantCulture) + "%" : "") : "Computing…";
+        if (facts.Running)
+            return facts.Stage is { Length: > 0 } s
+                ? Fraction > 0 ? Loc.F("Analysis_Pane_StageProgress", EngineText.T(s), (Fraction * 100).ToString("0", CultureInfo.InvariantCulture)) : EngineText.T(s)
+                : Loc.S("Analysis_Placeholder_Computing");
         var summary = d is null ? "" : SettingsSummary.Describe(d.ToJson(), _pane.Settings, _data);
-        if (stale && _pane.Output is not null) return string.IsNullOrEmpty(summary) ? "Out of date" : "Out of date · " + summary;
+        if (stale && _pane.Output is not null) return string.IsNullOrEmpty(summary) ? Loc.S("Analysis_Pane_OutOfDate") : Loc.F("Analysis_Pane_OutOfDateSummary", summary);
         if (!string.IsNullOrEmpty(summary)) return summary;
-        return _pane.AutoUpdate ? "Default settings" : "Default settings · manual";
+        return Loc.S(_pane.AutoUpdate ? "Analysis_Pane_DefaultSettings" : "Analysis_Pane_DefaultSettingsManual");
     }
 
     void ShowPlaceholder(PanePlaceholder p)
@@ -233,7 +241,8 @@ public sealed partial class AnalysisPaneView : UserControl
         MessageText.FontSize = running ? 11 : 12.5;
         MessageAction.Visibility = p.Action is null ? Visibility.Collapsed : Visibility.Visible;
         MessageAction.Content = p.Action;
-        AutomationProperties.SetName(MessagePanel, string.Join(". ", new[] { p.Title, p.Text }.Where(s => s.Length > 0)) is { Length: > 0 } n ? n : "Waiting for the design");
+        AutomationProperties.SetName(MessagePanel, p.Title.Length > 0 && p.Text.Length > 0 ? Loc.F("Analysis_Placeholder_Name", p.Title, p.Text)
+            : p.Title.Length > 0 ? p.Title : p.Text.Length > 0 ? p.Text : Loc.S("Analysis_Placeholder_Waiting"));
     }
 
     void UpdateBackendBadge(AnalysisOutput output)
@@ -247,7 +256,7 @@ public sealed partial class AnalysisPaneView : UserControl
         var warnings = RunDetailsView.Warnings(output);
         BackendWarning.Visibility = warnings.Count > 0 ? Visibility.Visible : Visibility.Collapsed;
         BackendBadge.Visibility = Visibility.Visible;
-        ToolTipService.SetToolTip(BackendBadge, warnings.Count > 0 ? string.Join(Environment.NewLine, warnings) : "Run details");
+        ToolTipService.SetToolTip(BackendBadge, warnings.Count > 0 ? string.Join(Environment.NewLine, warnings) : Loc.S("Analysis_Pane_RunDetailsTip"));
         RunDetailsView.Build(RunDetails, output, _pane, _session);
     }
 
@@ -263,8 +272,8 @@ public sealed partial class AnalysisPaneView : UserControl
             FieldLabels = ResultHosting.FieldLabels(sys),
             WavelengthsUm = sys.Wavelengths.Wavelengths.Select(w => w.Um).ToList(),
             PrimaryWavelength = sys.Wavelengths.Primary,
-            SurfaceLabels = Enumerable.Range(0, n).Select(i => i == 0 ? "Object" : i == n - 1 ? "Image"
-                : i == sys.Stop ? $"{i} (stop)" : i.ToString(CultureInfo.InvariantCulture)).ToList(),
+            SurfaceLabels = Enumerable.Range(0, n).Select(i => i == 0 ? Loc.S("Analysis_Settings_SurfaceObject") : i == n - 1 ? Loc.S("Analysis_Settings_SurfaceImage")
+                : i == sys.Stop ? Loc.F("Analysis_Settings_SurfaceStop", i) : i.ToString(CultureInfo.InvariantCulture)).ToList(),
             HasConfigurations = sys.Configurations.Count > 0,
             LastResult = _data,
         };
@@ -341,7 +350,7 @@ public sealed partial class AnalysisPaneView : UserControl
         var p = new global::Windows.ApplicationModel.DataTransfer.DataPackage();
         p.SetText(MKLight.Model.ModelJson.ToJsonString(json, pretty: true));
         global::Windows.ApplicationModel.DataTransfer.Clipboard.SetContent(p);
-        _session.ShowToast("Copied the result as JSON.");
+        _session.ShowToast(Loc.S("Analysis_Pane_CopiedJson"));
     }
 
     /// <summary>A second pane with this one's analysis and settings, beside it.</summary>

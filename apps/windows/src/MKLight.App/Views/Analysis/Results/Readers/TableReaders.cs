@@ -1,4 +1,6 @@
 using System.Text.Json.Nodes;
+using MKLight.App.Support;
+using MKLight.Model;
 
 namespace MKLight.App.Views.Analysis.Results.Readers;
 
@@ -66,7 +68,13 @@ public sealed class FirstOrderData
     public XyRow? Primary => Rows.FirstOrDefault(r => r.Wavelength == PrimaryWavelength) ?? Rows.FirstOrDefault();
     public IEnumerable<XyRow> Others => Rows.Where(r => r != Primary);
 
-    public string SymmetryTitle => Symmetry switch { "rotational" => "Rotational", "meridional" => "Meridional plane", "none" => "None", _ => Symmetry ?? "" };
+    public string SymmetryTitle => Symmetry switch
+    {
+        "rotational" => Loc.S("Results_FirstOrder_SymmetryRotational"),
+        "meridional" => Loc.S("Results_FirstOrder_SymmetryMeridional"),
+        "none" => Loc.S("Results_FirstOrder_SymmetryNone"),
+        _ => EngineText.T(Symmetry ?? ""),
+    };
 
     /// <summary>"1.5000×".</summary>
     public static string SqueezeText(double v) => double.IsFinite(v) ? Fmt.Fixed(v, 4) + "×" : Fmt.Short(v);
@@ -76,9 +84,12 @@ public sealed class FirstOrderData
 public sealed class SeidelData
 {
     /// <summary>The terms with <c>_</c> subscripts (set as real subscripts), by key.</summary>
-    public static readonly (string Key, string Label)[] Terms =
-        [("s1", "S_I spherical"), ("s2", "S_II coma"), ("s3", "S_III astigmatism"), ("s4", "S_IV Petzval"), ("s5", "S_V distortion")];
-    public static readonly (string Key, string Label)[] Chromatic = [("cl", "C_L axial"), ("ct", "C_T lateral")];
+    public static (string Key, string Label)[] Terms =>
+    [
+        ("s1", Loc.S("Results_Seidel_S1")), ("s2", Loc.S("Results_Seidel_S2")), ("s3", Loc.S("Results_Seidel_S3")),
+        ("s4", Loc.S("Results_Seidel_S4")), ("s5", Loc.S("Results_Seidel_S5")),
+    ];
+    public static (string Key, string Label)[] Chromatic => [("cl", Loc.S("Results_Seidel_Cl")), ("ct", Loc.S("Results_Seidel_Ct"))];
 
     public required IReadOnlyList<string> Surfaces { get; init; }
     /// <summary>Values[key][k]: surface k's coefficient; the last entry is the sum (Σ).</summary>
@@ -185,9 +196,9 @@ public sealed class GlassInfoData
         "sellmeier2" => "Sellmeier 2",
         "herzberger" => "Herzberger",
         "conrady" => "Conrady",
-        "extended" => "Extended",
+        "extended" => Loc.S("Results_Glass_FormulaExtended"),
         "cauchy" => "Cauchy",
-        "tabulated" => "Tabulated",
-        _ => GenericData.Title(key),
+        "tabulated" => Loc.S("Results_Glass_FormulaTabulated"),
+        _ => EngineText.T(GenericData.Title(key)),
     };
 }

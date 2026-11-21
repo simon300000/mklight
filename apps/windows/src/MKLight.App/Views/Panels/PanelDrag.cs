@@ -244,7 +244,7 @@ internal sealed partial class PanelDragController(PanelHost host)
                 });
                 chip.Margin = new Thickness(12);
                 grid.Children.Add(chip);
-                grid.Children.Add(PanelTreeView.Chip(tree, "New Window", "\uE8A7"));
+                grid.Children.Add(PanelTreeView.Chip(tree, Loc.S("Shell_Panels_NewWindow"), "\uE8A7"));
             }
             else grid.Children.Add(chip);
         }
@@ -366,7 +366,8 @@ internal static class PanelHandles
             {
                 if (pane.FindName("TitleButton") is UIElement title) handles.Add(header = title);
             }
-            else if (FindText(view, panel == PanelId.LensData ? "Lens Data" : "Layout") is { } text)
+            // The view's title: in English, or in the UI language (the panel's title).
+            else if ((FindText(view, panel == PanelId.LensData ? "Lens Data" : "Layout") ?? FindText(view, host.Title(panel))) is { } text)
             {
                 header = text;
                 // The title and its glyph (the layout's whole chip).
@@ -385,8 +386,8 @@ internal static class PanelHandles
             {
                 Attach(host, h, panel);
                 ToolTipService.SetToolTip(h, ToolTipService.GetToolTip(h) is string tip
-                    ? tip + "\nDrag to move it, or out of the window to open it in a window of its own."
-                    : "Drag to move, or out of the window to open in a window of its own.");
+                    ? tip + "\n" + Loc.S("Shell_Panels_DragHintAfterTip")
+                    : Loc.S("Shell_Panels_DragHint"));
             }
         }
         Hook();
@@ -431,16 +432,18 @@ internal static class PanelMenus
     {
         var a = host.Arrangement;
         var start = items.Count;
-        if (a.IsDetached(panel)) items.Add(Item("Move to Main Window", "\uE73F", () => host.MoveToMainWindow(panel)));
-        if (!a.IsAloneInWindow(panel)) items.Add(Item("Move to New Window", "\uE8A7", () => host.MoveToNewWindow(panel)));
+        // Tag: the English text, which automation ids are made from (Layout.More.*).
+        if (a.IsDetached(panel)) items.Add(Item(Loc.S("Shell_View_MoveToMainWindow"), "\uE73F", () => host.MoveToMainWindow(panel), "Move to Main Window"));
+        if (!a.IsAloneInWindow(panel)) items.Add(Item(Loc.S("Shell_View_MoveToNewWindow"), "\uE8A7", () => host.MoveToNewWindow(panel), "Move to New Window"));
         if (items.Count > start) items.Add(new MenuFlyoutSeparator());
         items.Add(panel.PaneId is null
-            ? Item($"Hide {host.Title(panel)}", "\uED1A", () => host.Close(panel))
-            : Item("Close Pane", "\uE711", () => host.Close(panel)));
+            ? Item(Loc.S(panel == PanelId.LensData ? "Shell_View_HideLensData" : "Shell_View_HideLayout"), "\uED1A", () => host.Close(panel),
+                panel == PanelId.LensData ? "Hide Lens Data" : "Hide Layout")
+            : Item(Loc.S("Shell_View_ClosePane"), "\uE711", () => host.Close(panel), "Close Pane"));
     }
-    public static MenuFlyoutItem Item(string text, string glyph, Action click)
+    public static MenuFlyoutItem Item(string text, string glyph, Action click, string? english = null)
     {
-        var item = new MenuFlyoutItem { Text = text, Icon = new FontIcon { Glyph = glyph } };
+        var item = new MenuFlyoutItem { Text = text, Tag = english, Icon = new FontIcon { Glyph = glyph } };
         item.Click += (_, _) => click();
         return item;
     }

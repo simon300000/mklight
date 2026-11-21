@@ -1,6 +1,8 @@
 using System.Globalization;
 using System.Text.Json.Nodes;
+using MKLight.App.Support;
 using MKLight.App.Views.Analysis.Results.Readers;
+using MKLight.Model;
 
 namespace MKLight.App.Views.Analysis.Settings;
 
@@ -29,46 +31,50 @@ public static class SettingsSummary
     {
         var label = SettingEntry.Label(f);
         if (f.Name == "spectrum")
-            return SpectrumSetting.Read(v) is { } s ? s.Kind == SpectrumKind.Design ? null : "Spectrum " + s.Summary : "Spectrum custom";
+            return SpectrumSetting.Read(v) is { } s ? s.Kind == SpectrumKind.Design ? null : Loc.F("Analysis_Summary_Spectrum", s.Summary) : Loc.S("Analysis_Summary_SpectrumCustom");
         if (f.Name == "sensor_limit" && analysis == "chief_ray_angle")
-            return SensorLimit.Rows(v).Count switch { 0 => "Sensor limit none", 1 => "Sensor limit 1 point", var n => $"Sensor limit {n.ToString(CultureInfo.InvariantCulture)} points" };
+            return SensorLimit.Rows(v).Count switch
+            {
+                0 => Loc.S("Analysis_Summary_SensorLimitNone"), 1 => Loc.S("Analysis_Summary_SensorLimit_One"), var n => Loc.F("Analysis_Summary_SensorLimit_Many", n),
+            };
         if (f.Name == "source" && Json.Str(Json.At(v, "kind")) is string kind)
-            return "Source " + kind switch
+            return Loc.F("Analysis_Summary_Source", kind switch
             {
                 "pattern" => ImageSourcePatterns.Title(Json.Str(Json.At(v, "pattern")) ?? "grid").ToLowerInvariant(),
-                "buffer" => "image",
+                "buffer" => Loc.S("Analysis_Summary_SourceImage"),
                 _ => Path.GetFileName(Json.Str(Json.At(v, "path")) ?? ""),
-            };
+            });
         if (f.Name == "pupil" && Json.Has(v, "grid"))
-            return Json.Int(Json.At(v, "grid")) is int g && g != 0 ? "Pupil " + g.ToString(CultureInfo.InvariantCulture) : null;
+            return Json.Int(Json.At(v, "grid")) is int g && g != 0 ? Loc.F("Analysis_Summary_Pupil", g) : null;
         if (f.Name == "through_focus" && analysis == "spot_diagram")
-            return v is null ? "Single plane" : SettingEntry.ThroughFocusSummary(v, AutoSettings.Used("through_focus", analysis, last));
-        if (AutoSettings.Sentinel(f.Name, analysis) is AutoSentinel a && AutoSettings.IsAuto(v, a)) return label + " auto";
+            return v is null ? Loc.S("Analysis_Summary_SinglePlane") : SettingEntry.ThroughFocusSummary(v, AutoSettings.Used("through_focus", analysis, last));
+        if (AutoSettings.Sentinel(f.Name, analysis) is AutoSentinel a && AutoSettings.IsAuto(v, a)) return Loc.F("Analysis_Summary_Auto", label);
         if (v is JsonArray { Count: 2 } pair && Json.Number(pair[0]) is double x && Json.Number(pair[1]) is double y)
         {
             var (before, between) = SettingEntry.PairWords(f);
-            return before is not null ? $"{label} ({Fmt.Short(x)}, {Fmt.Short(y)})" : $"{label} {Fmt.Short(x)} {between} {Fmt.Short(y)}";
+            return before is not null ? Loc.F("Analysis_Summary_Point", label, Fmt.Short(x), Fmt.Short(y)) : Loc.F("Analysis_Summary_Pair", label, Fmt.Short(x), between, Fmt.Short(y));
         }
         // Field and wavelength indices are numbered from 1, as everywhere in the app.
         if (f.Name is "field" or "wavelength" or "long_wavelength" or "short_wavelength" && Json.Int(v) is int index)
-            return $"{label} {(index + 1).ToString(CultureInfo.InvariantCulture)}";
-        if (f.VariantOf(v) is SettingsField.Variant variant) return $"{label} {variant.Title.ToLowerInvariant()}";
+            return Loc.F("Analysis_Summary_Value", label, (index + 1).ToString(CultureInfo.InvariantCulture));
+        // A variant's title is engine text.
+        if (f.VariantOf(v) is SettingsField.Variant variant) return Loc.F("Analysis_Summary_Value", label, EngineText.T(variant.Title).ToLowerInvariant());
         string value = Json.Str(Json.At(v, "type")) switch
         {
-            "all" => "all",
-            "primary" => "primary",
+            "all" => Loc.S("Analysis_Summary_All"),
+            "primary" => Loc.S("Analysis_Summary_Primary"),
             "index" => ((Json.Int(Json.At(v, "index")) ?? 0) + 1).ToString(CultureInfo.InvariantCulture),
             "list" => (Json.Arr(Json.At(v, "indices"))?.Count ?? 0).ToString(CultureInfo.InvariantCulture),
             _ => v switch
             {
-                null => "off",
-                JsonObject => "on",
+                null => Loc.S("Analysis_Summary_Off"),
+                JsonObject => Loc.S("Analysis_Summary_On"),
                 JsonArray arr => arr.Count.ToString(CultureInfo.InvariantCulture),
-                _ when Json.Bool(v) is bool b => b ? "on" : "off",
+                _ when Json.Bool(v) is bool b => Loc.S(b ? "Analysis_Summary_On" : "Analysis_Summary_Off"),
                 _ when Json.Str(v) is string s => SettingEntry.Title(s),
                 _ => Json.Display(v),
             },
         };
-        return $"{label} {value}";
+        return Loc.F("Analysis_Summary_Value", label, value);
     }
 }

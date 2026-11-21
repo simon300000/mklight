@@ -6,6 +6,7 @@ using Microsoft.UI.Xaml.Media;
 using MKLight.App.Plotting;
 using MKLight.App.Support;
 using MKLight.App.Views.Analysis.Results.Readers;
+using MKLight.Model;
 using Windows.Foundation;
 
 namespace MKLight.App.Views.Analysis.Results;
@@ -32,7 +33,7 @@ public sealed partial class GenericResultView : UserControl
         }
         catch (Exception e)
         {
-            stack.Children.Add(Text($"This result could not be read: {e.Message}", "SecondaryText"));
+            stack.Children.Add(Text(Loc.F("Results_Generic_ReadError", e.Message), "SecondaryText"));
         }
         Content = new ScrollViewer { Content = stack, HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled };
     }
@@ -40,10 +41,10 @@ public sealed partial class GenericResultView : UserControl
     void Build(StackPanel stack, ResultData data)
     {
         var scalars = GenericData.Scalars(data.Json);
-        if (scalars.Count > 0) stack.Children.Add(Section("Values", KeyValues(scalars)));
-        foreach (var t in GenericData.RecordTables(data.Json)) stack.Children.Add(Section(GenericData.Title(t.Name), Table(t)));
+        if (scalars.Count > 0) stack.Children.Add(Section(Loc.S("Results_Generic_Values"), KeyValues(scalars)));
+        foreach (var t in GenericData.RecordTables(data.Json)) stack.Children.Add(Section(EngineText.T(GenericData.Title(t.Name)), Table(t)));
         foreach (var (name, values) in GenericData.Curves(data.Json))
-            if (Curve(values) is FrameworkElement plot) stack.Children.Add(Section(GenericData.Title(name), plot));
+            if (Curve(values) is FrameworkElement plot) stack.Children.Add(Section(EngineText.T(GenericData.Title(name)), plot));
         foreach (var b in data.Buffers) stack.Children.Add(Section(b.Name, Buffer(b)));
         if (data.Json is not null)
         {
@@ -55,7 +56,7 @@ public sealed partial class GenericResultView : UserControl
                 IsTextSelectionEnabled = true, TextWrapping = TextWrapping.NoWrap,
             };
             var scroll = new ScrollViewer { Content = json, HorizontalScrollBarVisibility = ScrollBarVisibility.Auto, VerticalScrollBarVisibility = ScrollBarVisibility.Disabled };
-            stack.Children.Add(new Expander { Header = "Data", Content = scroll, HorizontalAlignment = HorizontalAlignment.Stretch, HorizontalContentAlignment = HorizontalAlignment.Left });
+            stack.Children.Add(new Expander { Header = Loc.S("Results_Generic_Data"), Content = scroll, HorizontalAlignment = HorizontalAlignment.Stretch, HorizontalContentAlignment = HorizontalAlignment.Left });
         }
     }
 
@@ -96,7 +97,7 @@ public sealed partial class GenericResultView : UserControl
         g.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
         for (var c = 0; c < t.Columns.Count; c++)
         {
-            var h = Text(GenericData.Title(t.Columns[c]), "ColumnHeaderText");
+            var h = Text(EngineText.T(GenericData.Title(t.Columns[c])), "ColumnHeaderText");
             h.FontSize = 11;
             h.HorizontalAlignment = HorizontalAlignment.Right;
             Grid.SetColumn(h, c);
@@ -122,14 +123,14 @@ public sealed partial class GenericResultView : UserControl
             Content = g, HorizontalScrollBarVisibility = ScrollBarVisibility.Auto, VerticalScrollBarVisibility = ScrollBarVisibility.Disabled,
             HorizontalScrollMode = ScrollMode.Auto, VerticalScrollMode = ScrollMode.Disabled,
         });
-        if (t.TotalRows > t.Rows.Count) p.Children.Add(Text(FormattableString.Invariant($"{t.TotalRows - t.Rows.Count} more rows"), "CaptionText"));
+        if (t.TotalRows > t.Rows.Count) p.Children.Add(Text(Loc.F("Results_Generic_MoreRows", t.TotalRows - t.Rows.Count), "CaptionText"));
         return p;
     }
 
-    FrameworkElement? Curve(double[] values, string xTitle = "Index")
+    FrameworkElement? Curve(double[] values)
     {
         if (_plots++ >= MaxPlots) return null;
-        var panel = new ChartPanel { XTitle = xTitle, ZeroLine = false };
+        var panel = new ChartPanel { XTitle = Loc.S("Results_Generic_Index"), ZeroLine = false };
         panel.Series.Add(new ChartSeries(values.Select((_, i) => (double)i).ToArray(), values, SeriesColor.Field(0)));
         return new PlotCanvas((ds, size, style) => LineChartView.DrawPanel(ds, panel, new Rect(0, 0, size.Width, size.Height), style)) { Height = 130 };
     }
@@ -139,8 +140,8 @@ public sealed partial class GenericResultView : UserControl
         var p = new StackPanel { Spacing = 4 };
         var (lo, hi, missing) = GenericData.Range(b);
         var range = double.IsFinite(lo)
-            ? $"[{string.Join(" × ", b.Shape)}] · {Fmt.Short(lo)} … {Fmt.Short(hi)}" + (missing > 0 ? FormattableString.Invariant($" · {missing} without a value") : "")
-            : $"[{string.Join(" × ", b.Shape)}] · no values";
+            ? $"[{string.Join(" × ", b.Shape)}] · {Fmt.Short(lo)} … {Fmt.Short(hi)}" + (missing > 0 ? Loc.F("Results_Generic_Missing", missing) : "")
+            : Loc.F("Results_Generic_NoValues", $"[{string.Join(" × ", b.Shape)}]");
         p.Children.Add(Text(range, "CaptionText"));
         var kind = GenericData.KindOf(b);
         if (kind != GenericData.BufferKind.Summary && _plots++ < MaxPlots)
@@ -149,7 +150,7 @@ public sealed partial class GenericResultView : UserControl
             {
                 case GenericData.BufferKind.Curve:
                     var v = Json.Doubles(b);
-                    var panel = new ChartPanel { XTitle = "Index", ZeroLine = false };
+                    var panel = new ChartPanel { XTitle = Loc.S("Results_Generic_Index"), ZeroLine = false };
                     panel.Series.Add(new ChartSeries(v.Select((_, i) => (double)i).ToArray(), v, SeriesColor.Field(0)));
                     p.Children.Add(new PlotCanvas((ds, size, style) => LineChartView.DrawPanel(ds, panel, new Rect(0, 0, size.Width, size.Height), style)) { Height = 130 });
                     break;

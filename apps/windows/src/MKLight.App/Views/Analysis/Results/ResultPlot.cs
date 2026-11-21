@@ -400,7 +400,7 @@ sealed class MapPlot
         var k = g.Nearest(f.DataX(p.X), f.DataY(p.Y));
         var (x, y) = g.Node(k);
         var v = g.Values[k];
-        var text = double.IsFinite(v) ? format(v) : g.UnitDiskNoData && MapGrid.Excluded(x, y) ? "Outside the field" : "No value";
+        var text = double.IsFinite(v) ? format(v) : g.UnitDiskNoData && MapGrid.Excluded(x, y) ? Loc.S("Results_Map_OutsideField") : Loc.S("Results_Map_NoValue");
         return [(text, true), ($"Hx {Fmt.G3(x)}  Hy {Fmt.G3(y)}".Replace('-', '−'), false)];
     }
 }

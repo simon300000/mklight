@@ -1,4 +1,5 @@
 using System.Globalization;
+using MKLight.Model;
 
 namespace MKLight.App.Support;
 
@@ -75,12 +76,36 @@ public static class AnalysisCatalog
 
     static readonly string[] CategoryOrder = ["geometric", "wave", "model", "radiometry", "polarization", "ghost", "stray", "materials"];
 
-    public static string Title(string name, string? engineTitle = null) =>
-        Titles.TryGetValue(name, out var t) ? t : engineTitle is { Length: > 0 } ? TitleCase(engineTitle) : TitleCase(name.Replace('_', ' '));
+    /// <summary>
+    /// The analysis' title as shown (engine text, through <see cref="EngineText.T"/>): the app's title, else the
+    /// engine's. Without a translation of the app's title, the engine title's translation stands in for it.
+    /// </summary>
+    public static string Title(string name, string? engineTitle = null)
+    {
+        if (Titles.TryGetValue(name, out var t))
+        {
+            var shown = EngineText.T(t);
+            return shown == t && engineTitle is { Length: > 0 } && EngineText.T(engineTitle) is var e && e != engineTitle ? e : shown;
+        }
+        if (engineTitle is { Length: > 0 })
+            return EngineText.T(engineTitle) is var translated && translated != engineTitle ? translated : EngineText.T(TitleCase(engineTitle));
+        return EngineText.T(TitleCase(name.Replace('_', ' ')));
+    }
 
-    public static string ShortTitle(string name) => ShortTitles.TryGetValue(name, out var t) ? t : Title(name);
+    /// <summary>The abbreviated title; without a translation of the abbreviation, the translated full title.</summary>
+    public static string ShortTitle(string name)
+    {
+        if (!ShortTitles.TryGetValue(name, out var t)) return Title(name);
+        var shown = EngineText.T(t);
+        return shown == t && Titles.TryGetValue(name, out var english) && Title(name) is var full && full != english ? full : shown;
+    }
+
     public static string Glyph(string name) => Glyphs.TryGetValue(name, out var g) ? g : "\uE9D2";
-    public static string CategoryTitle(string c) => CategoryTitles.TryGetValue(c, out var t) ? t : TitleCase(c);
+    /// <summary>The category's title: the app's own (resources), else the English title through the engine text catalog.</summary>
+    public static string CategoryTitle(string c) => Loc.Find("Analysis_Category_" + c) ?? EngineText.T(EnglishCategoryTitle(c));
+
+    /// <summary>The category's title in English (menu tags for <c>--do menu=…</c>).</summary>
+    public static string EnglishCategoryTitle(string c) => CategoryTitles.TryGetValue(c, out var t) ? t : TitleCase(c);
 
     /// <summary>Category order: the known categories first, then the rest alphabetically.</summary>
     public static int CategoryRank(string c)

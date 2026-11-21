@@ -4,6 +4,7 @@
 
 import { create } from 'zustand'
 import type { ImportWarning } from '@/engine/types'
+import { t } from '@/i18n'
 
 interface ImportReportState {
   fileName: string | null
@@ -25,6 +26,17 @@ export const useImportReport = create<ImportReportState>()((set) => ({
 }))
 
 export const IMPORT_GROUPS = ['Problems', 'Glasses', 'Surfaces', 'Not Imported', 'Assumed or Approximated'] as const
+
+const GROUP_KEYS = {
+  Problems: 'problems',
+  Glasses: 'glasses',
+  Surfaces: 'surfaces',
+  'Not Imported': 'notImported',
+  'Assumed or Approximated': 'assumed',
+} as const
+
+/** The group's heading in the current language. */
+export const importGroupTitle = (g: (typeof IMPORT_GROUPS)[number]): string => t(`app.importReport.groups.${GROUP_KEYS[g]}`)
 
 export function importGroup(w: ImportWarning): (typeof IMPORT_GROUPS)[number] {
   switch (w.kind ?? w.category) {
