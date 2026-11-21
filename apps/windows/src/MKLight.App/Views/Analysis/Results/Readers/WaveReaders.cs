@@ -1,3 +1,5 @@
+using MKLight.App.Support;
+
 namespace MKLight.App.Views.Analysis.Results.Readers;
 
 /// <summary><c>psf</c>: one PSF image per field (and wavelength when monochromatic), in µm about its grid centre.</summary>
@@ -34,8 +36,8 @@ public sealed class PsfData
             if (grid is null) continue;
             var field = Json.Int(Json.At(p, "field")) ?? 0;
             var wl = Json.Number(Json.At(psf, "wavelength_um"));
-            var title = Fmt.FieldTitle(d, field, Json.At(p, "field_value"))
-                + (wl is double w && double.IsFinite(w) ? " · " + Fmt.Wavelength(w) : " · polychromatic");
+            var fieldTitle = Fmt.FieldTitle(d, field, Json.At(p, "field_value"));
+            var title = wl is double w && double.IsFinite(w) ? fieldTitle + " · " + Fmt.Wavelength(w) : Loc.F("Results_Psf_Polychromatic", fieldTitle);
             var peak = grid.Range()?.Hi ?? double.NaN;
             items.Add(new Item(title, grid, Json.Nf(Json.At(p, "strehl")), h, Json.Int(Json.At(psf, "size")) ?? nx, peak,
                 Json.Str(Json.At(psf, "normalization")) ?? "strehl"));
@@ -107,8 +109,12 @@ public sealed class WavefrontData
 
     public required IReadOnlyList<Map> Maps { get; init; }
 
-    public static readonly string[] FringeNames =
-        ["Piston", "Tilt x", "Tilt y", "Defocus", "Astig 0°", "Astig 45°", "Coma x", "Coma y", "Spherical", "Trefoil x", "Trefoil y"];
+    public static string[] FringeNames =>
+    [
+        Loc.S("Results_Zernike_Piston"), Loc.S("Results_Zernike_TiltX"), Loc.S("Results_Zernike_TiltY"), Loc.S("Results_Zernike_Defocus"),
+        Loc.S("Results_Zernike_Astig0"), Loc.S("Results_Zernike_Astig45"), Loc.S("Results_Zernike_ComaX"), Loc.S("Results_Zernike_ComaY"),
+        Loc.S("Results_Zernike_Spherical"), Loc.S("Results_Zernike_TrefoilX"), Loc.S("Results_Zernike_TrefoilY"),
+    ];
 
     public static WavefrontData? Read(ResultData d)
     {

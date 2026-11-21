@@ -1,5 +1,6 @@
 using System.Globalization;
 using System.Numerics;
+using MKLight.App.Support;
 
 namespace MKLight.App.Plotting;
 
@@ -46,9 +47,9 @@ public static class SparklineGeometry
     public static string Describe(string name, IReadOnlyList<double> values)
     {
         var v = values.Where(double.IsFinite).ToList();
-        if (v.Count == 0) return name + ", no values";
+        if (v.Count == 0) return Loc.F("Results_Sparkline_NoValues", name);
         static string G(double x) => x.ToString("G3", CultureInfo.InvariantCulture).Replace("-", "−");
-        var s = v.Count == 1 ? $"{name}, 1 value {G(v[0])}" : $"{name}, {v.Count} values from {G(v[0])} to {G(v[^1])}";
-        return v.Count > 2 ? s + $", lowest {G(v.Min())}, highest {G(v.Max())}" : s;
+        var s = v.Count == 1 ? Loc.F("Results_Sparkline_OneValue", name, G(v[0])) : Loc.F("Results_Sparkline_Values", name, v.Count, G(v[0]), G(v[^1]));
+        return v.Count > 2 ? Loc.F("Results_Sparkline_Extremes", s, G(v.Min()), G(v.Max())) : s;
     }
 }

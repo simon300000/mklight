@@ -5,6 +5,7 @@ using Microsoft.UI.Xaml.Controls;
 using MKLight.App.Plotting;
 using MKLight.App.Support;
 using MKLight.App.Views.Analysis.Results.Readers;
+using MKLight.Model;
 using Windows.Foundation;
 
 namespace MKLight.App.Views.Analysis.Results;
@@ -31,17 +32,17 @@ public sealed partial class SeidelView : UserControl, IViewOptions
         _canvas = new PlotCanvas(Draw);
         if (d.NotApplicable is not null)
         {
-            Content = Message("Seidel coefficients do not apply", d.NotApplicable);
+            Content = Message(Loc.S("Results_Seidel_NotApplicable"), EngineText.T(d.NotApplicable));
             return;
         }
-        var choice = new Choice("Coefficients", ["Seidel", "Chromatic"]);
+        var choice = new Choice(Loc.S("Results_Seidel_Coefficients"), [Loc.S("Results_Seidel_ChoiceSeidel"), Loc.S("Results_Seidel_ChoiceChromatic")]);
         choice.Changed += k => { _chromatic = k == 1; BuildLegend(); _canvas.Invalidate(); };
         _opts["chromatic"] = () => choice.Select(1);
         var top = new FlowPanel { Spacing = 16, LineSpacing = 4 };
         top.Children.Add(choice);
         if (double.IsFinite(d.PetzvalRadius))
         {
-            var p = Kit.Caption("Petzval radius " + Fmt.Value(d.PetzvalRadius, "mm"));
+            var p = Kit.Caption(Loc.F("Results_Seidel_PetzvalRadius", Fmt.Value(d.PetzvalRadius, "mm")));
             p.VerticalAlignment = VerticalAlignment.Center;
             p.Margin = new Thickness(0, 4, 0, 0);
             top.Children.Add(p);
@@ -56,13 +57,13 @@ public sealed partial class SeidelView : UserControl, IViewOptions
         if (d.Wavefront.Count > 0)
         {
             var wf = new FlowPanel { Spacing = 14, LineSpacing = 3 };
-            wf.Children.Add(Kit.Text("Wavefront (waves)", "CaptionText"));
+            wf.Children.Add(Kit.Text(Loc.S("Results_Seidel_WavefrontWaves"), "CaptionText"));
             foreach (var (k, v) in d.Wavefront)
             {
                 var item = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 4 };
                 item.Children.Add(Kit.Sub(k, 11));
                 item.Children.Add(Kit.Text(Fmt.Signed(v, 4), "NumberText", 11));
-                AutomationProperties.SetName(item, $"{Kit.Spoken(k)} {Fmt.Signed(v, 4)} waves");
+                AutomationProperties.SetName(item, Loc.F("Results_Seidel_WavefrontItemName", Kit.Spoken(k), Fmt.Signed(v, 4)));
                 wf.Children.Add(item);
             }
             Grid.SetRow(wf, 3);
@@ -71,7 +72,7 @@ public sealed partial class SeidelView : UserControl, IViewOptions
         Content = root;
         BuildLegend();
         ActualThemeChanged += (_, _) => BuildLegend();
-        AutomationProperties.SetName(_canvas, "Seidel coefficients per surface and their sum");
+        AutomationProperties.SetName(_canvas, Loc.S("Results_Seidel_ChartName"));
         _canvas.PointerMoved += (_, e) => { _hover = e.GetCurrentPoint(_canvas).Position; _canvas.Invalidate(); };
         _canvas.PointerExited += (_, _) => { _hover = null; _canvas.Invalidate(); };
     }
@@ -106,7 +107,7 @@ public sealed partial class SeidelView : UserControl, IViewOptions
         var n = _d.Surfaces.Count;
         if (n == 0) return;
         var all = terms.SelectMany(t => _d.Values[t.Key]).Where(double.IsFinite);
-        var f = new Frame { XTitle = "Surface", YTitle = "Coefficient (mm)", XTicks = [], ZeroLine = true, YTickSpacing = 45 };
+        var f = new Frame { XTitle = Loc.S("Results_Seidel_AxisSurface"), YTitle = Loc.S("Results_Seidel_AxisCoefficient"), XTicks = [], ZeroLine = true, YTickSpacing = 45 };
         (f.XMin, f.XMax) = (-0.5, n - 0.5);
         (f.YMin, f.YMax) = Ticks.Range(all, 0.06, includeZero: true);
         var r = f.Draw(ds, f.Inside(ds, new Rect(0, 0, size.Width, size.Height)), style);
@@ -135,7 +136,7 @@ public sealed partial class SeidelView : UserControl, IViewOptions
         {
             var k = Math.Clamp((int)Math.Floor((p.X - r.X) / group), 0, n - 1);
             ds.FillRectangle(new Rect(r.X + k * group, r.Y, group, r.Height), style.Title.WithAlpha(0.05));
-            var lines = new List<(string, bool)> { (k == n - 1 ? "Sum (Σ)" : "Surface " + _d.Surfaces[k], true) };
+            var lines = new List<(string, bool)> { (k == n - 1 ? Loc.S("Results_Seidel_Sum") : Loc.F("Results_Seidel_SurfaceNumber", _d.Surfaces[k]), true) };
             lines.AddRange(terms.Select(t => (t.Label.Split(' ')[0] + "  " + Fmt.Short(_d.Values[t.Key][k]), false)));
             MapParts.Card(ds, p.X, p.Y, new Rect(0, 0, size.Width, size.Height), lines, style);
         }

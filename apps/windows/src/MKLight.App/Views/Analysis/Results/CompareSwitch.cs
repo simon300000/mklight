@@ -21,15 +21,15 @@ public sealed partial class CompareSwitch : UserControl
     {
         IsTabStop = false;
         VerticalAlignment = VerticalAlignment.Center;
-        _design = Segment("Design", false);
-        _candidate = Segment("Candidate", true);
+        _design = Segment(Loc.S("Results_Compare_Design"), false);
+        _candidate = Segment(Loc.S("Results_Compare_Candidate"), true);
         var row = new StackPanel { Orientation = Orientation.Horizontal };
         row.Children.Add(_design);
         row.Children.Add(_candidate);
         _box = new Border { Child = row, CornerRadius = new CornerRadius(12), BorderThickness = new Thickness(1), Padding = new Thickness(2) };
         Content = _box;
-        AutomationProperties.SetName(this, "Show the design or the previewed candidate");
-        ToolTipService.SetToolTip(this, "Show the result of the design, or of the candidate being previewed");
+        AutomationProperties.SetName(this, Loc.S("Results_Compare_Name"));
+        ToolTipService.SetToolTip(this, Loc.S("Results_Compare_ToolTip"));
         ActualThemeChanged += (_, _) => Restyle();
         Loaded += (_, _) => Restyle();
     }
@@ -71,7 +71,7 @@ public sealed partial class CompareSwitch : UserControl
         _design.Foreground = new SolidColorBrush(ShowsCandidate ? quiet : ink);
         _candidate.Background = ShowsCandidate ? ThemeLookup.Brush(this, "AccentFillColorDefaultBrush") : clear;
         _candidate.Foreground = ThemeLookup.Brush(this, ShowsCandidate ? "TextOnAccentFillColorPrimaryBrush" : "AccentTextFillColorPrimaryBrush");
-        AutomationProperties.SetItemStatus(_design, ShowsCandidate ? "" : "Selected");
-        AutomationProperties.SetItemStatus(_candidate, ShowsCandidate ? "Selected" : "");
+        AutomationProperties.SetItemStatus(_design, ShowsCandidate ? "" : Loc.S("Results_A11y_Selected"));
+        AutomationProperties.SetItemStatus(_candidate, ShowsCandidate ? Loc.S("Results_A11y_Selected") : "");
     }
 }

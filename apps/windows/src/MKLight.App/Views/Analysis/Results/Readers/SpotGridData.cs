@@ -1,4 +1,5 @@
 using System.Globalization;
+using MKLight.App.Support;
 using System.Text.Json.Nodes;
 
 namespace MKLight.App.Views.Analysis.Results.Readers;
@@ -230,7 +231,7 @@ public sealed class SpotGridData
                     cells.Add(new Cell(c, planes[c], groups, count, rms, geo, count > 0 ? extent : double.IsFinite(geo) ? geo : 0, masks));
                 }
                 var value = index < d.FieldLabels.Count ? d.FieldLabels[index] : Fmt.Field(Json.NfArray(Json.At(f, "field_value")));
-                rows[k] = new Row(index, $"Field {index + 1}", value, cells);
+                rows[k] = new Row(index, Loc.F("Results_Chart_FieldNumber", index + 1), value, cells);
             }
             if (nPoints > DensePoints) Parallel.For(0, list.Count, FieldRow);
             else for (var k = 0; k < list.Count; k++) FieldRow(k);
@@ -339,11 +340,11 @@ public sealed class SpotGridData
     public string ScaleNote(SpotScale scale, SpotGridData? other = null)
     {
         var s = scale == SpotScale.Grid || Rows.Count < 2
-            ? $"Box half-width {Fmt.Length(HalfWidths(SpotScale.Grid, other).FirstOrDefault(double.NaN))}, common to all cells"
-              + (other is null ? "" : " (design and candidate)")
-            : "Box half-width per field, shown by each row";
-        s += Reference == "centroid" ? " · about the centroid" : " · about the chief ray";
-        if (Planes.Count < SampledPlanes) s += $" · {Planes.Count} of {SampledPlanes} planes shown";
+            ? Loc.F(other is null ? "Results_Spot_ScaleCommon" : "Results_Spot_ScaleCommonCompared",
+                Fmt.Length(HalfWidths(SpotScale.Grid, other).FirstOrDefault(double.NaN)))
+            : Loc.S("Results_Spot_ScalePerField");
+        s = Reference == "centroid" ? Loc.F("Results_Spot_AboutCentroid", s) : Loc.F("Results_Spot_AboutChief", s);
+        if (Planes.Count < SampledPlanes) s = Loc.F("Results_Spot_PlanesShown", s, Planes.Count, SampledPlanes);
         return s;
     }
 }

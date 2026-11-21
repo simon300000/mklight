@@ -1,4 +1,5 @@
 using System.Text.Json.Nodes;
+using MKLight.App.Support;
 
 namespace MKLight.App.Views.Analysis.Results.Readers;
 
@@ -192,12 +193,22 @@ public sealed class ImageSimulationData
         _ => null,
     };
 
+    /// <summary>"Siemens star pattern".</summary>
+    static string PatternTitle(string id) => id switch
+    {
+        "grid" => Loc.S("Results_ImageSim_PatternGrid"),
+        "siemens_star" => Loc.S("Results_ImageSim_PatternSiemensStar"),
+        "slanted_edge" => Loc.S("Results_ImageSim_PatternSlantedEdge"),
+        "text_chart" => Loc.S("Results_ImageSim_PatternTextChart"),
+        _ => Loc.S("Results_ImageSim_Pattern"),
+    };
+
     public string SourceTitle => SourceKind switch
     {
-        "buffer" => "Imported image",
-        "path" => Path.GetFileName(Json.Str(Json.At(Source, "path")) ?? "Image"),
-        "pattern" => (LinearImage.Patterns.FirstOrDefault(p => p.Id == (Json.Str(Json.At(Source, "pattern")) ?? "grid")).Title ?? "Pattern") + " pattern",
-        _ => "Source",
+        "buffer" => Loc.S("Results_ImageSim_ImportedImage"),
+        "path" => Path.GetFileName(Json.Str(Json.At(Source, "path")) ?? Loc.S("Results_ImageSim_Image")),
+        "pattern" => PatternTitle(Json.Str(Json.At(Source, "pattern")) ?? "grid"),
+        _ => Loc.S("Results_ImageSim_Source"),
     };
 
     /// <summary>"(0.00, +0.71)": a normalised field point.</summary>

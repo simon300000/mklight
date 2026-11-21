@@ -5,6 +5,7 @@ using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Media;
 using MKLight.App.Support;
 using MKLight.App.Views.Analysis.Results.Readers;
+using MKLight.Model;
 
 namespace MKLight.App.Views.Analysis.Results;
 
@@ -21,8 +22,8 @@ public sealed partial class FirstOrderView : UserControl
     {
         IsTabStop = false;
         var stack = new StackPanel { Spacing = 14, Padding = new Thickness(14, 10, 14, 14) };
-        if (d.IsAnamorphic && d.Primary is { } p) stack.Children.Add(Card("Anamorphic", Anamorphic(d, p)));
-        else if (d.Primary is { Doe.Count: > 0 } q) stack.Children.Add(Card("Diffractive", Doe(q)));
+        if (d.IsAnamorphic && d.Primary is { } p) stack.Children.Add(Card(Loc.S("Results_FirstOrder_Anamorphic"), Anamorphic(d, p)));
+        else if (d.Primary is { Doe.Count: > 0 } q) stack.Children.Add(Card(Loc.S("Results_FirstOrder_Diffractive"), Doe(q)));
 
         // Labels take the room left and wrap in narrow panes (never trimmed); values and units keep theirs.
         var g = new Grid { ColumnSpacing = 6, RowSpacing = 5, HorizontalAlignment = HorizontalAlignment.Left, MaxWidth = 520 };
@@ -33,11 +34,12 @@ public sealed partial class FirstOrderView : UserControl
         {
             var e = d.Entries[i];
             g.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
-            var label = Kit.Text(e.Label, "SecondaryText", 12.5);
+            var shown = EngineText.T(e.Label);
+            var label = Kit.Text(shown, "SecondaryText", 12.5);
             label.Margin = new Thickness(0, 0, 14, 0);
             label.TextWrapping = TextWrapping.WrapWholeWords;
             label.TextTrimming = TextTrimming.None;
-            ToolTipService.SetToolTip(label, FirstOrderHelp.Tooltip(e.Key, e.Label, e.Unit));
+            ToolTipService.SetToolTip(label, FirstOrderHelp.Tooltip(e.Key, shown, e.Unit));
             var value = Kit.Text(Fmt.Short(e.Value), "NumberText", 12.5);
             value.HorizontalAlignment = HorizontalAlignment.Right;
             value.IsTextSelectionEnabled = true;
@@ -45,12 +47,12 @@ public sealed partial class FirstOrderView : UserControl
             Grid.SetRow(label, i); Grid.SetRow(value, i); Grid.SetRow(unit, i);
             Grid.SetColumn(value, 1); Grid.SetColumn(unit, 2);
             g.Children.Add(label); g.Children.Add(value); g.Children.Add(unit);
-            AutomationProperties.SetName(value, $"{e.Label}: {e.Formatted}");
+            AutomationProperties.SetName(value, Loc.F("Results_FirstOrder_ValueName", shown, e.Formatted));
             if (FirstOrderHelp.Description(e.Key) is { } help) AutomationProperties.SetHelpText(value, help);
             value.VerticalAlignment = unit.VerticalAlignment = VerticalAlignment.Top;
         }
         stack.Children.Add(g);
-        if (double.IsFinite(d.WavelengthUm)) stack.Children.Add(Kit.Caption("At λ = " + Fmt.Wavelength(d.WavelengthUm)));
+        if (double.IsFinite(d.WavelengthUm)) stack.Children.Add(Kit.Caption(Loc.F("Results_FirstOrder_AtWavelength", Fmt.Wavelength(d.WavelengthUm))));
         Content = Kit.Page(stack);
         ActualThemeChanged += (_, _) => Theme();
         Loaded += (_, _) => Theme();
@@ -97,14 +99,15 @@ public sealed partial class FirstOrderView : UserControl
         Row(0, "", "x (mm)", "y (mm)");
         Row(1, "EFL", Fmt.Short(p.EflX), Fmt.Short(p.EflY));
         Row(2, "BFL", Fmt.Short(p.BflX), Fmt.Short(p.BflY));
-        Row(3, "Squeeze", FirstOrderData.SqueezeText(p.Squeeze), null, "Squeeze: " + (d.SqueezeDefinition ?? "signed EFL y / EFL x"));
-        if (d.Symmetry is not null) Row(4, "Symmetry", d.SymmetryTitle, null);
+        Row(3, Loc.S("Results_FirstOrder_Squeeze"), FirstOrderData.SqueezeText(p.Squeeze), null,
+            Loc.F("Results_FirstOrder_SqueezeTip", d.SqueezeDefinition is { } def ? EngineText.T(def) : Loc.S("Results_FirstOrder_SqueezeDefault")));
+        if (d.Symmetry is not null) Row(4, Loc.S("Results_FirstOrder_Symmetry"), d.SymmetryTitle, null);
         s.Children.Add(g);
-        s.Children.Add(Kit.Caption("At λ = " + Fmt.Wavelength(p.WavelengthUm) + " (primary)"));
+        s.Children.Add(Kit.Caption(Loc.F("Results_FirstOrder_AtPrimary", Fmt.Wavelength(p.WavelengthUm))));
         if (p.Doe.Count > 0) s.Children.Add(Doe(p));
         foreach (var w in d.Warnings)
         {
-            var t = Kit.Caption("⚠ " + w, wrap: true);
+            var t = Kit.Caption("⚠ " + EngineText.T(w), wrap: true);
             t.Foreground = new SolidColorBrush(global::Windows.UI.Color.FromArgb(255, 0xE0, 0x78, 0x00));
             s.Children.Add(t);
         }
@@ -112,7 +115,7 @@ public sealed partial class FirstOrderView : UserControl
         if (others.Count > 0)
         {
             var t = new Grid { ColumnSpacing = 12, RowSpacing = 3 };
-            string[] heads = ["λ µm", "EFL x", "EFL y", "BFL x", "BFL y", "Squeeze"];
+            string[] heads = ["λ µm", "EFL x", "EFL y", "BFL x", "BFL y", Loc.S("Results_FirstOrder_Squeeze")];
             for (var c = 0; c < heads.Length; c++)
             {
                 t.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
@@ -137,7 +140,7 @@ public sealed partial class FirstOrderView : UserControl
             }
             s.Children.Add(new Expander
             {
-                Header = Kit.Text(Kit.Inv($"Other wavelengths ({others.Count})"), "BodyText", 12), Content = new ScrollViewer { Content = t, HorizontalScrollBarVisibility = ScrollBarVisibility.Auto, VerticalScrollBarVisibility = ScrollBarVisibility.Disabled },
+                Header = Kit.Text(Loc.F("Results_FirstOrder_OtherWavelengths", others.Count), "BodyText", 12), Content = new ScrollViewer { Content = t, HorizontalScrollBarVisibility = ScrollBarVisibility.Auto, VerticalScrollBarVisibility = ScrollBarVisibility.Disabled },
                 HorizontalAlignment = HorizontalAlignment.Stretch, HorizontalContentAlignment = HorizontalAlignment.Left, Padding = new Thickness(8),
             });
         }
@@ -146,8 +149,8 @@ public sealed partial class FirstOrderView : UserControl
 
     static UIElement Doe(FirstOrderData.XyRow p)
     {
-        var g = Kit.KeyValues(p.Doe.Select(d => (Kit.Inv($"DOE power, surface {d.Surface}"), Fmt.Value(d.Power, "1/mm"))), 13);
-        ToolTipService.SetToolTip(g, "Phase power of the trace order (base refractive power excluded)");
+        var g = Kit.KeyValues(p.Doe.Select(d => (Loc.F("Results_FirstOrder_DoePower", d.Surface), Fmt.Value(d.Power, "1/mm"))), 13);
+        ToolTipService.SetToolTip(g, Loc.S("Results_FirstOrder_DoePowerTip"));
         return g;
     }
 }
@@ -175,37 +178,38 @@ public sealed partial class GlassDataView : UserControl
         if (d.Catalog.Length > 0) { var c = Kit.Text(d.Catalog, "SecondaryText"); c.VerticalAlignment = VerticalAlignment.Bottom; c.Margin = new Thickness(0, 0, 0, 2); title.Children.Add(c); }
         if (d.HasOffset)
         {
-            var badge = new Border { CornerRadius = new CornerRadius(9), Padding = new Thickness(8, 1, 8, 2), VerticalAlignment = VerticalAlignment.Center, Child = Kit.Text("Offset", "CaptionText") };
+            var badge = new Border { CornerRadius = new CornerRadius(9), Padding = new Thickness(8, 1, 8, 2), VerticalAlignment = VerticalAlignment.Center, Child = Kit.Text(Loc.S("Results_GlassData_Offset"), "CaptionText") };
             void Paint() => badge.Background = new SolidColorBrush(Kit.Accent(this).WithAlpha(0.18));
             Loaded += (_, _) => Paint();
             ActualThemeChanged += (_, _) => Paint();
-            ToolTipService.SetToolTip(badge, $"Δn_d {Fmt.Signed(d.Dnd, 5).Trim()}, ΔV_d {Fmt.Signed(d.Dvd, 2).Trim()} from the catalog values".Replace("_", ""));
+            ToolTipService.SetToolTip(badge, Loc.F("Results_GlassData_OffsetTip", Fmt.Signed(d.Dnd, 5).Trim(), Fmt.Signed(d.Dvd, 2).Trim()));
             title.Children.Add(badge);
         }
         head.Children.Add(title);
         var stats = new FlowPanel { Spacing = 26, LineSpacing = 10 };
-        stats.Children.Add(Stat("n_d", Fmt.Fixed(d.Nd, 6), "Refractive index at the d line (587.56 nm)"));
-        stats.Children.Add(Stat("V_d", Fmt.Fixed(d.Vd, 2), "Abbe number (nd − 1) / (nF − nC)"));
-        stats.Children.Add(Stat("P_g,F", Fmt.Fixed(d.Pgf, 4), "Relative partial dispersion (ng − nF) / (nF − nC)"));
-        stats.Children.Add(Stat("n_e", Fmt.Fixed(d.Ne, 6), "Refractive index at the e line (546.07 nm)"));
+        stats.Children.Add(Stat("n_d", Fmt.Fixed(d.Nd, 6), Loc.S("Results_GlassData_NdTip")));
+        stats.Children.Add(Stat("V_d", Fmt.Fixed(d.Vd, 2), Loc.S("Results_GlassData_VdTip")));
+        stats.Children.Add(Stat("P_g,F", Fmt.Fixed(d.Pgf, 4), Loc.S("Results_GlassData_PgfTip")));
+        stats.Children.Add(Stat("n_e", Fmt.Fixed(d.Ne, 6), Loc.S("Results_GlassData_NeTip")));
         head.Children.Add(stats);
-        if (d.HasOffset) head.Children.Add(Kit.Sub($"Catalog n_d {Fmt.Fixed(d.CatalogNd, 6)}, V_d {Fmt.Fixed(d.CatalogVd, 2)}", 11));
+        if (d.HasOffset) head.Children.Add(Kit.Sub(Loc.F("Results_GlassData_Catalog", Fmt.Fixed(d.CatalogNd, 6), Fmt.Fixed(d.CatalogVd, 2)), 11));
         _header = Kit.Card(head);
         stack.Children.Add(_header);
 
         // Dispersion.
-        var range = double.IsFinite(d.MinUm) && double.IsFinite(d.MaxUm) ? $"valid {Fmt.Fixed(d.MinUm, 3)}–{Fmt.Fixed(d.MaxUm, 3)} µm" : "";
+        var validRange = double.IsFinite(d.MinUm) && double.IsFinite(d.MaxUm) ? $"{Fmt.Fixed(d.MinUm, 3)}–{Fmt.Fixed(d.MaxUm, 3)} µm" : "";
+        var range = validRange.Length > 0 ? Loc.F("Results_GlassData_Valid", validRange) : "";
         if (d.Curve.Count > 1)
         {
             var chart = new PlotCanvas((ds, size, style) => DrawDispersion(ds, size, style, d)) { Height = 220 };
-            AutomationProperties.SetName(chart, "Refractive index versus wavelength");
+            AutomationProperties.SetName(chart, Loc.S("Results_GlassData_ChartName"));
             var body = new StackPanel { Spacing = 6 };
             body.Children.Add(chart);
             if (d.Indices.Count > 0)
                 body.Children.Add(new Legend(d.Indices.Select(i => new LegendEntry(Fmt.Wavelength(i.Um), SeriesColor.Wavelength(i.Um), LegendMark.Dot)).ToList()));
-            stack.Children.Add(Section("Dispersion", range, body));
+            stack.Children.Add(Section(Loc.S("Results_GlassData_Dispersion"), range, body));
         }
-        else stack.Children.Add(Section("Dispersion", range, Kit.Caption("Set Curve Samples above zero to plot the index over the glass's range.", wrap: true)));
+        else stack.Children.Add(Section(Loc.S("Results_GlassData_Dispersion"), range, Kit.Caption(Loc.S("Results_GlassData_NoCurve"), wrap: true)));
 
         // Indices.
         if (d.Indices.Count > 0)
@@ -215,21 +219,21 @@ public sealed partial class GlassDataView : UserControl
                 double.IsFinite(d.TemperatureC) ? Fmt.Fixed(d.TemperatureC, 1) + " °C" : null,
                 double.IsFinite(d.PressureAtm) ? Fmt.Fixed(d.PressureAtm, 3) + " atm" : null,
             }.OfType<string>());
-            stack.Children.Add(Section("Indices", env, Indices(d)));
+            stack.Children.Add(Section(Loc.S("Results_GlassData_Indices"), env, Indices(d)));
         }
 
         // Properties.
         var rows = new List<(string, string)>();
-        if (d.Formula is not null) rows.Add(("Dispersion formula", d.Formula));
-        if (range.Length > 0) rows.Add(("Valid range", range[6..]));
-        rows.Add(("Thermo-optic data (dn/dT)", d.HasThermalData ? "Yes" : "None"));
-        rows.Add(("Thermal expansion", d.Cte is double cte ? Fmt.Fixed(cte * 1e6, 2) + " × 10⁻⁶/K" : "—"));
-        if (d.Density is double den) rows.Add(("Density", Fmt.Fixed(den, 3) + " g/cm³"));
-        if (d.RelativeCost is double cost) rows.Add(("Relative cost", Fmt.Fixed(cost, 2)));
+        if (d.Formula is not null) rows.Add((Loc.S("Results_GlassData_Formula"), d.Formula));
+        if (validRange.Length > 0) rows.Add((Loc.S("Results_GlassData_ValidRange"), validRange));
+        rows.Add((Loc.S("Results_GlassData_ThermoOptic"), Loc.S(d.HasThermalData ? "Results_GlassData_Yes" : "Results_GlassData_None")));
+        rows.Add((Loc.S("Results_GlassData_ThermalExpansion"), d.Cte is double cte ? Fmt.Fixed(cte * 1e6, 2) + " × 10⁻⁶/K" : "—"));
+        if (d.Density is double den) rows.Add((Loc.S("Results_GlassData_Density"), Fmt.Fixed(den, 3) + " g/cm³"));
+        if (d.RelativeCost is double cost) rows.Add((Loc.S("Results_GlassData_RelativeCost"), Fmt.Fixed(cost, 2)));
         var props = new StackPanel { Spacing = 6 };
         props.Children.Add(Kit.KeyValues(rows, 13));
         if (d.Comment is not null) props.Children.Add(Kit.Caption(d.Comment, wrap: true));
-        stack.Children.Add(Section("Properties", "", props));
+        stack.Children.Add(Section(Loc.S("Results_GlassData_Properties"), "", props));
 
         Content = Kit.Page(stack);
         ActualThemeChanged += (_, _) => Kit.ThemeCard(_header, ActualTheme);
@@ -263,8 +267,8 @@ public sealed partial class GlassDataView : UserControl
     static UIElement Indices(GlassInfoData d)
     {
         var g = new Grid { ColumnSpacing = 18, RowSpacing = 4, HorizontalAlignment = HorizontalAlignment.Left };
-        string[] heads = ["λ (µm)", "n", "n cat.", "α (1/mm)"];
-        string[] tips = ["", "Index relative to air at the analysis temperature and pressure", "Index at the catalog's reference conditions", "Internal absorption coefficient"];
+        string[] heads = ["λ (µm)", "n", Loc.S("Results_GlassData_HeadCatalogIndex"), "α (1/mm)"];
+        string[] tips = ["", Loc.S("Results_GlassData_TipIndex"), Loc.S("Results_GlassData_TipCatalogIndex"), Loc.S("Results_GlassData_TipAbsorption")];
         for (var c = 0; c < heads.Length; c++)
         {
             g.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
@@ -286,7 +290,7 @@ public sealed partial class GlassDataView : UserControl
             {
                 var warn = Kit.Text("⚠", "BodyText", 12);
                 warn.Foreground = new SolidColorBrush(global::Windows.UI.Color.FromArgb(255, 0xE0, 0x78, 0x00));
-                ToolTipService.SetToolTip(warn, "Outside the glass's data range: the index is extrapolated");
+                ToolTipService.SetToolTip(warn, Loc.S("Results_GlassData_Extrapolated"));
                 first.Children.Add(warn);
             }
             Grid.SetRow(first, r + 1);
@@ -311,7 +315,7 @@ public sealed partial class GlassDataView : UserControl
         var marks = d.Indices.Where(i => double.IsFinite(i.Um) && double.IsFinite(i.N)).ToList();
         var xs = pts.Select(p => p.Um).Concat(marks.Select(m => m.Um)).ToList();
         var ys = pts.Select(p => p.N).Concat(marks.Select(m => m.N)).ToList();
-        var f = new Frame { XTitle = "Wavelength (µm)", YTitle = "n", YTickSpacing = 45 };
+        var f = new Frame { XTitle = Loc.S("Results_Axis_WavelengthUm"), YTitle = "n", YTickSpacing = 45 };
         (f.XMin, f.XMax) = (xs.Min(), xs.Max());
         if (!(f.XMax > f.XMin)) (f.XMin, f.XMax) = (0.3, 1);
         (f.YMin, f.YMax) = Plotting.Ticks.Range(ys);

@@ -230,7 +230,7 @@ public sealed partial class Choice : UserControl
             var on = i == _selected;
             _buttons[i].Background = new SolidColorBrush(on ? fill : Color.FromArgb(0, 0, 0, 0));
             _buttons[i].Foreground = new SolidColorBrush(on ? ink : quiet);
-            AutomationProperties.SetItemStatus(_buttons[i], on ? "Selected" : "");
+            AutomationProperties.SetItemStatus(_buttons[i], on ? Loc.S("Results_A11y_Selected") : "");
         }
     }
 }
