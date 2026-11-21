@@ -28,7 +28,7 @@ import { StatusCapsule } from './StatusCapsule'
 import { CommandPalette } from './CommandPalette'
 import { closePanel, commandPanel, isDetached, moveToMainWindow, moveToNewWindow, panelTitle, resetPanelLayout } from './panels/actions'
 import { LAYOUT_PANEL, LENS_DATA } from '@/state/arrangement'
-import { LANGUAGES, useI18n, useT, type LanguageChoice } from '@/i18n'
+import { LANGUAGES, engineText, useI18n, useT, type LanguageChoice } from '@/i18n'
 
 /** Language: the system's (default) or a fixed one; switches live. Each
  *  language is named in itself. */
@@ -58,30 +58,32 @@ function LanguageMenu() {
 
 /** View ▸ Panel: for the focused panel (the selected tab of the window in front). */
 function PanelMenu() {
+  const t = useT()
   const panel = commandPanel()
   const name = panel ? panelTitle(panel) : null
-  const hide = panel === LENS_DATA ? 'Hide Lens Data' : panel === LAYOUT_PANEL ? 'Hide Layout' : 'Close Pane'
+  const hide = panel === LENS_DATA ? t('app.menu.hideLensData') : panel === LAYOUT_PANEL ? t('app.menu.hideLayout') : t('app.menu.closePane')
   return (
     <DropdownMenuSub>
-      <DropdownMenuSubTrigger>Panel{name ? ` · ${name}` : ''}</DropdownMenuSubTrigger>
+      <DropdownMenuSubTrigger>{name ? t('app.menu.panelNamed', { name }) : t('app.menu.panel')}</DropdownMenuSubTrigger>
       <DropdownMenuSubContent>
         <DropdownMenuItem disabled={!panel} onSelect={() => panel && moveToNewWindow(panel)}>
-          Move to New Window
+          {t('app.menu.moveToNewWindow')}
         </DropdownMenuItem>
         <DropdownMenuItem disabled={!panel || !isDetached(panel)} onSelect={() => panel && moveToMainWindow(panel)}>
-          Move to Main Window
+          {t('app.menu.moveToMainWindow')}
         </DropdownMenuItem>
         <DropdownMenuItem disabled={!panel} onSelect={() => panel && closePanel(panel)}>
           {hide}
         </DropdownMenuItem>
         <DropdownMenuSeparator />
-        <DropdownMenuItem onSelect={() => resetPanelLayout()}>Reset Panel Layout</DropdownMenuItem>
+        <DropdownMenuItem onSelect={() => resetPanelLayout()}>{t('app.menu.resetPanelLayout')}</DropdownMenuItem>
       </DropdownMenuSubContent>
     </DropdownMenuSub>
   )
 }
 
 function CommandItem({ id, title }: { id: string; title?: string }) {
+  useT()
   const c = command(id)
   const enabled = c.enabled ? c.enabled() : true
   return (
@@ -103,6 +105,7 @@ function MenuGroup({ title, children }: { title: string; children: React.ReactNo
 /** The app menu: File, Edit, Lens, Design, Analysis and View, as the macOS
  *  menu bar has them (Commands.swift). */
 function AppMenu() {
+  const t = useT()
   const undo = useDocument(undoName)
   const redo = useDocument(redoName)
   const v = useView()
@@ -112,11 +115,11 @@ function AppMenu() {
   const setBackend = usePreferences((s) => s.setBackend)
   const replaceSamples = (
     <DropdownMenuSub>
-      <DropdownMenuSubTrigger>Replace with Sample</DropdownMenuSubTrigger>
+      <DropdownMenuSubTrigger>{t('app.menu.replaceWithSample')}</DropdownMenuSubTrigger>
       <DropdownMenuSubContent>
         {SAMPLES.map((s) => (
           <DropdownMenuItem key={s.id} onSelect={() => replaceWithSample(s.id)}>
-            {s.system.name}
+            {engineText(s.system.name)}
           </DropdownMenuItem>
         ))}
       </DropdownMenuSubContent>
@@ -124,15 +127,15 @@ function AppMenu() {
   )
   return (
     <DropdownMenu>
-      <Tip label="Menu">
+      <Tip label={t('app.menu.menu')}>
         <DropdownMenuTrigger asChild>
-          <Button variant="ghost" size="icon" aria-label="Menu">
+          <Button variant="ghost" size="icon" aria-label={t('app.menu.menu')}>
             <Menu />
           </Button>
         </DropdownMenuTrigger>
       </Tip>
       <DropdownMenuContent align="start" className="min-w-[15rem]" data-testid="app-menu">
-        <DropdownMenuLabel>File</DropdownMenuLabel>
+        <DropdownMenuLabel>{t('app.menu.file')}</DropdownMenuLabel>
         <CommandItem id="new" />
         <CommandItem id="samples" />
         <CommandItem id="open" />
@@ -140,11 +143,11 @@ function AppMenu() {
         <CommandItem id="saveAs" />
         <CommandItem id="welcome" />
         <DropdownMenuSeparator />
-        <DropdownMenuLabel>Edit</DropdownMenuLabel>
-        <CommandItem id="undo" title={undo ? `Undo ${undo}` : 'Undo'} />
-        <CommandItem id="redo" title={redo ? `Redo ${redo}` : 'Redo'} />
+        <DropdownMenuLabel>{t('app.menu.edit')}</DropdownMenuLabel>
+        <CommandItem id="undo" title={undo ? t('app.menu.undoNamed', { name: undo }) : t('app.commands.undo')} />
+        <CommandItem id="redo" title={redo ? t('app.menu.redoNamed', { name: redo }) : t('app.commands.redo')} />
         <DropdownMenuSeparator />
-        <MenuGroup title="Lens">
+        <MenuGroup title={t('app.menu.lens')}>
           <CommandItem id="insertBefore" />
           <CommandItem id="insertAfter" />
           <CommandItem id="delete" />
@@ -155,7 +158,7 @@ function AppMenu() {
           {replaceSamples}
           <CommandItem id="loadCatalog" />
         </MenuGroup>
-        <MenuGroup title="Design">
+        <MenuGroup title={t('app.menu.design')}>
           <CommandItem id="optimize" />
           <CommandItem id="glass" />
           <CommandItem id="tolerance" />
@@ -163,9 +166,9 @@ function AppMenu() {
           <DropdownMenuSeparator />
           <CommandItem id="issues" />
         </MenuGroup>
-        <MenuGroup title="Analysis">
+        <MenuGroup title={t('app.menu.analysis')}>
           <DropdownMenuSub>
-            <DropdownMenuSubTrigger>New Analysis Pane</DropdownMenuSubTrigger>
+            <DropdownMenuSubTrigger>{t('app.menu.newAnalysisPane')}</DropdownMenuSubTrigger>
             <DropdownMenuSubContent>
               {groupedAnalyses(descriptors).map((g) => (
                 <div key={g.category}>
@@ -175,7 +178,7 @@ function AppMenu() {
                       key={d.name}
                       inset
                       disabled={!d.available}
-                      title={d.unavailable_reason ?? d.description}
+                      title={engineText(d.unavailable_reason ?? d.description)}
                       onSelect={() => useView.getState().set({ focusedPane: addPane(d.name) })}
                     >
                       {analysisTitle(d.name, d)}
@@ -189,7 +192,7 @@ function AppMenu() {
           <CommandItem id="runAll" />
           <CommandItem id="cancel" />
           <DropdownMenuSeparator />
-          <DropdownMenuLabel>Compute On</DropdownMenuLabel>
+          <DropdownMenuLabel>{t('app.menu.computeOn')}</DropdownMenuLabel>
           <DropdownMenuRadioGroup value={backend} onValueChange={(b) => setBackend(b as BackendPreference)}>
             {BACKEND_CHOICES.map((c) => (
               <DropdownMenuRadioItem key={c.value} value={c.value} title={c.help}>
@@ -198,9 +201,9 @@ function AppMenu() {
             ))}
           </DropdownMenuRadioGroup>
         </MenuGroup>
-        <MenuGroup title="View">
-          <CommandItem id="lensData" title={v.lensDataVisible ? 'Hide Lens Data' : 'Show Lens Data'} />
-          <CommandItem id="layout" title={v.layoutVisible ? 'Hide Layout' : 'Show Layout'} />
+        <MenuGroup title={t('app.menu.view')}>
+          <CommandItem id="lensData" title={v.lensDataVisible ? t('app.menu.hideLensData') : t('app.menu.showLensData')} />
+          <CommandItem id="layout" title={v.layoutVisible ? t('app.menu.hideLayout') : t('app.menu.showLayout')} />
           <PanelMenu />
           <DropdownMenuSeparator />
           {LAYOUT_SHORTCUTS.map((c) => (
@@ -209,19 +212,19 @@ function AppMenu() {
             </DropdownMenuItem>
           ))}
           <DropdownMenuSub>
-            <DropdownMenuSubTrigger>Ray Colors</DropdownMenuSubTrigger>
+            <DropdownMenuSubTrigger>{t('app.menu.rayColors')}</DropdownMenuSubTrigger>
             <DropdownMenuSubContent>
               <DropdownMenuRadioGroup value={v.rayColoring} onValueChange={(c) => v.set({ rayColoring: c as RayColoring })}>
-                <DropdownMenuRadioItem value="field">Color by Field</DropdownMenuRadioItem>
-                <DropdownMenuRadioItem value="wavelength">Color by Wavelength</DropdownMenuRadioItem>
+                <DropdownMenuRadioItem value="field">{t('app.menu.colorByField')}</DropdownMenuRadioItem>
+                <DropdownMenuRadioItem value="wavelength">{t('app.menu.colorByWavelength')}</DropdownMenuRadioItem>
               </DropdownMenuRadioGroup>
             </DropdownMenuSubContent>
           </DropdownMenuSub>
           <DropdownMenuSeparator />
-          <CommandItem id="sidebar" title={v.sidebarVisible ? 'Hide Sidebar' : 'Show Sidebar'} />
-          <CommandItem id="inspector" title={v.inspectorVisible ? 'Hide Inspector' : 'Show Inspector'} />
-          <CommandItem id="surfacePage" title="Surface Inspector" />
-          <CommandItem id="systemPage" title="System Inspector" />
+          <CommandItem id="sidebar" title={v.sidebarVisible ? t('app.menu.hideSidebar') : t('app.menu.showSidebar')} />
+          <CommandItem id="inspector" title={v.inspectorVisible ? t('app.menu.hideInspector') : t('app.menu.showInspector')} />
+          <CommandItem id="surfacePage" title={t('app.menu.surfaceInspector')} />
+          <CommandItem id="systemPage" title={t('app.menu.systemInspector')} />
         </MenuGroup>
         <DropdownMenuSeparator />
         <LanguageMenu />
@@ -231,13 +234,14 @@ function AppMenu() {
 }
 
 export function AddAnalysisMenu() {
+  const t = useT()
   const descriptors = useWorkspace((s) => s.descriptors)
   const addPane = useWorkspace((s) => s.addPane)
   return (
     <DropdownMenu>
-      <Tip label="Add Analysis">
+      <Tip label={t('app.menu.addAnalysis')}>
         <DropdownMenuTrigger asChild>
-          <Button variant="ghost" size="icon" aria-label="Add Analysis">
+          <Button variant="ghost" size="icon" aria-label={t('app.menu.addAnalysis')}>
             <Plus />
           </Button>
         </DropdownMenuTrigger>
@@ -251,7 +255,7 @@ export function AddAnalysisMenu() {
                 <DropdownMenuItem
                   key={d.name}
                   disabled={!d.available}
-                  title={d.unavailable_reason ?? d.description}
+                  title={engineText(d.unavailable_reason ?? d.description)}
                   onSelect={() => {
                     const key = addPane(d.name)
                     useView.getState().set({ focusedPane: key })
@@ -269,6 +273,7 @@ export function AddAnalysisMenu() {
 }
 
 export function Toolbar() {
+  const t = useT()
   const title = useDocument(documentTitle)
   const dirty = useDocument(isDirty)
   const imported = useDocument((s) => s.file?.imported ?? false)
@@ -279,8 +284,8 @@ export function Toolbar() {
   return (
     <header className="glass relative z-20 flex h-[52px] shrink-0 items-center gap-1 border-b border-separator px-2">
       {!sidebarVisible && (
-        <Tip label={`Show Sidebar (${shortcutLabel('ctrl+mod+s')})`}>
-          <Button variant="ghost" size="icon" aria-label="Show Sidebar" onClick={() => set({ sidebarVisible: true })}>
+        <Tip label={`${t('app.menu.showSidebar')} (${shortcutLabel('ctrl+mod+s')})`}>
+          <Button variant="ghost" size="icon" aria-label={t('app.menu.showSidebar')} onClick={() => set({ sidebarVisible: true })}>
             <PanelLeft />
           </Button>
         </Tip>
@@ -292,18 +297,18 @@ export function Toolbar() {
         </span>
         <span className="truncate text-[11px] text-secondary">
           {/* A new design or a sample was never saved: no "Saved" for it. */}
-          {imported ? 'Imported' : dirty ? 'Edited' : hasFile ? 'Saved' : ''}
+          {imported ? t('app.toolbar.imported') : dirty ? t('app.toolbar.edited') : hasFile ? t('app.toolbar.saved') : ''}
         </span>
       </div>
       <div className="flex flex-1 justify-center px-2">
         <StatusCapsule />
       </div>
       <AddAnalysisMenu />
-      <Tip label={`${inspectorVisible ? 'Hide' : 'Show'} Inspector (${shortcutLabel('ctrl+mod+i')})`}>
+      <Tip label={`${inspectorVisible ? t('app.menu.hideInspector') : t('app.menu.showInspector')} (${shortcutLabel('ctrl+mod+i')})`}>
         <Button
           variant="ghost"
           size="icon"
-          aria-label="Inspector"
+          aria-label={t('app.menu.inspector')}
           aria-pressed={inspectorVisible}
           className={cn(inspectorVisible && 'text-accent')}
           onClick={() => set({ inspectorVisible: !inspectorVisible })}

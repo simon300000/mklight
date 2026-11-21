@@ -5,6 +5,7 @@
 // life cycle is the shared `useJobs` kind 'glass'.
 
 import { create } from 'zustand'
+import { engineText, t } from '@/i18n'
 import type { AnalysisResult, ModelSnapshot } from '@/engine/types'
 import {
   defaultCandidates,
@@ -56,6 +57,15 @@ interface GlassSubstitutionState extends GlassSearchSettings {
   /** Back to the settings; ends any preview. */
   reset(): void
   loadMap(): void
+}
+
+/** The preview label of a combination ("Candidate 3"). */
+export const candidateLabel = (rank: number) => t('glass.candidate', { n: rank })
+
+/** Whether a preview label is a candidate's, in the language it was made in. */
+export function isCandidateLabel(label: string): boolean {
+  const [head, tail] = t('glass.candidate', { n: '\u0000' }).split('\u0000')
+  return label.startsWith(head) && label.endsWith(tail) && /^\d+$/.test(label.slice(head.length, label.length - tail.length))
 }
 
 export function combinationOf(rank: number | null): GlassCombination | null {
@@ -144,9 +154,9 @@ export const useGlassSubstitution = create<GlassSubstitutionState>()((set, get) 
     }
     useWorkspace
       .getState()
-      .setPreview(c.system, `Candidate ${c.rank}`)
+      .setPreview(c.system, candidateLabel(c.rank))
       .catch((e: unknown) => {
-        if (get().selectedRank === rank) set({ previewError: e instanceof Error ? e.message : String(e) })
+        if (get().selectedRank === rank) set({ previewError: engineText(e instanceof Error ? e.message : String(e)) })
       })
   },
 
@@ -155,9 +165,9 @@ export const useGlassSubstitution = create<GlassSubstitutionState>()((set, get) 
     const job = useJobs.getState().jobs.glass
     if (!c?.system || job.phase !== 'review') return
     const ws = useWorkspace.getState()
-    set({ appliedLayouts: { before: ws.snapshot, after: ws.preview?.label === `Candidate ${c.rank}` ? ws.preview.snapshot : null } })
+    set({ appliedLayouts: { before: ws.snapshot, after: ws.preview?.label === candidateLabel(c.rank) ? ws.preview.snapshot : null } })
     const doc = useDocument.getState()
-    doc.replace({ ...doc.project, system: c.system }, 'Apply Glass Substitution')
+    doc.replace({ ...doc.project, system: c.system }, t('glass.applyUndo'))
     useJobs.getState().applied('glass')
     void useWorkspace.getState().setPreview(null)
   },

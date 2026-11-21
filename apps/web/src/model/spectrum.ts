@@ -9,6 +9,7 @@
 // until the engine resolves them) and the sensor CSV reader.
 
 import type { Json, JsonObject } from '@/engine/types'
+import { t } from '@/i18n'
 import { nf } from './format'
 
 export interface Sample {
@@ -38,18 +39,21 @@ export type Spectrum =
 export type SpectrumKind = Spectrum['kind']
 
 export const SPECTRUM_KINDS: { kind: SpectrumKind; title: string }[] = [
-  { kind: 'design', title: 'Design wavelengths' },
-  { kind: 'photopic', title: 'Photopic V(λ)' },
-  { kind: 'scotopic', title: 'Scotopic V′(λ)' },
-  { kind: 'blackbody', title: 'Blackbody' },
-  { kind: 'explicit', title: 'Explicit wavelengths' },
-  { kind: 'sensor', title: 'Sensor response' },
+  { kind: 'design', get title() { return t('lens.spectrum.kinds.design') } },
+  { kind: 'photopic', get title() { return t('lens.spectrum.kinds.photopic') } },
+  { kind: 'scotopic', get title() { return t('lens.spectrum.kinds.scotopic') } },
+  { kind: 'blackbody', get title() { return t('lens.spectrum.kinds.blackbody') } },
+  { kind: 'explicit', get title() { return t('lens.spectrum.kinds.explicit') } },
+  { kind: 'sensor', get title() { return t('lens.spectrum.kinds.sensor') } },
 ]
 
 export const PHOTOPIC_RANGE: [number, number] = [0.36, 0.83]
 export const SCOTOPIC_RANGE: [number, number] = [0.38, 0.78]
 export const BLACKBODY_PRESETS = [5500, 3200]
-export const SPACING_TITLES: Record<Spacing, string> = { equal_weight: 'Equal energy', uniform: 'Uniform' }
+export const SPACING_TITLES: Record<Spacing, string> = {
+  get equal_weight() { return t('lens.spectrum.spacing.equal_weight') },
+  get uniform() { return t('lens.spectrum.spacing.uniform') },
+}
 
 const obj = (v: Json | undefined): JsonObject | null => (v !== null && typeof v === 'object' && !Array.isArray(v) ? v : null)
 const num = (v: Json | undefined): number | null => (typeof v === 'number' ? v : null)
@@ -182,21 +186,21 @@ export function spectrumOfKind(kind: SpectrumKind, cur: Spectrum, design: Sample
 
 function samplingIssues(s: Sampling): string[] {
   const out: string[] = []
-  if (!(Number.isInteger(s.samples) && s.samples >= 1 && s.samples <= 4096)) out.push('Samples must be between 1 and 4096.')
-  if (!(s.lowerUm > 0 && s.upperUm > s.lowerUm && Number.isFinite(s.upperUm))) out.push('The range must be positive and increasing.')
+  if (!(Number.isInteger(s.samples) && s.samples >= 1 && s.samples <= 4096)) out.push(t('lens.spectrum.issue.samples'))
+  if (!(s.lowerUm > 0 && s.upperUm > s.lowerUm && Number.isFinite(s.upperUm))) out.push(t('lens.spectrum.issue.rangePositive'))
   return out
 }
 
-function rangeIssue(s: Sampling, r: [number, number], what: string): string[] {
+function rangeIssue(s: Sampling, r: [number, number], what: 'photopicTable' | 'scotopicTable' | 'responseTable'): string[] {
   if (!(s.lowerUm > 0 && s.upperUm > s.lowerUm)) return []
-  if (s.lowerUm < r[0] - 1e-12 || s.upperUm > r[1] + 1e-12) return [`The range must lie inside ${what} (${r[0].toFixed(3)}–${r[1].toFixed(3)} µm).`]
+  if (s.lowerUm < r[0] - 1e-12 || s.upperUm > r[1] + 1e-12) return [t('lens.spectrum.issue.rangeInside', { what: t(`lens.spectrum.issue.${what}`), lo: r[0].toFixed(3), hi: r[1].toFixed(3) })]
   return []
 }
 
-export function tableIssue(t: Sample[]): string | null {
-  if (t.length < 2) return 'The response table needs at least two rows.'
-  if (t.some((r) => !(r.um > 0 && Number.isFinite(r.um) && r.weight >= 0 && Number.isFinite(r.weight)))) return 'Responses must not be negative.'
-  for (let i = 1; i < t.length; i++) if (t[i - 1].um >= t[i].um) return 'Wavelengths must increase.'
+export function tableIssue(rows: Sample[]): string | null {
+  if (rows.length < 2) return t('lens.spectrum.issue.tableTwoRows')
+  if (rows.some((r) => !(r.um > 0 && Number.isFinite(r.um) && r.weight >= 0 && Number.isFinite(r.weight)))) return t('lens.spectrum.issue.responsesNegative')
+  for (let i = 1; i < rows.length; i++) if (rows[i - 1].um >= rows[i].um) return t('lens.spectrum.issue.wavelengthsIncrease')
   return null
 }
 
@@ -206,23 +210,23 @@ export function spectrumIssues(s: Spectrum): string[] {
     case 'design':
       return []
     case 'photopic':
-      return [...samplingIssues(s.sampling), ...rangeIssue(s.sampling, PHOTOPIC_RANGE, 'the photopic table')]
+      return [...samplingIssues(s.sampling), ...rangeIssue(s.sampling, PHOTOPIC_RANGE, 'photopicTable')]
     case 'scotopic':
-      return [...samplingIssues(s.sampling), ...rangeIssue(s.sampling, SCOTOPIC_RANGE, 'the scotopic table')]
+      return [...samplingIssues(s.sampling), ...rangeIssue(s.sampling, SCOTOPIC_RANGE, 'scotopicTable')]
     case 'blackbody':
-      return [...(s.temperatureK > 0 && Number.isFinite(s.temperatureK) ? [] : ['The temperature must be positive.']), ...samplingIssues(s.sampling)]
+      return [...(s.temperatureK > 0 && Number.isFinite(s.temperatureK) ? [] : [t('lens.spectrum.issue.temperature')]), ...samplingIssues(s.sampling)]
     case 'explicit': {
       const out: string[] = []
-      if (!s.wavelengths.length) out.push('Add at least one wavelength.')
-      if (s.wavelengths.some((w) => !(w.um > 0 && Number.isFinite(w.um)))) out.push('Wavelengths must be positive.')
-      if (s.wavelengths.some((w) => !(w.weight >= 0 && Number.isFinite(w.weight)))) out.push('Weights must not be negative.')
+      if (!s.wavelengths.length) out.push(t('lens.spectrum.issue.addOne'))
+      if (s.wavelengths.some((w) => !(w.um > 0 && Number.isFinite(w.um)))) out.push(t('lens.spectrum.issue.wavelengthsPositive'))
+      if (s.wavelengths.some((w) => !(w.weight >= 0 && Number.isFinite(w.weight)))) out.push(t('lens.spectrum.issue.weightsNegative'))
       return out
     }
     case 'sensor': {
       const out = samplingIssues(s.sampling)
       const p = tableIssue(s.table)
       if (p) out.push(p)
-      else out.push(...rangeIssue(s.sampling, [s.table[0].um, s.table[s.table.length - 1].um], 'the response table'))
+      else out.push(...rangeIssue(s.sampling, [s.table[0].um, s.table[s.table.length - 1].um], 'responseTable'))
       return out
     }
   }
@@ -237,16 +241,16 @@ const samplesSuffix = (s: Sampling) => (s.samples === DEFAULT_SAMPLING.samples ?
 export function spectrumSummary(s: Spectrum): string {
   switch (s.kind) {
     case 'design':
-      return 'design'
+      return t('lens.spectrum.summary.design')
     case 'photopic':
     case 'scotopic':
-      return s.kind + samplesSuffix(s.sampling)
+      return t(`lens.spectrum.summary.${s.kind}`) + samplesSuffix(s.sampling)
     case 'blackbody':
-      return `blackbody ${kelvin(s.temperatureK)}` + samplesSuffix(s.sampling)
+      return t('lens.spectrum.summary.blackbody', { temperature: kelvin(s.temperatureK) }) + samplesSuffix(s.sampling)
     case 'explicit':
-      return s.wavelengths.length === 1 ? `${Number(s.wavelengths[0].um.toPrecision(4))} µm` : `${s.wavelengths.length} wavelengths`
+      return s.wavelengths.length === 1 ? `${Number(s.wavelengths[0].um.toPrecision(4))} µm` : t('lens.spectrum.summary.wavelengths', { n: s.wavelengths.length })
     case 'sensor':
-      return `sensor (${s.table.length} rows)` + samplesSuffix(s.sampling)
+      return t('lens.spectrum.summary.sensor', { n: s.table.length }) + samplesSuffix(s.sampling)
   }
 }
 
@@ -418,11 +422,11 @@ export function parseSpectrumCsv(text: string): SpectrumCsv {
     const b = cells.length > 1 ? number(cells[1]) : null
     if (a == null || b == null) {
       if (!rows.length && !bad.length && header == null && cells.some((c) => number(c) == null)) header = line
-      else bad.push({ line: k + 1, text: line, reason: cells.length < 2 ? 'needs two columns' : 'not a number' })
+      else bad.push({ line: k + 1, text: line, reason: cells.length < 2 ? t('lens.spectrum.csv.needsTwoColumns') : t('lens.spectrum.csv.notNumber') })
       return
     }
-    if (!(Number.isFinite(a) && a > 0)) bad.push({ line: k + 1, text: line, reason: 'wavelength must be positive' })
-    else if (!(Number.isFinite(b) && b >= 0)) bad.push({ line: k + 1, text: line, reason: 'response must not be negative' })
+    if (!(Number.isFinite(a) && a > 0)) bad.push({ line: k + 1, text: line, reason: t('lens.spectrum.csv.wavelengthPositive') })
+    else if (!(Number.isFinite(b) && b >= 0)) bad.push({ line: k + 1, text: line, reason: t('lens.spectrum.csv.responseNegative') })
     else rows.push({ line: k + 1, text: line, um: a, value: b })
   })
   const words = new Set((header ?? '').toLowerCase().split(/[^a-zµ]+/).filter(Boolean))
@@ -439,7 +443,7 @@ export function parseSpectrumCsv(text: string): SpectrumCsv {
   for (const r of [...rows].sort((p, q) => p.um - q.um || p.line - q.line)) {
     const um = r.um * scale
     if (table.length && Math.abs(table[table.length - 1].um - um) < 1e-12) {
-      bad.push({ line: r.line, text: r.text, reason: 'repeats a wavelength' })
+      bad.push({ line: r.line, text: r.text, reason: t('lens.spectrum.csv.repeats') })
       continue
     }
     table.push({ um, weight: r.value })

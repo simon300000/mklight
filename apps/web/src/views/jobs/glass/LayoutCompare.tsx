@@ -3,6 +3,7 @@
 
 import { useEffect, useRef, useState } from 'react'
 import type { ModelSnapshot } from '@/engine/types'
+import { useT } from '@/i18n'
 import { useWorkspace } from '@/state/workspace'
 import { cssVar, seriesColor, useDark } from '@/lib/theme'
 import { readScene, type Scene } from '../../LayoutView'
@@ -29,6 +30,7 @@ function sceneOf(snap: ModelSnapshot): Promise<Scene | null> {
 }
 
 function Thumb({ title, snap }: { title: string; snap: ModelSnapshot | null }) {
+  const t = useT()
   const ref = useRef<HTMLCanvasElement>(null)
   const dark = useDark()
   const [scene, setScene] = useState<Scene | null>(null)
@@ -92,7 +94,7 @@ function Thumb({ title, snap }: { title: string; snap: ModelSnapshot | null }) {
     }
   }, [scene, dark])
   return (
-    <figure className="min-w-0 flex-1" aria-label={`${title} layout`}>
+    <figure className="min-w-0 flex-1" aria-label={t('glass.layout.label', { title })}>
       <figcaption className="mb-0.5 text-[11px] text-secondary">{title}</figcaption>
       <div className="rounded-md bg-content">
         <canvas ref={ref} className="block w-full" style={{ height: 88 }} aria-hidden />
@@ -105,12 +107,13 @@ function Thumb({ title, snap }: { title: string; snap: ModelSnapshot | null }) {
  *  result is applied, pass the snapshots kept from before the apply (the
  *  design then is the candidate). */
 export function LayoutCompare({ before, after }: { before?: ModelSnapshot | null; after?: ModelSnapshot | null } = {}) {
+  const t = useT()
   const snap = useWorkspace((s) => s.snapshot)
   const preview = useWorkspace((s) => s.preview)
   return (
     <div className="flex gap-2" data-testid="layout-compare">
-      <Thumb title="Before" snap={before !== undefined ? before : snap} />
-      <Thumb title="Candidate" snap={after !== undefined ? after : (preview?.snapshot ?? null)} />
+      <Thumb title={t('glass.layout.before')} snap={before !== undefined ? before : snap} />
+      <Thumb title={t('glass.layout.candidate')} snap={after !== undefined ? after : (preview?.snapshot ?? null)} />
     </div>
   )
 }

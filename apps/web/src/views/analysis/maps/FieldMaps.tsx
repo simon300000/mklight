@@ -4,6 +4,7 @@
 import { useMemo, useState } from 'react'
 import type uPlot from 'uplot'
 import { Segmented } from '@/components/ui/segmented'
+import { t, useT } from '@/i18n'
 import { cssVar, seriesColor, useDark } from '@/lib/theme'
 import { Legend, Swatch } from '@/views/results/Legend'
 import { DASH, LINE, UPlot, axis, calmCursor, gaps, type PlotOptions } from '@/views/results/UPlot'
@@ -14,6 +15,7 @@ import {
   columnFormat,
   columnIndex,
   columnRange,
+  columnDefinition,
   columnTitle,
   columnTitleWithUnit,
   columnUnit,
@@ -41,6 +43,7 @@ const Empty = ({ text }: { text: string }) => <div className="p-4 text-secondary
 
 /** A column: the map (grid runs) or the curve (sweeps). */
 function FieldMapContent(props: { data: FieldMapData; column: number; contours?: number[]; rangeMode?: HeatRangeMode; isFraction?: boolean }) {
+  const t = useT()
   const dark = useDark()
   const { data, column } = props
   const col = data.columns[column]
@@ -49,7 +52,7 @@ function FieldMapContent(props: { data: FieldMapData; column: number; contours?:
   const signed = isSigned(data, column)
   const grid = useMemo(() => gridOf(data, column), [data, column])
   const contours = useMemo(() => (props.contours ?? []).map((level) => ({ level, segments: mapContours(grid, level) })), [grid, props.contours])
-  if (!range) return <Empty text={`${columnTitle(col)} is undefined at every sample${col.definition ? `: ${col.definition}` : ''}.`} />
+  if (!range) return <Empty text={col.definition ? t('maps.field.undefinedWithDefinition', { title: columnTitle(col), definition: columnDefinition(col)! }) : t('maps.field.undefined', { title: columnTitle(col) })} />
   if (layoutOf(data) !== 'map') return <SweepPlot data={data} column={column} />
   const r = heatRange(range, signed, props.rangeMode, props.isFraction)
   const kind = scaleFor(signed)
@@ -66,12 +69,13 @@ function FieldMapContent(props: { data: FieldMapData; column: number; contours?:
       yLabel="Hy"
       format={format}
       dark={dark}
-      label={`${columnTitle(col)} map over the normalized field, ${data.nx} by ${data.ny} samples`}
+      label={t('maps.field.mapLabel', { title: columnTitle(col), nx: data.nx, ny: data.ny })}
     />
   )
 }
 
 function SweepPlot({ data, column }: { data: FieldMapData; column: number }) {
+  const t = useT()
   const dark = useDark()
   const col = data.columns[column]
   const pts = useMemo(() => sweepOf(data, column).sort((a, b) => a[0] - b[0]), [data, column])
@@ -84,9 +88,9 @@ function SweepPlot({ data, column }: { data: FieldMapData; column: number }) {
       axes: [axis(layoutOf(data) === 'sweepX' ? 'Hx' : 'Hy'), axis(columnTitleWithUnit(col), { size: 48 })],
       series: [{}, { label: columnTitle(col), stroke: seriesColor(0, dark), width: LINE * 1.3, points: { show: pts.length <= 41, size: 4 } }],
     }),
-    [data, col, dark, pts.length],
+    [data, col, dark, pts.length, t],
   )
-  return <UPlot options={options} data={plotData} label={`${columnTitle(col)} along the field sweep`} />
+  return <UPlot options={options} data={plotData} label={t('maps.field.sweepLabel', { title: columnTitle(col) })} />
 }
 
 function firstVarying(d: FieldMapData): number {
@@ -100,9 +104,10 @@ function firstVarying(d: FieldMapData): number {
 // MARK: Pupil aberration
 
 export function PupilAberrationView(p: RendererProps) {
+  const t = useT()
   const data = useMemo(() => readFieldMap(p.result), [p.result])
   const [column, setColumn] = useState<number | null>(null)
-  if (!data) return <Empty text="No field map in this result." />
+  if (!data) return <Empty text={t('maps.field.none')} />
   const c = Math.min(column ?? firstVarying(data), data.columns.length - 1)
   return (
     <div className="absolute inset-0 flex flex-col gap-1.5 p-2.5">
@@ -119,6 +124,7 @@ export function PupilAberrationView(p: RendererProps) {
 const FRACTIONS = ['relative_illumination', 'vignetting_fraction']
 
 export function RelativeIlluminationMapView(p: RendererProps) {
+  const t = useT()
   const dark = useDark()
   const data = useMemo(() => readFieldMap(p.result), [p.result])
   const [column, setColumn] = useState<number | null>(null)
@@ -142,11 +148,11 @@ export function RelativeIlluminationMapView(p: RendererProps) {
       legend: { show: false },
       cursor: calmCursor,
       scales: { x: { time: false }, y: { range: [yr[0] - pad, yr[1] + pad] } },
-      axes: [axis('Image radius (mm)'), axis(col ? columnTitle(col) : '', { size: 44 })],
+      axes: [axis(t('maps.field.imageRadius')), axis(col ? columnTitle(col) : '', { size: 44 })],
       series: [{}, { label: col ? columnTitle(col) : undefined, stroke: seriesColor(0, dark), width: line ? 1.6 : 0, points: { show: true, size: line ? 4 : 5, fill: seriesColor(0, dark) } }],
     }
-  }, [radial, isFraction, rangeMode, col, dark, line])
-  if (!data || !col) return <Empty text="No field map in this result." />
+  }, [radial, isFraction, rangeMode, col, dark, line, t])
+  if (!data || !col) return <Empty text={t('maps.field.none')} />
   const isMap = layoutOf(data) === 'map'
   return (
     <div className="absolute inset-0 flex flex-col gap-1.5 p-2.5">
@@ -154,12 +160,12 @@ export function RelativeIlluminationMapView(p: RendererProps) {
         <ColumnPicker columns={data.columns} value={c} onChange={setColumn} />
         {isMap && isFraction && (
           <Segmented
-            label="Color scale"
+            label={t('maps.field.colorScale')}
             value={rangeMode}
             onChange={setRangeMode}
             options={[
-              { value: 'data', title: 'Data range', help: "Colors over the map's own range: small differences show" },
-              { value: 'unit', title: '0 to 1', help: 'Colors over 0 to 1, to compare designs' },
+              { value: 'data', title: t('maps.field.dataRange'), help: t('maps.field.dataRangeHelp') },
+              { value: 'unit', title: t('maps.field.unitRange'), help: t('maps.field.unitRangeHelp') },
             ]}
           />
         )}
@@ -170,9 +176,9 @@ export function RelativeIlluminationMapView(p: RendererProps) {
             <FieldMapContent data={data} column={c} contours={levels} rangeMode={rangeMode} isFraction={isFraction} />
           </div>
           <div className="flex min-h-[140px] min-w-0 flex-[2] flex-col">
-            <div className="px-1 text-[11px] font-semibold">{columnTitle(col)} vs image radius</div>
+            <div className="px-1 text-[11px] font-semibold">{t('maps.field.vsRadius', { title: columnTitle(col) })}</div>
             <div className="min-h-0 flex-1">
-              <UPlot options={radialOptions} data={radialData} label={`${columnTitle(col)} versus image radius, ${radial.length} samples`} />
+              <UPlot options={radialOptions} data={radialData} label={t('maps.field.vsRadiusLabel', { title: columnTitle(col), count: radial.length })} />
             </div>
           </div>
         </div>
@@ -188,13 +194,14 @@ export function RelativeIlluminationMapView(p: RendererProps) {
 // MARK: Chief ray angle
 
 export function ChiefRayAngleView(p: RendererProps) {
+  const t = useT()
   const dark = useDark()
   const data = useMemo(() => readFieldMap(p.result), [p.result])
   const inc = data ? columnIndex(data, 'incidence') : null
   const limit = useMemo(() => sensorLimit(p.result.runInfo.settings?.sensor_limit ?? p.settings.sensor_limit), [p.result, p.settings])
   const [display, setDisplay] = useState<'curve' | 'map' | null>(null)
   const [column, setColumn] = useState<number | null>(null)
-  if (!data || inc === null) return <Empty text="No chief ray angles in this result." />
+  if (!data || inc === null) return <Empty text={t('maps.field.noCra')} />
   const isMap = layoutOf(data) === 'map'
   const shown = display ?? (isMap && !isRadial(data, inc, 1e-3) ? 'map' : 'curve')
   const mapColumns = data.columns.map((_, k) => k).filter((k) => data.columns[k].name !== 'limit' && columnRange(data, k) !== null)
@@ -204,12 +211,12 @@ export function ChiefRayAngleView(p: RendererProps) {
       <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
         {isMap && (
           <Segmented
-            label="Display"
+            label={t('maps.field.display')}
             value={shown}
             onChange={setDisplay}
             options={[
-              { value: 'curve', title: 'Curve' },
-              { value: 'map', title: 'Map' },
+              { value: 'curve', title: t('maps.field.curve') },
+              { value: 'map', title: t('maps.field.map') },
             ]}
           />
         )}
@@ -217,17 +224,17 @@ export function ChiefRayAngleView(p: RendererProps) {
           <ColumnPicker columns={data.columns} indices={mapColumns} value={col} onChange={setColumn} />
         ) : (
           <Legend className="px-0 py-0">
-            <Swatch color={seriesColor(0, dark)} label="Chief ray incidence" />
+            <Swatch color={seriesColor(0, dark)} label={t('maps.field.craIncidence')} />
             {limit.length > 0 && (
               <>
-                <Swatch color={cssVar('--secondary') || '#888'} kind="dash" label="Sensor limit" />
+                <Swatch color={cssVar('--secondary') || '#888'} kind="dash" label={t('maps.field.sensorLimit')} />
                 <span className="inline-flex items-center gap-1.5">
                   <span className="inline-block h-2 w-3 rounded-[2px]" style={{ background: seriesColor(5, dark), opacity: 0.3 }} />
-                  Margin
+                  {t('maps.field.margin')}
                 </span>
                 <span className="inline-flex items-center gap-1.5">
                   <span className="inline-block h-2 w-3 rounded-[2px]" style={{ background: dark ? '#ff6961' : '#d70015', opacity: 0.5 }} />
-                  Violation
+                  {t('maps.field.violation')}
                 </span>
               </>
             )}
@@ -240,6 +247,7 @@ export function ChiefRayAngleView(p: RendererProps) {
 }
 
 function CraCurve({ data, inc, limit, dark }: { data: FieldMapData; inc: number; limit: [number, number][]; dark: boolean }) {
+  const t = useT()
   const lay = layoutOf(data)
   const { plotData, bands, xLabel } = useMemo(() => {
     const heights = lay === 'sweepX' ? data.image.map((q) => q[0]) : lay === 'sweepY' ? data.image.map((q) => q[1]) : imageRadius(data)
@@ -268,9 +276,9 @@ function CraCurve({ data, inc, limit, dark }: { data: FieldMapData; inc: number;
     }
     const series: (number | null)[][] = [x, curve ? at(curve) : x.map(() => null), at(samples)]
     if (limit.length) series.push(x.map((v) => limitAt(limit, Math.abs(v))))
-    const xLabel = lay === 'map' ? 'Image radius (mm)' : lay === 'sweepX' ? 'Image height x (mm)' : 'Image height y (mm)'
+    const xLabel = lay === 'map' ? t('maps.field.imageRadius') : lay === 'sweepX' ? t('maps.field.imageHeightX') : t('maps.field.imageHeightY')
     return { plotData: series as uPlot.AlignedData, bands, xLabel }
-  }, [data, inc, limit, lay])
+  }, [data, inc, limit, lay, t])
 
   const options = useMemo<PlotOptions>(() => {
     const secondary = cssVar('--secondary') || '#888'
@@ -280,15 +288,15 @@ function CraCurve({ data, inc, limit, dark }: { data: FieldMapData; inc: number;
     const ymax = Math.max((finiteRange(ys)?.max ?? 1) * 1.08, 1e-3)
     const series: uPlot.Series[] = [
       {},
-      { label: 'Incidence', stroke: seriesColor(0, dark), width: 1.8, spanGaps: true, points: { show: false } },
-      { label: 'Incidence', stroke: seriesColor(0, dark), width: 0, points: { show: true, size: 4, fill: seriesColor(0, dark) } },
+      { label: t('maps.field.incidence'), stroke: seriesColor(0, dark), width: 1.8, spanGaps: true, points: { show: false } },
+      { label: t('maps.field.incidence'), stroke: seriesColor(0, dark), width: 0, points: { show: true, size: 4, fill: seriesColor(0, dark) } },
     ]
-    if (plotData.length > 3) series.push({ label: 'Sensor limit', stroke: secondary, width: 1.4, dash: DASH, points: { show: false } })
+    if (plotData.length > 3) series.push({ label: t('maps.field.sensorLimit'), stroke: secondary, width: 1.4, dash: DASH, points: { show: false } })
     return {
       legend: { show: false },
       cursor: calmCursor,
       scales: { x: { time: false }, y: { range: [0, ymax] } },
-      axes: [axis(xLabel), axis('Incidence (°)', { size: 40 })],
+      axes: [axis(xLabel), axis(t('maps.field.incidenceDeg'), { size: 40 })],
       series,
       hooks: {
         drawClear: [
@@ -313,9 +321,9 @@ function CraCurve({ data, inc, limit, dark }: { data: FieldMapData; inc: number;
         ],
       },
     }
-  }, [plotData, bands, xLabel, dark])
+  }, [plotData, bands, xLabel, dark, t])
 
-  return <UPlot options={options} data={plotData} label="Chief ray incidence versus image height, with the sensor limit" />
+  return <UPlot options={options} data={plotData} label={t('maps.field.craLabel')} />
 }
 
 // MARK: Key numbers
@@ -331,7 +339,7 @@ export function fieldMapKeyNumbers(analysis: string) {
       const x = columnIndex(d, 'stop_error_x'), y = columnIndex(d, 'stop_error_y')
       if (x !== null && y !== null) {
         const e = Array.from({ length: countOf(d) }, (_, k) => Math.hypot(valueAt(d, k, x), valueAt(d, k, y))).filter(Number.isFinite)
-        if (e.length) out.push({ label: 'Max stop error', value: lengthText(Math.max(...e)), help: 'Largest chief-ray miss of the stop centre' })
+        if (e.length) out.push({ label: t('maps.keys.maxStopError'), value: lengthText(Math.max(...e)), help: t('maps.keys.maxStopErrorHelp') })
       }
       const v = ['variation_x', 'variation_y']
         .map((n) => columnIndex(d, n))
@@ -340,26 +348,26 @@ export function fieldMapKeyNumbers(analysis: string) {
         .filter(Number.isFinite)
       if (v.length) {
         const m = v.reduce((a, b) => (Math.abs(b) > Math.abs(a) ? b : a))
-        out.push({ label: 'Max variation', value: `${m >= 0 ? '+' : '−'}${Math.abs(m * 100).toFixed(2)} %`, help: 'Largest pupil size variation' })
+        out.push({ label: t('maps.keys.maxVariation'), value: `${m >= 0 ? '+' : '−'}${Math.abs(m * 100).toFixed(2)} %`, help: t('maps.keys.maxVariationHelp') })
       }
     } else if (analysis === 'relative_illumination_map') {
       const c = columnIndex(d, 'relative_illumination')
       const r = c !== null ? columnRange(d, c) : null
-      if (r) out.push({ label: 'Min RI', value: r.min.toFixed(3), help: 'Lowest relative illumination over the map' })
+      if (r) out.push({ label: t('maps.keys.minRI'), value: r.min.toFixed(3), help: t('maps.keys.minRIHelp') })
       const v = columnIndex(d, 'vignetting_fraction')
       const rv = v !== null ? columnRange(d, v) : null
-      if (rv && rv.max > 0) out.push({ label: 'Max vignetting', value: pct(rv.max) })
+      if (rv && rv.max > 0) out.push({ label: t('maps.keys.maxVignetting'), value: pct(rv.max) })
     } else if (analysis === 'chief_ray_angle') {
       const c = columnIndex(d, 'incidence')
       const k = c !== null ? argExtreme(d, c, 1) : null
       if (c !== null && k !== null) {
-        out.push({ label: 'Max CRA', value: `${valueAt(d, k, c).toFixed(2)}°`, help: 'Largest chief ray incidence on the sensor' })
+        out.push({ label: t('maps.keys.maxCra'), value: `${valueAt(d, k, c).toFixed(2)}°`, help: t('maps.keys.maxCraHelp') })
         const h = imageRadius(d)[k]
-        if (Number.isFinite(h)) out.push({ label: 'at', value: `${Number(h.toPrecision(3))} mm`, help: 'Image radius of the largest incidence' })
+        if (Number.isFinite(h)) out.push({ label: t('maps.keys.at'), value: `${Number(h.toPrecision(3))} mm`, help: t('maps.keys.atHelp') })
       }
       const m = columnIndex(d, 'margin')
       const rm = m !== null ? columnRange(d, m) : null
-      if (rm) out.push({ label: 'Min margin', value: `${rm.min >= 0 ? '+' : '−'}${Math.abs(rm.min).toFixed(2)}°`, help: 'Smallest margin below the sensor limit' })
+      if (rm) out.push({ label: t('maps.keys.minMargin'), value: `${rm.min >= 0 ? '+' : '−'}${Math.abs(rm.min).toFixed(2)}°`, help: t('maps.keys.minMarginHelp') })
     }
     return out
   }

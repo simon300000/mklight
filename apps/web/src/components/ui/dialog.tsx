@@ -3,6 +3,7 @@ import { X } from 'lucide-react'
 import * as React from 'react'
 import { usePortalContainer } from '@/views/panels/context'
 import { cn } from '@/lib/utils'
+import { useT } from '@/i18n'
 
 export const Dialog = D.Root
 export const DialogTrigger = D.Trigger
@@ -11,6 +12,7 @@ export const DialogTitle = D.Title
 export const DialogDescription = D.Description
 
 export function DialogContent({ className, children, ...props }: React.ComponentProps<typeof D.Content>) {
+  const t = useT()
   return (
     <D.Portal container={usePortalContainer()}>
       <D.Overlay className="fixed inset-0 z-40 bg-black/20" />
@@ -22,7 +24,7 @@ export function DialogContent({ className, children, ...props }: React.Component
         {...props}
       >
         {children}
-        <D.Close className="absolute right-3 top-3 rounded-full p-1 text-secondary hover:bg-hover" aria-label="Close">
+        <D.Close className="absolute right-3 top-3 rounded-full p-1 text-secondary hover:bg-hover" aria-label={t('common.close')}>
           <X className="size-4" />
         </D.Close>
       </D.Content>

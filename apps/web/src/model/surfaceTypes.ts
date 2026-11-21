@@ -4,12 +4,16 @@
 // lists with term labels. The inspector draws any type from its descriptor.
 
 import type { Json, JsonObject } from '@/engine/types'
+import { t, tMaybe, type Key } from '@/i18n'
 import type { ParamPath } from './params'
 import type { Shape, Surface, System } from './system'
 import { conicOf, curvatureOf } from './system'
 
 export type Group = 'Spherical' | 'Aspheric' | 'Freeform' | 'Anamorphic' | 'Diffractive' | 'Special'
 export const GROUPS: Group[] = ['Spherical', 'Aspheric', 'Freeform', 'Anamorphic', 'Diffractive', 'Special']
+
+/** A group's name in the UI language (`GROUPS` holds the ids). */
+export const groupTitle = (g: Group): string => t(`inspector.groups.${g}` as Key)
 
 export interface ShapeParam {
   key: string
@@ -26,7 +30,7 @@ export interface ShapeParam {
 
 export interface CoefficientList {
   key: string
-  title: string
+  readonly title: string
   max: (shape: Shape) => number
   term: (k: number, shape: Shape) => string
   meaning?: (k: number, shape: Shape) => string
@@ -38,6 +42,7 @@ export interface CoefficientList {
 }
 
 export interface ParamSection {
+  id: string
   title: string
   params: ShapeParam[]
   coefficients?: CoefficientList
@@ -66,32 +71,43 @@ const shapeParamPath = (parameter: string) => (surface: number): ParamPath => ({
 const coefficientPath = (set: string) => (surface: number, index: number): ParamPath => ({ param: 'shape_coefficient', surface, set, index })
 const asphere = (surface: number, index: number): ParamPath => ({ param: 'asphere', surface, index })
 
-const radius = (key = 'curvature', title = 'Radius', path: ShapeParam['path'] = curvaturePath): ShapeParam => ({
+const text = (key: string): string => t(`inspector.${key}` as Key)
+
+/** A parameter whose title and help are read through `t()` when used. */
+const param = (key: string, title: string, rest: Omit<ShapeParam, 'key' | 'title' | 'help'> & { help?: string }): ShapeParam => ({
   key,
-  title,
-  unit: 'mm',
-  radius: true,
-  help: 'Radius of curvature; ∞ for a plane. Stored as curvature c = 1/R.',
-  path,
+  ...rest,
+  get title() {
+    return text(`params.${title}`)
+  },
+  get help() {
+    return rest.help ? text(`params.${rest.help}`) : undefined
+  },
 })
-const conic = (key = 'conic', title = 'Conic', path: ShapeParam['path'] = conicPath): ShapeParam => ({
-  key,
-  title,
-  unit: '',
-  help: 'Conic constant k: 0 sphere, −1 paraboloid, < −1 hyperboloid.',
-  path,
-})
-const normRadius = (key = 'norm_radius'): ShapeParam => ({
-  key,
-  title: 'Norm radius',
-  unit: 'mm',
-  help: 'Normalisation radius r_norm: the polynomial is defined for r ≤ r_norm. Usually the clear semi-diameter.',
-  path: shapeParamPath('norm_radius'),
+
+const radius = (key = 'curvature', title = 'radius', path: ShapeParam['path'] = curvaturePath): ShapeParam =>
+  param(key, title, { unit: 'mm', radius: true, help: 'radiusHelp', path })
+const conic = (key = 'conic', title = 'conic', path: ShapeParam['path'] = conicPath): ShapeParam => param(key, title, { unit: '', help: 'conicHelp', path })
+const normRadius = (key = 'norm_radius'): ShapeParam =>
+  param(key, 'normRadius', { unit: 'mm', help: 'normRadiusHelp', path: shapeParamPath('norm_radius') })
+
+/** A section whose title and footer are read through `t()` when used. */
+const section = (id: string, rest: Omit<ParamSection, 'id' | 'title' | 'footer'>, footer = false): ParamSection => ({
+  id,
+  ...rest,
+  get title() {
+    return text(`sections.${id}`)
+  },
+  get footer() {
+    return footer ? text(`footers.${id}`) : undefined
+  },
 })
 
 const axisList = (axis: string, key: string, letter: string): CoefficientList => ({
   key,
-  title: `${axis.toUpperCase()} Polynomial`,
+  get title() {
+    return t('inspector.sections.axisPolynomial', { axis: axis.toUpperCase() })
+  },
   max: () => 10,
   term: (k) => `${letter}${sub(2 * k + 4)}`,
   meaning: (k) => axis + sup(2 * k + 4),
@@ -127,282 +143,219 @@ export function zernikeTerm(j: number, ordering: string): { n: number; m: number
   return { n: nn, m: am === 0 ? 0 : j % 2 === 0 ? am : -am }
 }
 
-export function zernikeName(t: { n: number; m: number }): string {
-  const m = Math.abs(t.m)
-  const axis = t.m > 0 ? ' x' : t.m < 0 ? ' y' : ''
-  const names: Record<string, string> = {
-    '0,0': 'piston', '1,1': 'tilt', '2,0': 'defocus', '2,2': 'astigmatism', '3,1': 'coma', '3,3': 'trefoil',
-    '4,0': 'spherical', '4,2': '2nd astigmatism', '4,4': 'tetrafoil', '5,1': '2nd coma', '5,3': '2nd trefoil',
-    '5,5': 'pentafoil', '6,0': '2nd spherical', '8,0': '3rd spherical',
+const ZERNIKE_NAMES = new Set(['0,0', '1,1', '2,0', '2,2', '3,1', '3,3', '4,0', '4,2', '4,4', '5,1', '5,3', '5,5', '6,0', '8,0'])
+
+export function zernikeName(z: { n: number; m: number }): string {
+  const m = Math.abs(z.m)
+  const axis = z.m > 0 ? ' x' : z.m < 0 ? ' y' : ''
+  const id = `${z.n},${m}`
+  if (ZERNIKE_NAMES.has(id)) {
+    const name = text(`zernike.n${z.n}m${m}`)
+    return name + (m === 0 ? '' : z.n === 1 || z.n === 3 || z.n === 5 ? axis : z.m > 0 ? ' 0°' : ' 45°')
   }
-  const name = names[`${t.n},${m}`]
-  if (name) return name + (m === 0 ? '' : t.n === 1 || t.n === 3 || t.n === 5 ? axis : t.m > 0 ? ' 0°' : ' 45°')
-  return `n${t.n} m${t.m}`
+  return `n${z.n} m${z.m}`
+}
+
+/** A surface type whose title and summary are read through `t()` when used. */
+const surfaceType = (id: string, group: Group, sections: ParamSection[]): SurfaceTypeDescriptor => ({
+  id,
+  group,
+  sections,
+  get title() {
+    return text(`types.${id}.title`)
+  },
+  get summary() {
+    return text(`types.${id}.summary`)
+  },
+})
+
+/** The coefficient list's title: "Coefficients". */
+const coefficientsTitle = {
+  get title() {
+    return text('sections.coefficients')
+  },
 }
 
 export const SURFACE_TYPES: SurfaceTypeDescriptor[] = [
-  { id: 'plane', title: 'Plane', group: 'Spherical', summary: 'A flat surface.', sections: [] },
-  {
-    id: 'conic',
-    title: 'Sphere / Conic',
-    group: 'Spherical',
-    summary: 'Sphere or conic of revolution.',
-    sections: [{ title: 'Shape', params: [radius(), conic()] }],
-  },
-  {
-    id: 'even_asphere',
-    title: 'Even Asphere',
-    group: 'Aspheric',
-    summary: 'Conic plus even polynomial terms A₄r⁴ + A₆r⁶ + …',
-    sections: [
-      { title: 'Base Conic', params: [radius(), conic()] },
-      {
-        title: 'Polynomial',
-        params: [],
-        coefficients: {
-          key: 'coefficients',
-          title: 'Coefficients',
-          max: () => 10,
-          term: (k) => `A${sub(2 * k + 4)}`,
-          meaning: (k) => 'r' + sup(2 * k + 4),
-          unit: (k) => mmPower(-(2 * k + 3)),
-          path: asphere,
-        },
+  surfaceType('plane', 'Spherical', []),
+  surfaceType('conic', 'Spherical', [section('shape', { params: [radius(), conic()] })]),
+  surfaceType('even_asphere', 'Aspheric', [
+    section('baseConic', { params: [radius(), conic()] }),
+    section('polynomial', {
+      params: [],
+      coefficients: {
+        key: 'coefficients',
+        ...coefficientsTitle,
+        max: () => 10,
+        term: (k) => `A${sub(2 * k + 4)}`,
+        meaning: (k) => 'r' + sup(2 * k + 4),
+        unit: (k) => mmPower(-(2 * k + 3)),
+        path: asphere,
       },
-    ],
-  },
-  {
-    id: 'odd_asphere',
-    title: 'Odd Asphere',
-    group: 'Aspheric',
-    summary: 'Conic plus all powers of r: β₁r + β₂r² + β₃r³ + … A nonzero β₁ is a cone at the vertex.',
-    sections: [
-      { title: 'Base Conic', params: [radius(), conic()] },
-      {
-        title: 'Polynomial',
-        params: [],
-        coefficients: {
-          key: 'coefficients',
-          title: 'Coefficients',
-          max: () => 20,
-          term: (k) => `β${sub(k + 1)}`,
-          meaning: (k) => 'r' + (k === 0 ? '' : sup(k + 1)),
-          unit: (k) => mmPower(-k),
-          path: coefficientPath('odd'),
-        },
+    }),
+  ]),
+  surfaceType('odd_asphere', 'Aspheric', [
+    section('baseConic', { params: [radius(), conic()] }),
+    section('polynomial', {
+      params: [],
+      coefficients: {
+        key: 'coefficients',
+        ...coefficientsTitle,
+        max: () => 20,
+        term: (k) => `β${sub(k + 1)}`,
+        meaning: (k) => 'r' + (k === 0 ? '' : sup(k + 1)),
+        unit: (k) => mmPower(-k),
+        path: coefficientPath('odd'),
       },
-    ],
-  },
-  {
-    id: 'q_con',
-    title: 'Q-Type (Conic)',
-    group: 'Aspheric',
-    summary: 'Forbes conic-based asphere: conic plus u⁴ Σ aₘ Qₘᶜᵒⁿ(u²), u = r/r_norm. Keeps the vertex curvature.',
-    sections: [
-      { title: 'Base Conic', params: [radius(), conic(), normRadius()] },
-      {
-        title: 'Q Polynomial',
-        params: [],
-        coefficients: {
-          key: 'coefficients',
-          title: 'Coefficients',
-          max: () => 20,
-          term: (k) => `a${sub(k)}`,
-          meaning: (k) => `u⁴Q${sub(k)}ᶜᵒⁿ`,
-          unit: () => 'mm',
-          path: coefficientPath('q'),
-        },
+    }),
+  ]),
+  surfaceType('q_con', 'Aspheric', [
+    section('baseConic', { params: [radius(), conic(), normRadius()] }),
+    section('qPolynomial', {
+      params: [],
+      coefficients: {
+        key: 'coefficients',
+        ...coefficientsTitle,
+        max: () => 20,
+        term: (k) => `a${sub(k)}`,
+        meaning: (k) => `u⁴Q${sub(k)}ᶜᵒⁿ`,
+        unit: () => 'mm',
+        path: coefficientPath('q'),
       },
-    ],
-  },
-  {
-    id: 'q_bfs',
-    title: 'Q-Type (Best-Fit Sphere)',
-    group: 'Aspheric',
-    summary: 'Forbes slope-orthogonal departure from a best-fit sphere: u²(1−u²) Σ aₘ Qₘᵇᶠˢ(u²) / √(1−c²r²).',
-    sections: [
-      { title: 'Best-Fit Sphere', params: [radius(), normRadius()] },
-      {
-        title: 'Q Polynomial',
-        params: [],
-        coefficients: {
-          key: 'coefficients',
-          title: 'Coefficients',
-          max: () => 20,
-          term: (k) => `a${sub(k)}`,
-          meaning: (k) => `Q${sub(k)}ᵇᶠˢ`,
-          unit: () => 'mm',
-          path: coefficientPath('q'),
-        },
+    }),
+  ]),
+  surfaceType('q_bfs', 'Aspheric', [
+    section('bestFitSphere', { params: [radius(), normRadius()] }),
+    section('qPolynomial', {
+      params: [],
+      coefficients: {
+        key: 'coefficients',
+        ...coefficientsTitle,
+        max: () => 20,
+        term: (k) => `a${sub(k)}`,
+        meaning: (k) => `Q${sub(k)}ᵇᶠˢ`,
+        unit: () => 'mm',
+        path: coefficientPath('q'),
       },
-    ],
-  },
-  {
-    id: 'xy_polynomial',
-    title: 'XY Polynomial',
-    group: 'Freeform',
-    summary: 'Freeform: conic plus Σ C(xᵐyⁿ) Xᵐ Yⁿ with X = x/r_norm, Y = y/r_norm; degrees 1 to 10.',
-    sections: [
-      { title: 'Base Conic', params: [radius(), conic(), normRadius()] },
-      {
-        title: 'XY Terms',
-        params: [],
-        coefficients: {
-          key: 'coefficients',
-          title: 'Coefficients',
-          max: () => 65,
-          term: (k) => `C(${monomial(xyTerm(k))})`,
-          unit: () => 'mm',
-          path: coefficientPath('xy'),
-          sparse: true,
-        },
+    }),
+  ]),
+  surfaceType('xy_polynomial', 'Freeform', [
+    section('baseConic', { params: [radius(), conic(), normRadius()] }),
+    section('xyTerms', {
+      params: [],
+      coefficients: {
+        key: 'coefficients',
+        ...coefficientsTitle,
+        max: () => 65,
+        term: (k) => `C(${monomial(xyTerm(k))})`,
+        unit: () => 'mm',
+        path: coefficientPath('xy'),
+        sparse: true,
       },
-    ],
-  },
-  {
-    id: 'zernike_sag',
-    title: 'Zernike Sag',
-    group: 'Freeform',
-    summary: 'Freeform: conic plus Σ cⱼ Zⱼ(ρ, θ), ρ = r/r_norm, θ from +x. Sag coefficients in mm, piston and tilt kept.',
-    sections: [
-      {
-        title: 'Base Conic',
-        params: [
-          radius(),
-          conic(),
-          normRadius(),
-          {
-            key: 'ordering',
-            title: 'Ordering',
-            unit: '',
-            options: [
-              { value: 'fringe', title: 'Fringe (37)' },
-              { value: 'standard', title: 'Standard (45)' },
-            ],
+    }),
+  ]),
+  surfaceType('zernike_sag', 'Freeform', [
+    section('baseConic', {
+      params: [
+        radius(),
+        conic(),
+        normRadius(),
+        {
+          key: 'ordering',
+          get title() {
+            return text('params.ordering')
           },
-        ],
-      },
-      {
-        title: 'Zernike Terms',
-        params: [],
-        coefficients: {
-          key: 'coefficients',
-          title: 'Coefficients',
-          max: (s) => (s.ordering === 'standard' ? 45 : 37),
-          term: (k) => `Z${sub(k + 1)}`,
-          meaning: (k, s) => zernikeName(zernikeTerm(k + 1, String(s.ordering ?? 'fringe'))),
-          unit: () => 'mm',
-          path: coefficientPath('zernike'),
-          sparse: true,
+          unit: '',
+          options: [
+            { value: 'fringe', title: 'Fringe (37)' },
+            { value: 'standard', title: 'Standard (45)' },
+          ],
         },
+      ],
+    }),
+    section('zernikeTerms', {
+      params: [],
+      coefficients: {
+        key: 'coefficients',
+        ...coefficientsTitle,
+        max: (s) => (s.ordering === 'standard' ? 45 : 37),
+        term: (k) => `Z${sub(k + 1)}`,
+        meaning: (k, s) => zernikeName(zernikeTerm(k + 1, String(s.ordering ?? 'fringe'))),
+        unit: () => 'mm',
+        path: coefficientPath('zernike'),
+        sparse: true,
       },
-    ],
-  },
-  {
-    id: 'toroid',
-    title: 'Toroid',
-    group: 'Anamorphic',
-    summary: 'The y profile (conic plus even terms) rotated about an axis parallel to y at the distance R_x.',
-    sections: [
-      {
-        title: 'Y Profile',
-        params: [radius('curvature_y', 'Radius y'), conic('conic_y', 'Conic y', shapeParamPath('conic_y'))],
-        coefficients: axisList('y', 'y_asphere', 'B'),
+    }),
+  ]),
+  surfaceType('toroid', 'Anamorphic', [
+    section('yProfile', {
+      params: [radius('curvature_y', 'radiusY'), conic('conic_y', 'conicY', shapeParamPath('conic_y'))],
+      coefficients: axisList('y', 'y_asphere', 'B'),
+    }),
+    section('rotation', { params: [radius('curvature_x', 'radiusX', shapeParamPath('curvature_x'))] }, true),
+  ]),
+  surfaceType('biconic', 'Anamorphic', [
+    section('xSection', {
+      params: [radius('curvature_x', 'radiusX', shapeParamPath('curvature_x')), conic('conic_x', 'conicX', shapeParamPath('conic_x'))],
+      coefficients: axisList('x', 'x_asphere', 'A'),
+    }),
+    section('ySection', {
+      params: [radius('curvature_y', 'radiusY'), conic('conic_y', 'conicY', shapeParamPath('conic_y'))],
+      coefficients: axisList('y', 'y_asphere', 'B'),
+    }),
+  ]),
+  surfaceType('diffractive', 'Diffractive', [
+    section('baseShape', {
+      params: [radius('base.curvature'), conic('base.conic')],
+      applies: (s) => (s.base as Shape | undefined)?.type !== 'plane',
+    }),
+    section('basePolynomial', {
+      params: [],
+      coefficients: {
+        key: 'base.coefficients',
+        ...coefficientsTitle,
+        max: () => 10,
+        term: (k) => `A${sub(2 * k + 4)}`,
+        meaning: (k) => 'r' + sup(2 * k + 4),
+        unit: (k) => mmPower(-(2 * k + 3)),
+        path: asphere,
       },
+      applies: (s) => (s.base as Shape | undefined)?.type === 'even_asphere',
+    }),
+    section(
+      'phase',
       {
-        title: 'Rotation',
-        params: [radius('curvature_x', 'Radius x', shapeParamPath('curvature_x'))],
-        footer: 'Radius x is the distance from the vertex to the axis of rotation; ∞ makes a y cylinder.',
-      },
-    ],
-  },
-  {
-    id: 'biconic',
-    title: 'Biconic',
-    group: 'Anamorphic',
-    summary: 'Independent conics in x and y with even axis polynomials. A cylinder is a biconic with one plane axis.',
-    sections: [
-      {
-        title: 'X Section',
-        params: [radius('curvature_x', 'Radius x', shapeParamPath('curvature_x')), conic('conic_x', 'Conic x', shapeParamPath('conic_x'))],
-        coefficients: axisList('x', 'x_asphere', 'A'),
-      },
-      {
-        title: 'Y Section',
-        params: [radius('curvature_y', 'Radius y'), conic('conic_y', 'Conic y', shapeParamPath('conic_y'))],
-        coefficients: axisList('y', 'y_asphere', 'B'),
-      },
-    ],
-  },
-  {
-    id: 'diffractive',
-    title: 'Diffractive',
-    group: 'Diffractive',
-    summary: 'A fixed-period phase Φ = Σ Aᵢ ρ²ⁱ (order +1, radians) on a plane, conic or even-asphere base.',
-    sections: [
-      {
-        title: 'Base Shape',
-        params: [radius('base.curvature'), conic('base.conic')],
-        applies: (s) => (s.base as Shape | undefined)?.type !== 'plane',
-      },
-      {
-        title: 'Base Polynomial',
-        params: [],
-        coefficients: {
-          key: 'base.coefficients',
-          title: 'Coefficients',
-          max: () => 10,
-          term: (k) => `A${sub(2 * k + 4)}`,
-          meaning: (k) => 'r' + sup(2 * k + 4),
-          unit: (k) => mmPower(-(2 * k + 3)),
-          path: asphere,
-        },
-        applies: (s) => (s.base as Shape | undefined)?.type === 'even_asphere',
-      },
-      {
-        title: 'Phase',
         params: [normRadius('phase.norm_radius')],
         coefficients: {
           key: 'phase.coefficients',
-          title: 'Coefficients',
+          ...coefficientsTitle,
           max: () => 10,
           term: (k) => `A${sub(k + 1)}`,
           meaning: (k) => 'ρ' + sup(2 * (k + 1)),
           unit: () => 'rad',
           path: coefficientPath('phase'),
         },
-        footer: 'A focusing phase has negative A₁. Coefficients describe order +1 and stay fixed when the wavelength or order changes.',
       },
+      true,
+    ),
+    section(
+      'orders',
       {
-        title: 'Orders',
         params: [
-          { key: 'phase.design_order', title: 'Design order', unit: '', integer: true, help: 'The order the structure is designed for (nonzero). Metadata: it does not rescale the phase.' },
-          { key: 'phase.design_wavelength_um', title: 'Design λ', unit: 'µm', help: 'Design wavelength λ₀. Metadata: it does not rescale the phase.' },
-          { key: 'phase.trace_order', title: 'Trace order', unit: '', integer: true, help: 'The order rays follow; 0 is ordinary refraction or reflection.' },
+          param('phase.design_order', 'designOrder', { unit: '', integer: true, help: 'designOrderHelp' }),
+          param('phase.design_wavelength_um', 'designWavelength', { unit: 'µm', help: 'designWavelengthHelp' }),
+          param('phase.trace_order', 'traceOrder', { unit: '', integer: true, help: 'traceOrderHelp' }),
         ],
-        footer: 'Orders are discrete and never optimization variables.',
       },
-    ],
-  },
-  {
-    id: 'paraxial',
-    title: 'Ideal Lens',
-    group: 'Special',
-    summary: 'A thin, aberration-free lens of the given focal length.',
-    sections: [
-      {
-        title: 'Ideal Lens',
-        params: [{ key: 'focal_length', title: 'Focal length', unit: 'mm', help: 'Focal length of the ideal lens.', path: (surface) => ({ param: 'paraxial_focal_length', surface }) }],
-      },
-    ],
-  },
-  {
-    id: 'coordinate_break',
-    title: 'Coordinate Break',
-    group: 'Special',
-    summary: 'Changes the coordinate frame only: decenters, then tilts (or the reverse).',
-    sections: [],
-  },
+      true,
+    ),
+  ]),
+  surfaceType('paraxial', 'Special', [
+    section('idealLens', {
+      params: [param('focal_length', 'focalLength', { unit: 'mm', help: 'focalLengthHelp', path: (surface) => ({ param: 'paraxial_focal_length', surface }) })],
+    }),
+  ]),
+  surfaceType('coordinate_break', 'Special', []),
 ]
 
 export const descriptorFor = (type: string) => SURFACE_TYPES.find((d) => d.id === type)
@@ -432,34 +385,40 @@ export function typeChoice(shape: Shape): string {
 }
 
 export const CYLINDER_CHOICES = [
-  { id: 'cylinder_x', title: 'Cylinder (power in x)' },
-  { id: 'cylinder_y', title: 'Cylinder (power in y)' },
+  {
+    id: 'cylinder_x',
+    get title() {
+      return text('types.cylinder_x.title')
+    },
+  },
+  {
+    id: 'cylinder_y',
+    get title() {
+      return text('types.cylinder_y.title')
+    },
+  },
 ]
 
 /** Short type name for the table: a conic of k = 0 is a sphere. */
 export function tableTypeTitle(shape: Shape): string {
   switch (shape.type) {
     case 'conic':
-      return Number(shape.conic ?? 0) === 0 ? 'Sphere' : 'Conic'
+      return Number(shape.conic ?? 0) === 0 ? text('table.sphere') : text('table.conic')
     case 'sphere':
-      return 'Sphere'
+      return text('table.sphere')
     case 'q_con':
-      return 'Q-Con'
+      return text('table.qCon')
     case 'q_bfs':
-      return 'Q-BFS'
+      return text('table.qBfs')
     case 'biconic':
-      return cylinderAxis(shape) ? 'Cylinder' : 'Biconic'
+      return cylinderAxis(shape) ? text('table.cylinder') : text('table.biconic')
     default:
       return typeTitle(shape.type)
   }
 }
 
-/** Short type label for the table's type column. */
-export const TYPE_SHORT: Record<string, string> = {
-  plane: 'Plane', conic: 'Conic', sphere: 'Sphere', even_asphere: 'Even Asph', odd_asphere: 'Odd Asph',
-  q_con: 'Q-con', q_bfs: 'Q-bfs', xy_polynomial: 'XY Poly', zernike_sag: 'Zernike', toroid: 'Toroid',
-  biconic: 'Biconic', diffractive: 'DOE', paraxial: 'Ideal', coordinate_break: 'Coord Brk',
-}
+/** Short type label for the table's type column (the type id when it has none). */
+export const typeShort = (id: string): string => tMaybe(`inspector.short.${id}`) ?? id
 
 // MARK: Key paths
 

@@ -4,11 +4,12 @@
 
 import { ArrowRight, Sigma } from 'lucide-react'
 import { useEffect, useMemo } from 'react'
+import { useT } from '@/i18n'
 import { sig } from '@/model/format'
 import { solvesOf } from '@/model/params'
 import { useDocument } from '@/state/document'
 import { useJobs } from '@/state/jobs'
-import { METHOD_TITLES, solveRows, solveWarnings, useSolves } from '@/state/solves'
+import { methodTitle, solveRows, solveWarnings, useSolves } from '@/state/solves'
 import { useWorkspace } from '@/state/workspace'
 import { cn } from '@/lib/utils'
 import { AppliedNotice, JobActions, JobFailure, JobPanelFrame } from './JobPanel'
@@ -16,6 +17,7 @@ import { AppliedNotice, JobActions, JobFailure, JobPanelFrame } from './JobPanel
 const short = (v: number | null) => (v == null ? '—' : sig(v, 6))
 
 export function SolvesPanel() {
+  const t = useT()
   const system = useDocument((s) => s.project.system)
   const job = useJobs((s) => s.jobs.solves)
   const snapshot = useWorkspace((s) => s.snapshot)
@@ -40,8 +42,8 @@ export function SolvesPanel() {
   }, [])
 
   const report = committed ? appliedReport : job.result?.json
-  const rows = useMemo(() => solveRows(report, system), [report, system])
-  const warnings = solveWarnings(report)
+  const rows = useMemo(() => solveRows(report, system), [report, system, t])
+  const warnings = useMemo(() => solveWarnings(report), [report, t])
   const changes = rows.filter((r) => r.changed).length
 
   let body: React.ReactNode
@@ -49,20 +51,18 @@ export function SolvesPanel() {
     body = (
       <div className="flex flex-col items-center gap-2 px-4 py-10 text-center" data-testid="no-solves">
         <Sigma className="size-8 text-secondary" />
-        <h3 className="text-[15px] font-semibold">No Solves</h3>
-        <p className="text-[12px] text-secondary">
-          Add solves in the surface inspector: marginal or chief ray height on a thickness, angle or F-number on a curvature, pickups.
-        </p>
+        <h3 className="text-[15px] font-semibold">{t('optimize.solves.noneTitle')}</h3>
+        <p className="text-[12px] text-secondary">{t('optimize.solves.noneHelp')}</p>
       </div>
     )
   } else if (job.phase === 'failed') {
-    body = <JobFailure title="Solving Failed" reason={job.error ?? 'The solves could not be evaluated.'} />
+    body = <JobFailure title={t('optimize.solves.failedTitle')} reason={job.error ?? t('optimize.solves.failedReason')} />
   } else if (job.phase === 'review' || job.phase === 'done') {
     body = (
       <div className="flex flex-col gap-2 text-[13px]" data-testid="solves-report">
         {committed && <AppliedNotice />}
         <p className="text-[12px] text-secondary">
-          {committed ? 'The design now holds these solved values.' : 'Dry run: the values the solves would set. Nothing has changed yet.'}
+          {committed ? t('optimize.solves.committedHelp') : t('optimize.solves.dryRunHelp')}
         </p>
         <div className="select-text rounded-lg bg-content shadow-[0_0_0_0.5px_var(--separator)]">
           {rows.map((r, i) => (
@@ -73,10 +73,10 @@ export function SolvesPanel() {
               </div>
               <div className="num flex items-center gap-1.5 text-[12px]">
                 <span>{short(r.previous)}</span>
-                <ArrowRight className="size-3 text-secondary" aria-label="to" />
+                <ArrowRight className="size-3 text-secondary" aria-label={t('optimize.job.to')} />
                 <span className={cn(r.changed && 'font-semibold')}>{short(r.value)}</span>
-                <span className="ml-auto text-[11px] text-secondary" title={r.method ? `Method: ${METHOD_TITLES[r.method] ?? r.method}` : undefined}>
-                  residual {sig(r.residual, 3)}
+                <span className="ml-auto text-[11px] text-secondary" title={r.method ? t('optimize.solves.method', { method: methodTitle(r.method) }) : undefined}>
+                  {t('optimize.solves.residual', { value: sig(r.residual, 3) })}
                 </span>
               </div>
             </div>
@@ -92,7 +92,7 @@ export function SolvesPanel() {
   } else {
     body = (
       <p className="py-10 text-center text-[12px] text-secondary" role="status">
-        Solving…
+        {t('optimize.solves.solving')}
       </p>
     )
   }
@@ -100,7 +100,7 @@ export function SolvesPanel() {
   let actions: React.ReactNode = null
   if (count) {
     if (job.phase === 'failed') actions = JobActions.failed('solves', { back: false })
-    else if (committed) actions = JobActions.done('solves', 'Back to the design’s solves')
+    else if (committed) actions = JobActions.done('solves', t('optimize.solves.doneHelp'))
     else
       actions = JobActions.review('solves', () => void useSolves.getState().commit(), {
         discard: false,
@@ -108,7 +108,7 @@ export function SolvesPanel() {
       })
   }
   return (
-    <JobPanelFrame kind="solves" subtitle={`${count} solve${count === 1 ? '' : 's'} in ${system.name || 'the design'}`} actions={actions}>
+    <JobPanelFrame kind="solves" subtitle={t('optimize.solves.subtitle', { count, name: system.name || t('optimize.solves.theDesign') })} actions={actions}>
       {body}
     </JobPanelFrame>
   )

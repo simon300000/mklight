@@ -2,6 +2,7 @@
 // iso-lines (white on a dark halo, labels kept apart), sample dots, a fine
 // no-data hatch, pupil scatter cells and the nearest sample on hover.
 import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
+import { useT } from '@/i18n'
 import { cssVar } from '@/lib/theme'
 import { sig } from '@/model/format'
 import { FONT, niceTicks, rgbCss, setupCanvas, useSize } from '@/views/results/common'
@@ -43,6 +44,7 @@ export interface MapCanvasProps {
 const DISPLAY = 192
 
 export function MapCanvas(p: MapCanvasProps) {
+  const t = useT()
   const [box, size] = useSize<HTMLDivElement>()
   const ref = useRef<HTMLCanvasElement>(null)
   const [hover, setHover] = useState<{ k: number; X: number; Y: number } | null>(null)
@@ -334,7 +336,7 @@ export function MapCanvas(p: MapCanvasProps) {
       ;[x, y] = p.scatter.points[hover.k]
       v = p.scatter.values[hover.k]
     }
-    const value = Number.isFinite(v) ? fmt(v) + unit : p.grid?.unitDisk && outsideDisk(x, y) ? 'Outside the field' : 'No value'
+    const value = Number.isFinite(v) ? fmt(v) + unit : p.grid?.unitDisk && outsideDisk(x, y) ? t('maps.canvas.outsideField') : t('maps.canvas.noValue')
     tip = <Readout x={hover.X} y={hover.Y} width={size.w} title={at(x, y)} rows={[{ value }]} />
   }
 

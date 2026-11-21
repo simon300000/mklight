@@ -4,6 +4,7 @@
 // commit of the solved design through `engine.applySolves`.
 
 import { create } from 'zustand'
+import { engineText, t, tMaybe } from '@/i18n'
 import type { Json, JsonObject } from '@/engine/types'
 import { nf } from '@/model/format'
 import { paramTitle, type ParamPath } from '@/model/params'
@@ -12,17 +13,8 @@ import { useDocument } from './document'
 import { useJobs } from './jobs'
 import { useWorkspace } from './workspace'
 
-export const SOLVE_KIND_TITLES: Record<string, string> = {
-  marginal_ray_height: 'Marginal ray height',
-  marginal_ray_angle: 'Marginal ray angle',
-  chief_ray_height: 'Chief ray height',
-  chief_ray_angle: 'Chief ray angle',
-  f_number: 'F-number',
-  pickup: 'Pickup',
-  position: 'Position',
-  center_of_curvature: 'Centre of curvature',
-  edge_thickness: 'Edge thickness',
-}
+/** A solve kind's name in the current language (the engine's name when unknown). */
+export const solveKindTitle = (kind: string): string => tMaybe(`optimize.solves.kinds.${kind}`) ?? kind.replace(/_/g, ' ')
 
 export interface SolveRow {
   id: number
@@ -58,7 +50,7 @@ export function solveRows(report: JsonObject | null | undefined, system: System 
     return {
       id: typeof o.index === 'number' ? o.index : k,
       target: t ? (system ? paramTitle(system, t) : t.param) : '?',
-      kind: SOLVE_KIND_TITLES[kind] ?? kind.replace(/_/g, ' '),
+      kind: solveKindTitle(kind),
       previous,
       value,
       residual: nf(o.residual),
@@ -69,16 +61,11 @@ export function solveRows(report: JsonObject | null | undefined, system: System 
 }
 
 export function solveWarnings(report: JsonObject | null | undefined): string[] {
-  return Array.isArray(report?.warnings) ? report.warnings.filter((w): w is string => typeof w === 'string') : []
+  return Array.isArray(report?.warnings) ? report.warnings.filter((w): w is string => typeof w === 'string').map((w) => engineText(w)) : []
 }
 
-/** Method titles, as the report shows them. */
-export const METHOD_TITLES: Record<string, string> = {
-  unchanged: 'unchanged',
-  closed_form: 'closed form',
-  fixed_point: 'fixed point',
-  root_finding: 'root finding',
-}
+/** A solve method's name, as the report shows it. */
+export const methodTitle = (method: string): string => tMaybe(`optimize.solves.methods.${method}`) ?? method
 
 interface SolvesState {
   /** The report of the applied commit (shown after Apply). */
@@ -109,12 +96,12 @@ export const useSolves = create<SolvesState>()((set, get) => ({
     try {
       const applied = await ws.engine.applySolves({}, snap)
       const doc = useDocument.getState()
-      doc.replace({ ...doc.project, system: applied.snapshot.system as System }, 'Apply Solves')
+      doc.replace({ ...doc.project, system: applied.snapshot.system as System }, t('optimize.undo.applySolves'))
       set({ appliedReport: applied.report, committing: false })
       useJobs.getState().applied('solves')
     } catch (e) {
       set({ committing: false })
-      useJobs.getState().patch('solves', { phase: 'failed', error: e instanceof Error ? e.message : String(e) })
+      useJobs.getState().patch('solves', { phase: 'failed', error: e instanceof Error ? engineText(e.message) : String(e) })
     }
   },
 

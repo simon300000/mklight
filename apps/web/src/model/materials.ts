@@ -5,6 +5,7 @@
 // (docs/MATERIALS.md).
 
 import type { Json, JsonObject } from '@/engine/types'
+import { t as tr } from '@/i18n'
 import { parseNumber } from './format'
 import type { Material, Surface } from './system'
 
@@ -29,7 +30,7 @@ export function parseMaterial(text: string, known?: Set<string> | readonly strin
     const nd = parseNumber(parts[0])
     const vd = parseNumber(parts[1])
     if (nd == null || vd == null || !(nd >= 1) || !Number.isFinite(nd) || !(vd > 0) || !Number.isFinite(vd)) {
-      return { error: `"${t}" is not a model glass n_d/V_d (n_d ≥ 1, V_d > 0).` }
+      return { error: tr('lens.model.material.notModelGlass', { text: t }) }
     }
     return { interaction: 'refract', material: { type: 'model', nd, vd, dpgf: 0 } }
   }
@@ -39,7 +40,7 @@ export function parseMaterial(text: string, known?: Set<string> | readonly strin
   if (/^[0-9.,]/.test(constant)) {
     const n = parseNumber(constant)
     if (n != null) {
-      if (!(n >= 1) || !Number.isFinite(n)) return { error: `Index ${constant} is not valid (n ≥ 1).` }
+      if (!(n >= 1) || !Number.isFinite(n)) return { error: tr('lens.model.material.indexInvalid', { value: constant }) }
       return { interaction: 'refract', material: { type: 'constant', n } }
     }
   }
@@ -47,14 +48,14 @@ export function parseMaterial(text: string, known?: Set<string> | readonly strin
   if (colon >= 0) {
     const cat = t.slice(0, colon).trim()
     const name = t.slice(colon + 1).trim()
-    if (!cat || !name) return { error: `"${t}" is not a material.` }
+    if (!cat || !name) return { error: tr('lens.model.material.notMaterial', { text: t }) }
     return { interaction: 'refract', material: { type: 'catalog', catalog: cat.toUpperCase(), name: name.toUpperCase() } }
   }
-  if (!/^[\p{L}\p{N}\-_.+]+$/u.test(t)) return { error: `"${t}" is not a material.` }
+  if (!/^[\p{L}\p{N}\-_.+]+$/u.test(t)) return { error: tr('lens.model.material.notMaterial', { text: t }) }
   const names = known ? [...known] : []
   if (names.length) {
     const hit = names.find((g) => g.toUpperCase() === up)
-    if (!hit) return { error: `Unknown glass "${t}". Load its catalog from the System inspector.` }
+    if (!hit) return { error: tr('lens.model.material.unknownGlass', { text: t }) }
     return { interaction: 'refract', material: { type: 'catalog', catalog: null, name: hit } }
   }
   return { interaction: 'refract', material: { type: 'catalog', catalog: null, name: up } }
@@ -115,7 +116,7 @@ export function offsetCompactText(o: MaterialOffset | null): string {
 export function offsetRejection(which: 'dn_d' | 'dv_d', v: number): string | null {
   const max = which === 'dn_d' ? MAX_DN_D : MAX_DV_D
   if (Number.isFinite(v) && Math.abs(v) <= max) return null
-  return `${which === 'dn_d' ? 'Δn_d' : 'ΔV_d'} must lie within ±${max}`
+  return tr('lens.model.material.offsetRange', { name: which === 'dn_d' ? 'Δn_d' : 'ΔV_d', max })
 }
 
 /** `new` typed over `old`: the same catalogue glass keeps its melt offset;

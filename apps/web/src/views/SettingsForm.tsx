@@ -1,6 +1,7 @@
 import { ChevronsUpDown, Minus, Plus } from 'lucide-react'
 import { useState, type ReactNode } from 'react'
 import type { AnalysisResult, Json, JsonObject } from '@/engine/types'
+import { engineText, t as tr, tMaybe, useT } from '@/i18n'
 import { Button } from '@/components/ui/button'
 import { DropdownMenu, DropdownMenuCheckboxItem, DropdownMenuContent, DropdownMenuSeparator, DropdownMenuTrigger } from '@/components/ui/dropdown-menu'
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
@@ -50,26 +51,30 @@ interface Ctx {
 }
 
 function labelOf(key: string, s: Schema): string {
-  if (typeof s.title === 'string') return s.title
-  const t = key.replace(/_mm$|_um$|_deg$|_k$/, '').replace(/_/g, ' ')
-  return t.charAt(0).toUpperCase() + t.slice(1)
+  if (typeof s.title === 'string') return engineText(s.title)
+  const words = key.replace(/_mm$|_um$|_deg$|_k$/, '').replace(/_/g, ' ')
+  return engineText(words.charAt(0).toUpperCase() + words.slice(1))
 }
 
 const unitOf = (s: Schema) => (typeof s.unit === 'string' ? s.unit : '')
 
 function fieldItems(system: System): string[] {
-  return (system.fields?.fields ?? []).map((f, k) => `Field ${k + 1} (${sig(f.x, 4)}, ${sig(f.y, 4)})`)
+  return (system.fields?.fields ?? []).map((f, k) => tr('lens.settings.fieldItem', { n: k + 1, x: sig(f.x, 4), y: sig(f.y, 4) }))
 }
 function wavelengthItems(system: System): string[] {
-  return (system.wavelengths?.wavelengths ?? []).map((w, k) => `${sig(w.um, 5)} µm${k === system.wavelengths.primary ? ' (primary)' : ''}`)
+  return (system.wavelengths?.wavelengths ?? []).map((w, k) => {
+    const text = tr('lens.settings.wavelengthItem', { um: sig(w.um, 5) })
+    return k === system.wavelengths.primary ? tr('lens.settings.primarySuffix', { text }) : text
+  })
 }
 function surfaceItems(system: System): string[] {
-  return (system.surfaces ?? []).map((s, k) => `Surface ${k}${s.label ? ` · ${s.label}` : ''}`)
+  return (system.surfaces ?? []).map((s, k) => (s.label ? tr('lens.settings.surfaceItemLabel', { n: k, label: s.label }) : tr('common.surfaceN', { n: k })))
 }
 const itemsOf = (d: IndexDomain, system: System) => (d === 'fields' ? fieldItems(system) : d === 'wavelengths' ? wavelengthItems(system) : surfaceItems(system))
-const shortItem = (d: IndexDomain, k: number) => (d === 'fields' ? `Field ${k + 1}` : d === 'wavelengths' ? `λ${k + 1}` : `Surface ${k}`)
+const shortItem = (d: IndexDomain, k: number) => (d === 'fields' ? tr('common.fieldN', { n: k + 1 }) : d === 'wavelengths' ? `λ${k + 1}` : tr('common.surfaceN', { n: k }))
 
 function SelectionControl({ kind, value, system, onChange, label }: { kind: 'fields' | 'wavelengths'; value: JsonObject; system: System; onChange: (v: Json) => void; label: string }) {
+  const t = useT()
   const items = kind === 'fields' ? fieldItems(system) : wavelengthItems(system)
   const indices = Array.isArray(value.indices) ? (value.indices as number[]) : []
   const cur = value.type === 'index' ? `i${value.index}` : value.type === 'list' && indices.length === 1 ? `i${indices[0]}` : String(value.type)
@@ -83,12 +88,12 @@ function SelectionControl({ kind, value, system, onChange, label }: { kind: 'fie
         onChange(v.startsWith('i') ? { type: 'index', index: Number(v.slice(1)) } : { type: v })
       }}
     >
-      <option value="all">All</option>
-      {kind === 'wavelengths' && <option value="primary">Primary</option>}
-      {value.type === 'list' && indices.length !== 1 && <option value="list">{indices.map((k) => shortItem(kind, k)).join(', ') || 'None'}</option>}
-      {items.map((t, k) => (
+      <option value="all">{t('lens.settings.all')}</option>
+      {kind === 'wavelengths' && <option value="primary">{t('lens.settings.primary')}</option>}
+      {value.type === 'list' && indices.length !== 1 && <option value="list">{indices.map((k) => shortItem(kind, k)).join(', ') || t('common.none')}</option>}
+      {items.map((item, k) => (
         <option key={k} value={`i${k}`}>
-          {t}
+          {item}
         </option>
       ))}
     </Select>
@@ -110,8 +115,9 @@ const menuButton =
   'flex h-6 w-full min-w-0 cursor-default items-center justify-end gap-1 rounded-md border border-control-border bg-control px-2 text-[13px] hover:bg-hover'
 
 function IndexListMenu({ domain, value, system, onChange, label }: { domain: IndexDomain; value: number[]; system: System; onChange: (v: Json) => void; label: string }) {
+  const t = useT()
   const items = itemsOf(domain, system)
-  const text = value.length === 0 ? 'All' : value.map((k) => shortItem(domain, k)).join(', ')
+  const text = value.length === 0 ? t('lens.settings.all') : value.map((k) => shortItem(domain, k)).join(', ')
   return (
     <DropdownMenu>
       <DropdownMenuTrigger asChild>
@@ -122,10 +128,10 @@ function IndexListMenu({ domain, value, system, onChange, label }: { domain: Ind
       </DropdownMenuTrigger>
       <DropdownMenuContent align="end">
         <DropdownMenuCheckboxItem checked={value.length === 0} onSelect={(e) => (e.preventDefault(), onChange([]))}>
-          All
+          {t('lens.settings.all')}
         </DropdownMenuCheckboxItem>
         <DropdownMenuSeparator />
-        {items.map((t, k) => (
+        {items.map((item, k) => (
           <DropdownMenuCheckboxItem
             key={k}
             checked={value.includes(k)}
@@ -134,7 +140,7 @@ function IndexListMenu({ domain, value, system, onChange, label }: { domain: Ind
               onChange(value.includes(k) ? value.filter((x) => x !== k) : [...value, k].sort((a, b) => a - b))
             }}
           >
-            {t}
+            {item}
           </DropdownMenuCheckboxItem>
         ))}
       </DropdownMenuContent>
@@ -143,6 +149,7 @@ function IndexListMenu({ domain, value, system, onChange, label }: { domain: Ind
 }
 
 function ListInput({ value, onCommit, nullable, isNull, label, placeholder }: { value: number[]; onCommit: (v: Json) => void; nullable: boolean; isNull: boolean; label: string; placeholder?: string }) {
+  const t = useT()
   const [text, setText] = useState<string | null>(null)
   const shown = text ?? (isNull ? '' : value.map((v) => sig(v, 6).replace('−', '-')).join(', '))
   return (
@@ -150,14 +157,14 @@ function ListInput({ value, onCommit, nullable, isNull, label, placeholder }: { 
       aria-label={label}
       className="num h-6 w-full min-w-0 rounded-md border border-control-border bg-control px-1.5 text-right text-[13px] outline-none focus:border-accent"
       value={shown}
-      placeholder={placeholder ?? (nullable ? 'Auto' : '')}
+      placeholder={placeholder ?? (nullable ? t('lens.settings.auto') : '')}
       onChange={(e) => setText(e.target.value)}
       onBlur={() => {
         if (text == null) return
         setText(null)
-        const t = text.trim()
-        if (t === '' || t.toLowerCase() === 'auto') return onCommit(nullable ? null : [])
-        const nums = t.split(/[;,\s]+/).filter(Boolean).map(parseNumber)
+        const tt = text.trim()
+        if (tt === '' || tt.toLowerCase() === 'auto' || tt.toLowerCase() === t('lens.settings.auto').toLowerCase()) return onCommit(nullable ? null : [])
+        const nums = tt.split(/[;,\s]+/).filter(Boolean).map(parseNumber)
         if (nums.every((n) => n != null && Number.isFinite(n))) onCommit(nums as number[])
       }}
       onKeyDown={(e) => e.key === 'Enter' && (e.target as HTMLInputElement).blur()}
@@ -166,6 +173,7 @@ function ListInput({ value, onCommit, nullable, isNull, label, placeholder }: { 
 }
 
 function PairInput({ name, schema, value, integer, nullable, label, onChange }: { name: string; schema: Schema; value: Json | undefined; integer: boolean; nullable: boolean; label: string; onChange: (v: Json) => void }) {
+  const t = useT()
   const [a, b, sep] = pairLabels(name, schema)
   const cur = Array.isArray(value) && value.length === 2 ? (value as number[]) : null
   const commit = (k: 0 | 1, v: number | null) => {
@@ -178,15 +186,16 @@ function PairInput({ name, schema, value, integer, nullable, label, onChange }: 
   return (
     <span className="flex w-full min-w-0 items-center gap-1 text-[11px] text-secondary">
       {a && <span>{a}</span>}
-      <NumberInput ariaLabel={`${label} ${a || 'first'}`} value={cur?.[0] ?? null} integer={integer} min={min} nullable={nullable} onCommit={(v) => commit(0, v)} />
+      <NumberInput ariaLabel={`${label} ${a || t('lens.settings.first')}`} value={cur?.[0] ?? null} integer={integer} min={min} nullable={nullable} onCommit={(v) => commit(0, v)} />
       {sep.trim() && <span>{sep}</span>}
       {b && <span>{b}</span>}
-      <NumberInput ariaLabel={`${label} ${b || 'second'}`} value={cur?.[1] ?? null} integer={integer} min={min} nullable={nullable} onCommit={(v) => commit(1, v)} />
+      <NumberInput ariaLabel={`${label} ${b || t('lens.settings.second')}`} value={cur?.[1] ?? null} integer={integer} min={min} nullable={nullable} onCommit={(v) => commit(1, v)} />
     </span>
   )
 }
 
 function TableControl({ columns, rowsAreArrays, value, label, onChange, titles }: { columns: Column[]; rowsAreArrays: boolean; value: Json | undefined; label: string; onChange: (v: Json) => void; titles?: string[] }) {
+  const t = useT()
   const rows = Array.isArray(value) ? value : []
   const cell = (r: Json, c: Column): Json => (rowsAreArrays ? (Array.isArray(r) ? r[Number(c.key)] : null) : r && typeof r === 'object' && !Array.isArray(r) ? r[c.key] : null)
   const setCell = (i: number, c: Column, v: Json) =>
@@ -205,8 +214,8 @@ function TableControl({ columns, rowsAreArrays, value, label, onChange, titles }
   return (
     <Popover>
       <PopoverTrigger asChild>
-        <button type="button" className={menuButton} aria-label={`${label}: ${rows.length} rows`}>
-          <span className="truncate">{rows.length ? `${rows.length} row${rows.length === 1 ? '' : 's'}` : 'None'}</span>
+        <button type="button" className={menuButton} aria-label={t('lens.settings.rowsAria', { label, count: rows.length })}>
+          <span className="truncate">{rows.length ? t('lens.settings.rowsCount', { count: rows.length }) : t('common.none')}</span>
           <ChevronsUpDown className="size-3 shrink-0 text-secondary" />
         </button>
       </PopoverTrigger>
@@ -229,12 +238,12 @@ function TableControl({ columns, rowsAreArrays, value, label, onChange, titles }
                 <tr key={i}>
                   {columns.map((c) => {
                     const v = cell(r, c)
-                    const t = types(c.schema)
+                    const kinds = types(c.schema)
                     return (
                       <td key={c.key} className="w-24 px-1 py-[2px]">
-                        {t.includes('boolean') ? (
+                        {kinds.includes('boolean') ? (
                           <Switch aria-label={`${c.key} ${i + 1}`} checked={v === true} onCheckedChange={(x) => setCell(i, c, x)} />
-                        ) : t.includes('string') ? (
+                        ) : kinds.includes('string') ? (
                           <input
                             aria-label={`${c.key} ${i + 1}`}
                             className="h-6 w-full rounded-md border border-control-border bg-control px-1.5 text-[13px]"
@@ -242,13 +251,13 @@ function TableControl({ columns, rowsAreArrays, value, label, onChange, titles }
                             onBlur={(e) => setCell(i, c, e.target.value)}
                           />
                         ) : (
-                          <NumberInput ariaLabel={`${c.key} ${i + 1}`} value={typeof v === 'number' ? v : null} integer={t.includes('integer') && !t.includes('number')} onCommit={(x) => x != null && setCell(i, c, x)} />
+                          <NumberInput ariaLabel={`${c.key} ${i + 1}`} value={typeof v === 'number' ? v : null} integer={kinds.includes('integer') && !kinds.includes('number')} onCommit={(x) => x != null && setCell(i, c, x)} />
                         )}
                       </td>
                     )
                   })}
                   <td>
-                    <Button variant="ghost" size="iconSm" aria-label={`Remove row ${i + 1}`} onClick={() => onChange(rows.filter((_, k) => k !== i))}>
+                    <Button variant="ghost" size="iconSm" aria-label={t('lens.settings.removeRow', { n: i + 1 })} onClick={() => onChange(rows.filter((_, k) => k !== i))}>
                       <Minus />
                     </Button>
                   </td>
@@ -258,7 +267,7 @@ function TableControl({ columns, rowsAreArrays, value, label, onChange, titles }
           </table>
         </div>
         <Button size="sm" variant="ghost" className="mt-1 -ml-1" onClick={() => onChange([...rows, blank()])}>
-          <Plus /> Add Row
+          <Plus /> {t('lens.settings.addRow')}
         </Button>
       </PopoverContent>
     </Popover>
@@ -272,26 +281,28 @@ export function imagePatterns(s: Schema): string[] {
 }
 
 function ImageSourceControl({ schema, value, label, onChange }: { schema: Schema; value: Json | undefined; label: string; onChange: (v: Json) => void }) {
+  const t = useT()
   const v = value && typeof value === 'object' && !Array.isArray(value) ? value : { kind: 'pattern', pattern: 'grid' }
   const cur = v.kind === 'pattern' ? `p:${v.pattern}` : String(v.kind)
   return (
     <Select aria-label={label} className="w-full" value={cur} onChange={(e) => e.target.value.startsWith('p:') && onChange({ kind: 'pattern', pattern: e.target.value.slice(2) })}>
       {imagePatterns(schema).map((p) => (
         <option key={p} value={`p:${p}`}>
-          {p.replace(/_/g, ' ').replace(/^./, (c) => c.toUpperCase())}
+          {tMaybe(`lens.settings.patterns.${p}`) ?? engineText(p.replace(/_/g, ' ').replace(/^./, (c) => c.toUpperCase()))}
         </option>
       ))}
-      {v.kind === 'buffer' && <option value="buffer">Image ({String(v.width)} × {String(v.height)})</option>}
-      {v.kind === 'path' && <option value="path">{String(v.path ?? 'Image file')}</option>}
+      {v.kind === 'buffer' && <option value="buffer">{t('lens.settings.imageBuffer', { w: String(v.width), h: String(v.height) })}</option>}
+      {v.kind === 'path' && <option value="path">{String(v.path ?? t('lens.settings.imageFile'))}</option>}
     </Select>
   )
 }
 
 /** One setting at `path` (`pupil.grid`), with its control from the schema. */
 function Control({ k, path, schema, value, ctx, onChange, nested }: { k: string; path: string; schema: Schema; value: Json | undefined; ctx: Ctx; onChange: (v: Json) => void; nested?: boolean }) {
+  const t = useT()
   const c: SettingControl = controlFor(k, schema, { analysis: ctx.analysis, nested, hasConfigurations: ctx.hasConfigurations, pattern: ctx.pattern })
   const label = labelOf(k, schema)
-  const help = typeof schema.description === 'string' ? schema.description : undefined
+  const help = typeof schema.description === 'string' ? engineText(schema.description) : undefined
   const unit = unitOf(schema)
   const sentinel = sentinelAt(path, ctx.analysis, schema)
   const usedKey = path.startsWith('through_focus.') ? 'through_focus' : path
@@ -314,10 +325,10 @@ function Control({ k, path, schema, value, ctx, onChange, nested }: { k: string;
       return (
         <Row label={label} help={help}>
           <Select aria-label={label} className="w-full" value={typeof value === 'number' ? String(value) : ''} onChange={(e) => onChange(e.target.value === '' ? null : Number(e.target.value))}>
-            {(nullable || typeof value !== 'number') && <option value="">{c.domain === 'wavelengths' ? 'Primary' : 'Auto'}</option>}
-            {items.map((t, i) => (
+            {(nullable || typeof value !== 'number') && <option value="">{c.domain === 'wavelengths' ? t('lens.settings.primary') : t('lens.settings.auto')}</option>}
+            {items.map((item, i) => (
               <option key={i} value={i}>
-                {t}
+                {item}
               </option>
             ))}
           </Select>
@@ -326,7 +337,7 @@ function Control({ k, path, schema, value, ctx, onChange, nested }: { k: string;
     }
     case 'spectrum':
       return (
-        <Row label="Spectrum" help={help} block>
+        <Row label={t('lens.settings.spectrum')} help={help} block>
           <SpectrumButton value={value} system={ctx.system} onChange={(v) => onChange(v)} />
         </Row>
       )
@@ -338,16 +349,16 @@ function Control({ k, path, schema, value, ctx, onChange, nested }: { k: string;
       )
     case 'sensorLimit':
       return (
-        <Row label="Sensor CRA limit" help={help} block>
+        <Row label={t('lens.settings.sensorLimit')} help={help} block>
           <TableControl
             columns={[
               { key: '0', schema: { type: 'number', default: 0 } },
               { key: '1', schema: { type: 'number', default: 30 } },
             ]}
-            titles={['Image radius (mm)', 'Max angle (°)']}
+            titles={[t('lens.settings.sensorImageRadius'), t('lens.settings.sensorMaxAngle')]}
             rowsAreArrays
             value={value}
-            label="Sensor CRA limit"
+            label={t('lens.settings.sensorLimit')}
             onChange={onChange}
           />
         </Row>
@@ -358,7 +369,7 @@ function Control({ k, path, schema, value, ctx, onChange, nested }: { k: string;
           <Select aria-label={label} value={String(value ?? schema.default)} onChange={(e) => onChange(e.target.value)} className="w-full">
             {(schema.enum as string[]).map((o) => (
               <option key={o} value={o}>
-                {String(o).replace(/_/g, ' ')}
+                {engineText(String(o).replace(/_/g, ' '))}
               </option>
             ))}
           </Select>
@@ -383,7 +394,7 @@ function Control({ k, path, schema, value, ctx, onChange, nested }: { k: string;
             min={sentinel === 'zero' ? undefined : min}
             max={max}
             nullable={allowsNull(schema) || sentinel != null}
-            placeholder={autoText ?? (allowsNull(schema) ? 'Auto' : '')}
+            placeholder={autoText ?? (allowsNull(schema) ? t('lens.settings.auto') : '')}
             onCommit={(v) => onChange(v == null || (sentinel === 'zero' && v === 0) ? (sentinel === 'zero' ? 0 : null) : v)}
           />
         </Row>
@@ -442,11 +453,11 @@ function Control({ k, path, schema, value, ctx, onChange, nested }: { k: string;
           </legend>
           {on && (
             <>
-              <Row label="Kind">
-                <Select aria-label={`${label} kind`} className="w-full" value={cur.tag} onChange={(e) => onChange(variantDefault(c.variants.find((v) => v.tag === e.target.value)!))}>
+              <Row label={t('lens.settings.kind')}>
+                <Select aria-label={t('lens.settings.kindAria', { label })} className="w-full" value={cur.tag} onChange={(e) => onChange(variantDefault(c.variants.find((v) => v.tag === e.target.value)!))}>
                   {c.variants.map((v) => (
                     <option key={v.tag} value={v.tag}>
-                      {v.title}
+                      {engineText(v.title)}
                     </option>
                   ))}
                 </Select>
@@ -477,6 +488,7 @@ function GroupControl({ k, path, schema, properties, nullable, value, ctx, onCha
   label: string
   help?: string
 }) {
+  const t = useT()
   const on = value != null
   const o = value && typeof value === 'object' && !Array.isArray(value) ? value : {}
   const primary = PRIMARY_KEYS[k]
@@ -495,7 +507,7 @@ function GroupControl({ k, path, schema, properties, nullable, value, ctx, onCha
       {on && first.map(row)}
       {on && rest.length > 0 && (
         <details className="group">
-          <summary className="cursor-default py-[3px] text-[12px] text-secondary">More</summary>
+          <summary className="cursor-default py-[3px] text-[12px] text-secondary">{t('common.more')}</summary>
           {rest.map(row)}
         </details>
       )}
@@ -505,19 +517,19 @@ function GroupControl({ k, path, schema, properties, nullable, value, ctx, onCha
 
 // MARK: Summary
 
-const human = (k: string) => k.replace(/_(mm|um|deg)$/, '').replace(/_/g, ' ')
+const human = (k: string) => engineText(k.replace(/_(mm|um|deg)$/, '').replace(/_/g, ' '))
 
 function valueSummary(k: string, v: Json, d: Json | undefined): string | null {
   if (k === 'spectrum') {
     const s = parseSpectrum(v)
-    return s && s.kind !== 'design' ? `Spectrum ${spectrumSummary(s)}` : null
+    return s && s.kind !== 'design' ? tr('lens.settings.summary.spectrum', { value: spectrumSummary(s) }) : null
   }
-  if (v === null) return `${human(k)} ${d === null || d === undefined ? 'auto' : 'off'}`
+  if (v === null) return `${human(k)} ${d === null || d === undefined ? tr('lens.settings.summary.auto') : tr('lens.settings.summary.off')}`
   if (k === 'through_focus' && typeof v === 'object' && !Array.isArray(v)) {
     const steps = typeof v.steps === 'number' ? v.steps : 3
     const lo = typeof v.min === 'number' ? v.min : null, hi = typeof v.max === 'number' ? v.max : null
-    const range = lo != null && hi != null ? (Math.abs(lo + hi) < 1e-12 ? `±${sig(hi, 3)} mm` : `${sig(lo, 3)} to ${sig(hi, 3)} mm`) : 'auto range'
-    return `${range} · ${steps} plane${steps === 1 ? '' : 's'}`
+    const range = lo != null && hi != null ? (Math.abs(lo + hi) < 1e-12 ? `±${sig(hi, 3)} mm` : `${tr('lens.settings.rangeTo', { lo: sig(lo, 3), hi: sig(hi, 3) })} mm`) : tr('lens.settings.summary.autoRange')
+    return `${range} · ${tr('lens.settings.summary.planes', { count: steps })}`
   }
   if (typeof v === 'object' && !Array.isArray(v)) {
     if (typeof v.type === 'string') {
@@ -526,7 +538,7 @@ function valueSummary(k: string, v: Json, d: Json | undefined): string | null {
       return `${human(k)} ${String(v.type).replace(/_/g, ' ')}`
     }
     if (v.kind === 'pattern') return String(v.pattern).replace(/_/g, ' ')
-    if (v.kind === 'buffer') return 'image'
+    if (v.kind === 'buffer') return tr('lens.settings.summary.image')
     // Groups: the changed members.
     const dd = d && typeof d === 'object' && !Array.isArray(d) ? d : {}
     const parts = Object.entries(v)
@@ -536,7 +548,7 @@ function valueSummary(k: string, v: Json, d: Json | undefined): string | null {
     return parts.length ? parts.join(' · ') : human(k)
   }
   if (Array.isArray(v)) {
-    if (!v.length) return `${human(k)} all`
+    if (!v.length) return `${human(k)} ${tr('lens.settings.summary.all')}`
     if (v.every((x) => typeof x === 'number')) {
       if (/^(fields|wavelengths)$/.test(k)) return `${human(k)} ${v.map((x) => (x as number) + 1).join(', ')}`
       if (v.length === 2 && /grid|bins|pixels|size/.test(k)) return `${human(k)} ${v[0]} × ${v[1]}`
@@ -544,8 +556,8 @@ function valueSummary(k: string, v: Json, d: Json | undefined): string | null {
     }
     return `${human(k)} ${v.length}`
   }
-  if (typeof v === 'number') return `${human(k)} ${v === 0 && d === 0 ? 'auto' : sig(v, 4)}`
-  if (typeof v === 'boolean') return v ? human(k) : `no ${human(k)}`
+  if (typeof v === 'number') return `${human(k)} ${v === 0 && d === 0 ? tr('lens.settings.summary.auto') : sig(v, 4)}`
+  if (typeof v === 'boolean') return v ? human(k) : tr('lens.settings.summary.no', { name: human(k) })
   return `${human(k)} ${String(v).replace(/_/g, ' ')}`
 }
 
@@ -583,6 +595,7 @@ export function SettingsForm({
   onChange: (v: JsonObject) => void
   onDone: () => void
 }) {
+  const t = useT()
   const props = (schema.properties as Record<string, Schema>) ?? {}
   const eff: JsonObject = { ...(defaults ?? {}), ...value }
   const name = analysis ?? ''
@@ -608,17 +621,17 @@ export function SettingsForm({
   return (
     <div className="@container max-h-[45%] shrink-0 overflow-y-auto border-b border-separator bg-window/60 px-3 py-2" data-testid="settings-form">
       <div className="rounded-lg bg-content px-2.5 py-1.5 shadow-[0_0_0_0.5px_var(--separator)]">
-        {keys.length === 0 && <p className="py-1 text-secondary">This analysis has no settings.</p>}
+        {keys.length === 0 && <p className="py-1 text-secondary">{t('lens.settings.noSettings')}</p>}
         {keys.map((k) => (
           <Control key={k} k={k} path={k} schema={props[k]} value={eff[k]} ctx={ctx} onChange={(v) => onChange(withSetting(value, k, v, defaults))} />
         ))}
       </div>
       <div className="mt-2 flex justify-end gap-2">
         <Button size="sm" onClick={() => onChange({})}>
-          Defaults
+          {t('lens.settings.defaults')}
         </Button>
         <Button size="sm" variant="prominent" onClick={onDone}>
-          Done
+          {t('common.done')}
         </Button>
       </div>
     </div>

@@ -9,6 +9,7 @@
 import { BarChart3 } from 'lucide-react'
 import { useEffect, useMemo } from 'react'
 import { Button } from '@/components/ui/button'
+import { engineText, useT } from '@/i18n'
 import { compensatorTitle, readResult, runProblem, settingsIssues, stageText } from '@/model/tolerance'
 import { useDocument } from '@/state/document'
 import { useJobs } from '@/state/jobs'
@@ -31,6 +32,7 @@ import { AnalysisSection, CompensatorSection, CriterionSection } from './toleran
 import { ToleranceTable } from './tolerance/ToleranceTable'
 
 export function TolerancePanel() {
+  const t = useT()
   const settings = useToleranceSettings()
   useToleranceContextSources()
   const context = useToleranceContext(settings)
@@ -45,7 +47,8 @@ export function TolerancePanel() {
   const runDisplay = useTolerance((s) => s.runDisplay)
   const previewLoaded = useTolerance((s) => s.preview != null)
 
-  const issues = useMemo(() => settingsIssues(settings, context), [settings, context])
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  const issues = useMemo(() => settingsIssues(settings, context), [settings, context, t])
   const result = useMemo(
     () => (job.result ? readResult(job.result.json, runSystem ?? system, runDisplay, job.result.buffers?.monte_carlo_criteria as ArrayLike<number> | undefined) : null),
     [job.result, runSystem, system, runDisplay],
@@ -61,21 +64,21 @@ export function TolerancePanel() {
   }, [wsPreview, previewLoaded])
 
   const problem = !snapshot
-    ? 'The design has not been checked by the engine yet.'
+    ? t('tolerance.panel.notChecked')
     : modelIssues.length
-      ? "Fix the design's errors first."
+      ? t('tolerance.panel.fixDesign')
       : runProblem(settings, context)
 
   const n = settings.rows.length, c = settings.compensators.length
-  const comp = c === 0 ? 'no compensator' : c === 1 ? compensatorTitle(settings.compensators[0].param, system).toLowerCase() : `${c} compensators`
-  const subtitle = `${system.name || 'Untitled'} · ${n} tolerance${n === 1 ? '' : 's'} · ${comp}`
+  const comp = c === 0 ? t('tolerance.panel.noCompensator') : c === 1 ? compensatorTitle(settings.compensators[0].param, system).toLowerCase() : t('tolerance.panel.compensatorsCount', { count: c })
+  const subtitle = t('tolerance.panel.subtitle', { name: system.name || t('tolerance.panel.untitled'), tolerances: t('tolerance.panel.tolerances', { count: n }), compensators: comp })
 
   return (
     <JobPanelFrame kind="tolerance" subtitle={subtitle} actions={<Actions problem={problem} stoppable={stoppable} hasResult={result != null} />}>
       {job.phase === 'running' ? (
         <ToleranceProgress job={job} settings={settings} />
       ) : job.phase === 'failed' ? (
-        <JobFailure title="Tolerancing Failed" reason={job.error ?? 'The engine could not run the tolerance analysis.'} />
+        <JobFailure title={t('tolerance.panel.failedTitle')} reason={job.error ? engineText(job.error) : t('tolerance.panel.failedReason')} />
       ) : (job.phase === 'review' || job.phase === 'done') && result ? (
         <ToleranceResults result={result} system={system} />
       ) : (
@@ -87,7 +90,7 @@ export function TolerancePanel() {
               onClick={() => useJobs.getState().patch('tolerance', { phase: 'review' })}
             >
               <BarChart3 className="size-3.5" />
-              Show the last results
+              {t('tolerance.panel.showLast')}
             </button>
           )}
           <ToleranceTable settings={settings} context={context} issues={issues} />
@@ -101,22 +104,23 @@ export function TolerancePanel() {
 }
 
 function Actions({ problem, stoppable, hasResult }: { problem: string | null; stoppable: boolean; hasResult: boolean }) {
+  const t = useT()
   const job = useJobs((s) => s.jobs.tolerance)
   const settings = useToleranceSettings()
   const now = useNow()
-  const t = useToleranceTiming(job, settings, now)
+  const timing = useToleranceTiming(job, settings, now)
   switch (job.phase) {
     case 'running':
       return JobActions.running('tolerance', job, {
-        detail: job.stopped ? 'Stopping' : stageText(job.stage, t.trialsDone, settings.trials),
+        detail: job.stopped ? t('tolerance.panel.stopping') : stageText(job.stage, timing.trialsDone, settings.trials),
         canStop: stoppable,
-        stopHelp: 'End now and keep the sensitivities and trials completed so far',
+        stopHelp: t('tolerance.panel.stopHelp'),
       })
     case 'failed':
       return (
         <>
-          <BarButton title="Back" help="Back to the tolerances, compensators and criterion" onClick={() => useJobs.getState().back('tolerance')} />
-          {JobActions.start('Try Again', retryTolerance, { disabled: problem != null, help: problem ?? 'Run the tolerance analysis again, recomputed' })}
+          <BarButton title={t('tolerance.panel.back')} help={t('tolerance.panel.backHelp')} onClick={() => useJobs.getState().back('tolerance')} />
+          {JobActions.start(t('tolerance.panel.tryAgain'), retryTolerance, { disabled: problem != null, help: problem ?? t('tolerance.panel.tryAgainHelp') })}
         </>
       )
     case 'review':
@@ -124,18 +128,18 @@ function Actions({ problem, stoppable, hasResult }: { problem: string | null; st
       return (
         <>
           <BarButton
-            title="Back to settings"
-            help="Back to the tolerances, compensators and criterion; Show Results returns here"
+            title={t('tolerance.panel.backToSettings')}
+            help={t('tolerance.panel.backToSettingsHelp')}
             onClick={() => useJobs.getState().back('tolerance')}
           />
-          {JobActions.start('Run again', retryTolerance, { disabled: problem != null, help: problem ?? 'Run the same analysis again, recomputed' })}
+          {JobActions.start(t('tolerance.panel.runAgain'), retryTolerance, { disabled: problem != null, help: problem ?? t('tolerance.panel.runAgainHelp') })}
         </>
       )
     default:
       return (
         <>
-          {hasResult && <BarButton title="Show Results" help="Show the last run's results" onClick={() => useJobs.getState().patch('tolerance', { phase: 'review' })} />}
-          {JobActions.start('Run', () => startTolerance(false), { disabled: problem != null, help: problem ?? 'Run the sensitivity analysis and the Monte Carlo trials' })}
+          {hasResult && <BarButton title={t('tolerance.panel.showResults')} help={t('tolerance.panel.showResultsHelp')} onClick={() => useJobs.getState().patch('tolerance', { phase: 'review' })} />}
+          {JobActions.start(t('tolerance.panel.run'), () => startTolerance(false), { disabled: problem != null, help: problem ?? t('tolerance.panel.runHelp') })}
         </>
       )
   }

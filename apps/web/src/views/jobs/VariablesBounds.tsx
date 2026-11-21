@@ -8,8 +8,9 @@ import { CircleHelp, Pin, PinOff, XCircle } from 'lucide-react'
 import { useState } from 'react'
 import { Button } from '@/components/ui/button'
 import { Segmented } from '@/components/ui/segmented'
+import { useT } from '@/i18n'
 import {
-  RADIUS_HELP,
+  radiusHelp,
   boundsActionName,
   boundsOf,
   counterpart,
@@ -32,6 +33,7 @@ import { cn } from '@/lib/utils'
 import { NumberInput } from '../SettingsForm'
 
 export function VariablesBoundsList() {
+  const t = useT()
   const project = useDocument((s) => s.project)
   const unit = useOptimize((s) => s.curvatureUnit)
   const setUnit = useOptimize((s) => s.setCurvatureUnit)
@@ -41,17 +43,17 @@ export function VariablesBoundsList() {
     <div data-testid="variables-list">
       {vars.some((v) => isCurvature(v.param)) && (
         <div className="mb-1 flex flex-wrap items-center gap-x-2 gap-y-1">
-          <span className="text-[11px] text-secondary">Curvatures as</span>
+          <span className="text-[11px] text-secondary">{t('optimize.bounds.curvaturesAs')}</span>
           <Segmented<CurvatureBoundsUnit>
-            label="Bound curvatures as"
+            label={t('optimize.bounds.boundCurvaturesAs')}
             value={unit}
             onChange={setUnit}
             options={[
-              { value: 'radius', title: <span className="whitespace-nowrap">Radius mm</span>, help: 'Enter and read the bounds of radii as a radius window in mm' },
-              { value: 'curvature', title: <span className="whitespace-nowrap">Curvature 1/mm</span>, help: 'Enter and read the bounds as the curvature c = 1/R the optimizer uses' },
+              { value: 'radius', title: <span className="whitespace-nowrap">{t('optimize.bounds.radiusMm')}</span>, help: t('optimize.bounds.radiusUnitHelp') },
+              { value: 'curvature', title: <span className="whitespace-nowrap">{t('optimize.bounds.curvatureUnit')}</span>, help: t('optimize.bounds.curvatureUnitHelp') },
             ]}
           />
-          <span className="ml-auto text-secondary" title={RADIUS_HELP} aria-label="About radius bounds">
+          <span className="ml-auto text-secondary" title={radiusHelp()} aria-label={t('optimize.bounds.aboutRadius')}>
             <CircleHelp className="size-3.5" />
           </span>
         </div>
@@ -64,6 +66,7 @@ export function VariablesBoundsList() {
 }
 
 function VariableRow({ system, variable, unit: shownUnit, first }: { system: System; variable: VariableSpec; unit: CurvatureBoundsUnit; first: boolean }) {
+  const t = useT()
   const [rejection, setRejection] = useState<string | null>(null)
   const path = variable.param
   const bounds = boundsOf(variable)
@@ -96,16 +99,16 @@ function VariableRow({ system, variable, unit: shownUnit, first }: { system: Sys
   }
 
   let problem: string | null = rejection
-  if (!problem && solve) problem = 'Set by a solve: not varied'
+  if (!problem && solve) problem = t('optimize.bounds.setBySolve')
   if (!problem && path.param === 'semi_diameter') {
     const i = typeof path.surface === 'number' ? surfaceIndexOfId(system, path.surface) : -1
-    if (i >= 0 && system.surfaces[i].semi_diameter.mode !== 'fixed') problem = 'The semi-diameter is automatic: set a value in the lens data first.'
+    if (i >= 0 && system.surfaces[i].semi_diameter.mode !== 'fixed') problem = t('optimize.bounds.semiDiameterAuto')
   }
-  if (!problem && value == null) problem = 'This parameter does not exist on the surface any more.'
-  if (!problem && bounds.lower != null && bounds.upper != null && bounds.lower > bounds.upper) problem = 'The minimum is above the maximum.'
+  if (!problem && value == null) problem = t('optimize.bounds.gone')
+  if (!problem && bounds.lower != null && bounds.upper != null && bounds.lower > bounds.upper) problem = t('optimize.bounds.minAboveMax')
   if (!problem && value != null && outOfBounds(bounds, value)) {
     const now = asRadius ? `R ${sig(radiusFromCurvature(value), 6)} mm` : `${sig(value, 6)}${unit === '–' ? '' : ' ' + unit}`
-    problem = `Now ${now}: outside its bounds`
+    problem = t('optimize.bounds.outside', { now })
   }
 
   let caption = ''
@@ -113,32 +116,30 @@ function VariableRow({ system, variable, unit: shownUnit, first }: { system: Sys
   else if (value != null) {
     if (isCurvature(path)) {
       caption = asRadius
-        ? `now R ${sig(radiusFromCurvature(value), 6)}` + (passesThroughFlat(shown) ? ' · through ∞' : '')
-        : `now c ${sig(value, 4)}`
-    } else caption = `now ${sig(value, 6)}`
+        ? t('optimize.bounds.nowRadius', { value: sig(radiusFromCurvature(value), 6) }) + (passesThroughFlat(shown) ? ` · ${t('optimize.bounds.throughInfinity')}` : '')
+        : t('optimize.bounds.nowCurvature', { value: sig(value, 4) })
+    } else caption = t('optimize.bounds.now', { value: sig(value, 6) })
   }
 
   const other = counterpart(bounds, shownUnit)
-  let help = other ? `Bounds as ${other}. ` : ''
-  if (asRadius) help += RADIUS_HELP
-  else if (isCurvature(path)) help += 'Bounds on the curvature c = 1/R (1/mm).'
-  else help += unit === '–' ? 'Bounds of a dimensionless parameter.' : `Bounds in ${unit}.`
-  const solvedHelp = solve
-    ? 'A solve sets this value, so the optimizer leaves the variable out of the run. Remove the variable, or remove the solve to vary it.'
-    : null
+  let help = other ? t('optimize.bounds.boundsAs', { other }) + ' ' : ''
+  if (asRadius) help += radiusHelp()
+  else if (isCurvature(path)) help += t('optimize.bounds.curvatureHelp')
+  else help += unit === '–' ? t('optimize.bounds.dimensionlessHelp') : t('optimize.bounds.unitHelp', { unit })
+  const solvedHelp = solve ? t('optimize.bounds.solvedHelp') : null
 
   return (
     <div className={cn('py-1', !first && 'border-t border-separator')} data-testid="variable-row">
       <div className="flex min-w-0 items-center gap-1" title={solvedHelp ?? problem ?? help}>
         <span className="shrink-0 text-[13px]">{label}</span>
-        {pinned && <Pin className="size-3 shrink-0 text-accent" aria-label="pinned" />}
+        {pinned && <Pin className="size-3 shrink-0 text-accent" aria-label={t('optimize.bounds.pinned')} />}
         <span className="num min-w-0 flex-1 truncate pl-1 text-[11px] text-secondary">{problem ? '' : caption}</span>
         <Button
           variant="ghost"
           size="iconSm"
           disabled={value == null}
-          aria-label={pinned ? 'Unpin' : 'Pin'}
-          title={pinned ? 'Unpin: let the optimizer vary it again' : 'Pin at its value (equal bounds): keep it as a variable but hold it'}
+          aria-label={pinned ? t('optimize.bounds.unpin') : t('optimize.bounds.pin')}
+          title={pinned ? t('optimize.bounds.unpinHelp') : t('optimize.bounds.pinHelp')}
           onClick={() => {
             if (pinned) setBounds(defaultBounds(path, system))
             else if (value != null) setBounds({ lower: value, upper: value })
@@ -149,30 +150,30 @@ function VariableRow({ system, variable, unit: shownUnit, first }: { system: Sys
         <Button
           variant="ghost"
           size="iconSm"
-          aria-label="Remove variable"
-          title="Fix this parameter (remove the variable)"
-          onClick={() => editVariables('Remove Variable', (list) => list.filter((v) => !sameParam(system, v.param, path)))}
+          aria-label={t('optimize.bounds.removeVariable')}
+          title={t('optimize.bounds.removeVariableHelp')}
+          onClick={() => editVariables(t('optimize.undo.removeVariable'), (list) => list.filter((v) => !sameParam(system, v.param, path)))}
         >
           <XCircle />
         </Button>
       </div>
       <div className="flex items-center gap-1" title={help}>
         <NumberInput
-          ariaLabel={`Minimum of ${label}${unit === '–' ? '' : ' in ' + unit}`}
+          ariaLabel={unit === '–' ? t('optimize.bounds.minimumOf', { label }) : t('optimize.bounds.minimumOfIn', { label, unit })}
           value={shown.min}
           nullable
-          placeholder="min −∞"
+          placeholder={t('optimize.bounds.minPlaceholder')}
           onCommit={(v) => setShown(v, shown.max)}
         />
         <span className="text-secondary">…</span>
         <NumberInput
-          ariaLabel={`Maximum of ${label}${unit === '–' ? '' : ' in ' + unit}`}
+          ariaLabel={unit === '–' ? t('optimize.bounds.maximumOf', { label }) : t('optimize.bounds.maximumOfIn', { label, unit })}
           value={shown.max}
           nullable
-          placeholder={asRadius ? 'max ∞' : 'max +∞'}
+          placeholder={asRadius ? t('optimize.bounds.maxPlaceholderRadius') : t('optimize.bounds.maxPlaceholder')}
           onCommit={(v) => setShown(shown.min, v)}
         />
-        <span className="w-9 shrink-0 truncate text-[11px] text-secondary" title={unit === '–' ? 'Dimensionless' : `The bounds are in ${unit}`}>
+        <span className="w-9 shrink-0 truncate text-[11px] text-secondary" title={unit === '–' ? t('optimize.bounds.dimensionless') : t('optimize.bounds.boundsInUnit', { unit })}>
           {unit}
         </span>
       </div>

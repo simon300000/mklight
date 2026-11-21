@@ -11,6 +11,7 @@ import { useEffect, useMemo } from 'react'
 import { create } from 'zustand'
 import type { AnalysisJob, JsonObject, ModelSnapshot } from '@/engine/types'
 import { EngineError } from '@/engine/types'
+import { engineText, t } from '@/i18n'
 import { nf } from '@/model/format'
 import type { System } from '@/model/system'
 import {
@@ -34,6 +35,7 @@ import {
   type ToleranceRow,
   type ToleranceSettings,
   criterionDisplay,
+  isPreviewLabel,
 } from '@/model/tolerance'
 import { useDocument } from './document'
 import { useJobs } from './jobs'
@@ -284,7 +286,7 @@ export async function previewTolerance(c: PreviewCase | null, result: ToleranceR
     if (!samePreviewCase(useTolerance.getState().previewed, c)) return
     const p = readPreview(out.json.preview)
     if (!p) {
-      set({ previewError: 'The engine could not rebuild this build: no ray reached the image.' })
+      set({ previewError: t('tolerance.state.rebuildFailed') })
       void useWorkspace.getState().setPreview(null)
       return
     }
@@ -293,7 +295,7 @@ export async function previewTolerance(c: PreviewCase | null, result: ToleranceR
   } catch (e) {
     if (e instanceof EngineError && e.kind === 'cancelled') return
     if (!samePreviewCase(useTolerance.getState().previewed, c)) return
-    set({ previewError: e instanceof Error ? e.message : String(e) })
+    set({ previewError: engineText(e instanceof Error ? e.message : String(e)) })
   }
 }
 
@@ -304,5 +306,5 @@ export function endTolerancePreview() {
   const was = useTolerance.getState().previewed != null
   set({ previewed: null, preview: null, previewError: null })
   const label = useWorkspace.getState().preview?.label ?? ''
-  if (was || label.startsWith('Tolerance')) void useWorkspace.getState().setPreview(null)
+  if (was || isPreviewLabel(label)) void useWorkspace.getState().setPreview(null)
 }

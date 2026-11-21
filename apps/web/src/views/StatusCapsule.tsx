@@ -9,10 +9,12 @@ import { useDocument } from '@/state/document'
 import { useView } from '@/state/view'
 import { allIssues, SUMMARY, useWorkspace } from '@/state/workspace'
 import { cn } from '@/lib/utils'
-import { JOB_VERBS, useJobs, type JobKind } from '@/state/jobs'
+import { useJobs, type JobKind } from '@/state/jobs'
+import { engineText, useT } from '@/i18n'
 
 /** One entry per running job ("Optimizing · 479"); a click shows its panel. */
 function JobEntries() {
+  const t = useT()
   const jobs = useJobs((s) => s.jobs)
   const setPage = useView((s) => s.setPage)
   const running = (Object.keys(jobs) as JobKind[]).filter((k) => jobs[k].phase === 'running')
@@ -32,7 +34,7 @@ function JobEntries() {
           >
             <Loader2 className="size-3 animate-spin text-accent" />
             <span className="num">
-              {JOB_VERBS[k]}
+              {t(`app.status.jobs.${k}`)}
               {n != null ? ` · ${String(n)}` : ` · ${Math.round(jobs[k].progress * 100)}%`}
             </span>
           </button>
@@ -103,6 +105,7 @@ export const squeezeText = (v: number, digits = 4) => (Number.isFinite(v) ? `${v
  *  track and the issues button; its popover has the first-order table and the
  *  engine's state. */
 export function StatusCapsule() {
+  const t = useT()
   const run = useWorkspace((s) => s.runs[SUMMARY])
   const runs = useWorkspace((s) => s.runs)
   const engine = useWorkspace((s) => s.engine)
@@ -130,25 +133,25 @@ export function StatusCapsule() {
           <button
             type="button"
             className="flex h-full min-w-0 cursor-default items-center gap-2 rounded-l-full pl-3 pr-2 hover:bg-hover"
-            aria-label="Design status"
+            aria-label={t('app.status.label')}
             data-testid="status-capsule"
           >
             {engineError ? (
-              <span className="text-danger">Engine unavailable</span>
+              <span className="text-danger">{t('app.status.engineUnavailable')}</span>
             ) : !engine ? (
               <span className="flex items-center gap-1.5 text-secondary">
-                <Loader2 className="size-3 animate-spin" /> Starting engine
+                <Loader2 className="size-3 animate-spin" /> {t('app.status.startingEngine')}
               </span>
             ) : (
               <>
-                {busy && <Loader2 className="size-3 shrink-0 animate-spin text-secondary" aria-label="Computing" />}
+                {busy && <Loader2 className="size-3 shrink-0 animate-spin text-secondary" aria-label={t('app.status.computing')} />}
                 {errors > 0 ? (
-                  <span className="text-secondary">Design has errors</span>
+                  <span className="text-secondary">{t('app.status.designHasErrors')}</span>
                 ) : (
                   <span className={cn('num truncate', run?.status === 'running' && 'opacity-70')}>
                     {xy.anamorphic && xy.primary ? (
                       <>
-                        <span className="text-secondary">EFL y</span> {sig(xy.primary.eflY, 5)} <span className="text-secondary">· Squeeze</span>{' '}
+                        <span className="text-secondary">EFL y</span> {sig(xy.primary.eflY, 5)} <span className="text-secondary">· {t('app.status.squeeze')}</span>{' '}
                         {squeezeText(xy.primary.squeeze, 2)}
                       </>
                     ) : (
@@ -173,7 +176,7 @@ export function StatusCapsule() {
           <button
             type="button"
             className="flex h-full cursor-default items-center gap-1 rounded-r-full border-l border-separator pl-2 pr-3 hover:bg-hover"
-            aria-label={issues.length ? `${issues.length} issues` : 'No issues'}
+            aria-label={issues.length ? t('app.status.issuesCount', { count: issues.length }) : t('app.status.noIssues')}
             data-testid="issues-button"
           >
             {issues.length === 0 ? (
@@ -198,12 +201,13 @@ const Y_SECTION = new Set(['efl', 'bfl', 'image_f_number', 'working_f_number', '
 
 /** The x and y first order at the primary wavelength (anamorphic designs). */
 function AnamorphicTable({ json }: { json: JsonObject | undefined }) {
+  const t = useT()
   const system = useDocument((s) => s.project.system)
   const a = anamorphicSummary(json, system)
   if (!a.anamorphic) return null
   const p = a.primary
   if (!p) {
-    return <p className="mt-1.5 text-[11px] text-secondary">This design is not rotationally symmetric. The engine’s first-order data covers the y section.</p>
+    return <p className="mt-1.5 text-[11px] text-secondary">{t('app.status.notSymmetric')}</p>
   }
   return (
     <table className="mt-1.5 w-full text-[12px]" data-testid="anamorphic-table">
@@ -225,17 +229,17 @@ function AnamorphicTable({ json }: { json: JsonObject | undefined }) {
           <td className="num text-right">{fmt(p.bflX, 4)}</td>
           <td className="num text-right">{fmt(p.bflY, 4)}</td>
         </tr>
-        <tr title={`Squeeze: ${a.squeezeDefinition ?? 'signed EFL y / EFL x'}`}>
-          <td className="py-[1px] pr-2 text-secondary">Squeeze</td>
+        <tr title={t('app.status.squeezeTitle', { definition: a.squeezeDefinition ? engineText(a.squeezeDefinition) : t('app.status.squeezeDefinition') })}>
+          <td className="py-[1px] pr-2 text-secondary">{t('app.status.squeeze')}</td>
           <td colSpan={2} className="num text-right">
             {squeezeText(p.squeeze)}
           </td>
         </tr>
         {a.symmetry && (
           <tr>
-            <td className="py-[1px] pr-2 text-secondary">Symmetry</td>
+            <td className="py-[1px] pr-2 text-secondary">{t('app.status.symmetry')}</td>
             <td colSpan={2} className="text-right">
-              {a.symmetry === 'meridional' ? 'Meridional plane' : a.symmetry === 'none' ? 'None' : 'Rotational'}
+              {a.symmetry === 'meridional' ? t('app.status.meridionalPlane') : a.symmetry === 'none' ? t('common.none') : t('app.status.rotational')}
             </td>
           </tr>
         )}
@@ -246,22 +250,24 @@ function AnamorphicTable({ json }: { json: JsonObject | undefined }) {
 
 /** Where analyses compute: Automatic, CPU reference (f64) or GPU. */
 export function BackendPicker() {
+  const t = useT()
   const backend = usePreferences((s) => s.backend)
   const setBackend = usePreferences((s) => s.setBackend)
   return (
-    <div className="mt-2 flex items-center justify-between gap-2 text-[12px]" title="Where analyses compute. Automatic uses the GPU where the engine has a path and it pays off.">
-      <span className="text-secondary">Compute on</span>
+    <div className="mt-2 flex items-center justify-between gap-2 text-[12px]" title={t('app.status.computeHelp')}>
+      <span className="text-secondary">{t('app.status.computeOn')}</span>
       <Segmented
-        label="Compute on"
+        label={t('app.status.computeOn')}
         value={backend}
         onChange={setBackend}
-        options={BACKEND_CHOICES.map((c) => ({ value: c.value, title: c.value === 'cpu_reference' ? 'CPU (f64)' : c.title, help: c.help }))}
+        options={BACKEND_CHOICES.map((c) => ({ value: c.value, title: c.value === 'cpu_reference' ? t('app.backend.cpuShort') : c.title, help: c.help }))}
       />
     </div>
   )
 }
 
 function StatusDetails({ json }: { json: JsonObject | undefined }) {
+  const t = useT()
   const system = useDocument((s) => s.project.system)
   const anamorphic = anamorphicSummary(json, system).anamorphic
   const engine = useWorkspace((s) => s.engine)
@@ -273,9 +279,9 @@ function StatusDetails({ json }: { json: JsonObject | undefined }) {
   return (
     <div className="space-y-3">
       <section>
-        <h3 className="mb-1 text-[13px] font-semibold">First Order</h3>
+        <h3 className="mb-1 text-[13px] font-semibold">{t('app.status.firstOrder')}</h3>
         {entries.length === 0 ? (
-          <p className="text-secondary">No first-order data yet.</p>
+          <p className="text-secondary">{t('app.status.noFirstOrder')}</p>
         ) : (
           <table className="w-full text-[12px]">
             <tbody>
@@ -285,7 +291,7 @@ function StatusDetails({ json }: { json: JsonObject | undefined }) {
                 .map((e) => (
                   <tr key={String(e!.key)}>
                     <td className="py-[1px] pr-2 text-secondary">
-                      {String(e!.label)}
+                      {engineText(String(e!.label))}
                       {anamorphic && Y_SECTION.has(String(e!.key)) ? ' (y)' : ''}
                     </td>
                     <td className="num text-right">{fmt(nf(e!.value), 4)}</td>
@@ -298,20 +304,20 @@ function StatusDetails({ json }: { json: JsonObject | undefined }) {
         <AnamorphicTable json={json} />
       </section>
       <section>
-        <h3 className="mb-1 text-[13px] font-semibold">Engine</h3>
+        <h3 className="mb-1 text-[13px] font-semibold">{t('app.status.engine')}</h3>
         {engineError ? (
-          <p className="text-danger">{engineError}</p>
+          <p className="text-danger">{engineText(engineError)}</p>
         ) : info ? (
           <>
             <EngineInfoTable />
             <div className="mt-1 grid grid-cols-[auto_1fr] gap-x-3 text-[12px]">
-              <span className="text-secondary">Snapshot</span>
+              <span className="text-secondary">{t('app.status.snapshot')}</span>
               <span className="num font-mono text-[11px]">{snapshot ? snapshot.hash.slice(0, 12) : '–'}</span>
             </div>
             <BackendPicker />
           </>
         ) : (
-          <p className="text-secondary">Starting…</p>
+          <p className="text-secondary">{t('app.status.starting')}</p>
         )}
       </section>
     </div>
@@ -320,29 +326,30 @@ function StatusDetails({ json }: { json: JsonObject | undefined }) {
 
 /** Engine readiness, threads, cross-origin isolation and WebGPU. */
 export function EngineInfoTable() {
+  const t = useT()
   const info = useWorkspace((s) => s.engine?.info)
   if (!info) return null
   const isolated = typeof crossOriginIsolated !== 'undefined' ? crossOriginIsolated : info.isolated
-  const yes = (b: boolean) => (b ? 'Yes' : 'No')
+  const yes = (b: boolean) => (b ? t('common.yes') : t('common.no'))
   return (
     <div className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-[1px] text-[12px]" data-testid="engine-info">
-      <span className="text-secondary">Engine</span>
+      <span className="text-secondary">{t('app.status.engine')}</span>
       <span>
         {info.name} <span className="num text-secondary">{info.version}</span>
       </span>
-      <span className="text-secondary">Status</span>
-      <span className="text-success">Ready</span>
-      <span className="text-secondary">Threads</span>
+      <span className="text-secondary">{t('app.status.status')}</span>
+      <span className="text-success">{t('app.status.ready')}</span>
+      <span className="text-secondary">{t('app.status.threads')}</span>
       <span className="num">{info.threads}</span>
-      <span className="text-secondary">Cross-origin isolated</span>
-      <span title="Threads need SharedArrayBuffer, which needs cross-origin isolation (COOP/COEP headers).">{yes(isolated)}</span>
+      <span className="text-secondary">{t('app.status.isolated')}</span>
+      <span title={t('app.status.isolatedHelp')}>{yes(isolated)}</span>
       <span className="text-secondary">WebGPU</span>
       <span>{yes(info.webgpu)}</span>
-      <span className="text-secondary">Backends</span>
+      <span className="text-secondary">{t('app.status.backends')}</span>
       <span>
         {info.backends
           .filter((b) => typeof b === 'string' || b.available !== false)
-          .map((b) => (typeof b === 'string' ? b : (b.title ?? b.id)))
+          .map((b) => (typeof b === 'string' ? b : (engineText(b.title) ?? b.id)))
           .join(', ') || '–'}
       </span>
     </div>

@@ -3,6 +3,7 @@
 // is editable without typed JSON.
 
 import type { Json, JsonObject } from '@/engine/types'
+import { t } from '@/i18n'
 import { autoSentinel } from './autoSettings'
 
 export type Schema = JsonObject
@@ -203,7 +204,7 @@ export function variantDefault(v: Variant): JsonObject {
 export function pairLabels(name: string, s: Schema): [string, string, string] {
   const d = String(s.description ?? '')
   if (/center|point/.test(name) || /\[hx,\s*hy\]/i.test(d)) return ['Hx', 'Hy', ' ']
-  if (/range/.test(name) || /\[min,\s*max\]/i.test(d)) return ['', '', 'to']
+  if (/range/.test(name) || /\[min,\s*max\]/i.test(d)) return ['', '', t('lens.settings.to')]
   if (/grid|bins|pixels|size/.test(name) || /\[nx,\s*ny\]|\[width,\s*height\]/i.test(d)) return ['', '', '×']
   return ['x', 'y', ' ']
 }

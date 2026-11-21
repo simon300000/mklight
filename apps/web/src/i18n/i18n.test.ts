@@ -71,8 +71,8 @@ describe('catalogs', () => {
     expect(bad).toEqual([])
   })
 
-  it('no Chinese string is empty', () => {
-    expect([...zh].filter(([, v]) => !v.trim()).map(([k]) => k)).toEqual([])
+  it('no Chinese string is empty (joiners aside)', () => {
+    expect([...zh].filter(([k, v]) => !v.trim() && source.get(k)?.trim()).map(([k]) => k)).toEqual([])
   })
 })
 

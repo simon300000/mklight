@@ -1,4 +1,5 @@
 import { useEffect, useRef } from 'react'
+import { useT } from '@/i18n'
 import { fmt, sig } from '@/model/format'
 import {
   departureMap,
@@ -119,31 +120,32 @@ function Legend({ series }: { series: Series[] }) {
   )
 }
 
-function Profiles({ shape, h, axes, title = 'Sag' }: { shape: Shape; h: number; axes: ('x' | 'y')[]; title?: string }) {
+function Profiles({ shape, h, axes, title }: { shape: Shape; h: number; axes: ('x' | 'y')[]; title?: string }) {
+  const t = useT()
   const dark = useDark()
   const series: Series[] = axes.flatMap((axis) => {
     const pts = profile(shape, h, axis, 96)
-    return pts ? [{ label: axis === 'x' ? 'x section' : 'y section', color: seriesColor(axis === 'x' ? 1 : 0, dark), dashed: axis === 'x', points: pts }] : []
+    return pts ? [{ label: axis === 'x' ? t('inspector.preview.xSection') : t('inspector.preview.ySection'), color: seriesColor(axis === 'x' ? 1 : 0, dark), dashed: axis === 'x', points: pts }] : []
   })
   const zs = series.flatMap((s) => s.points.map((p) => p[1]))
   const aria = series.length
-    ? series.map((s) => `${s.label}: sag ${sig(Math.min(...s.points.map((p) => p[1])), 4)} to ${sig(Math.max(...s.points.map((p) => p[1])), 4)} mm over ±${sig(h, 4)} mm`).join('; ')
-    : 'No sag'
+    ? series.map((s) => t('inspector.preview.sagAria', { label: s.label, min: sig(Math.min(...s.points.map((p) => p[1])), 4), max: sig(Math.max(...s.points.map((p) => p[1])), 4), h: sig(h, 4) })).join('; ')
+    : t('inspector.preview.noSag')
   return (
     <div className="py-1" data-testid="sag-profile">
-      {(series.length > 1 || title !== 'Sag') && (
+      {(series.length > 1 || title) && (
         <div className="mb-0.5 flex items-center justify-between">
           <span className="text-[11px] font-semibold">{title}</span>
           {series.length > 1 && <Legend series={series} />}
         </div>
       )}
       {series.length === 0 ? (
-        <p className="text-[11px] text-secondary">The shape has no real sag over ±{sig(h, 4)} mm.</p>
+        <p className="text-[11px] text-secondary">{t('inspector.preview.noRealSag', { h: sig(h, 4) })}</p>
       ) : (
         <>
-          <LineChart series={series} xDomain={[-h, h]} xLabel="Position (mm)" yLabel="Sag (mm)" ariaLabel={aria} />
+          <LineChart series={series} xDomain={[-h, h]} xLabel={t('inspector.preview.position')} yLabel={t('inspector.preview.sag')} ariaLabel={aria} />
           <p className="num text-[11px] text-secondary">
-            sag {sig(Math.min(...zs), 4)} … {sig(Math.max(...zs), 4)} mm over ±{sig(h, 4)} mm
+            {t('inspector.preview.sagRange', { min: sig(Math.min(...zs), 4), max: sig(Math.max(...zs), 4), h: sig(h, 4) })}
           </p>
         </>
       )}
@@ -163,6 +165,7 @@ function diverging(t: number, dark: boolean): [number, number, number] {
 
 /** The departure from the base conic over the clear aperture, with its PV. */
 function DepartureMap({ shape, h }: { shape: Shape; h: number }) {
+  const t = useT()
   const ref = useRef<HTMLCanvasElement>(null)
   const bar = useRef<HTMLCanvasElement>(null)
   const dark = useDark()
@@ -202,8 +205,8 @@ function DepartureMap({ shape, h }: { shape: Shape; h: number }) {
   return (
     <div className="py-1" data-testid="departure-map">
       <div className="mb-1 flex items-center justify-between">
-        <span className="text-[11px] font-semibold">Departure from base</span>
-        <span className="num text-[11px] text-secondary">PV {micro ? `${sig(pv * 1000, 4)} µm` : `${sig(pv, 4)} mm`}</span>
+        <span className="text-[11px] font-semibold">{t('inspector.preview.departure')}</span>
+        <span className="num text-[11px] text-secondary">{t('inspector.preview.pv', { value: micro ? `${sig(pv * 1000, 4)} µm` : `${sig(pv, 4)} mm` })}</span>
       </div>
       <div className="flex items-center gap-3">
         <div className="relative size-[120px] shrink-0">
@@ -212,7 +215,7 @@ function DepartureMap({ shape, h }: { shape: Shape; h: number }) {
             className="size-full rounded-full shadow-[0_0_0_0.5px_var(--separator)]"
             style={{ imageRendering: 'pixelated' }}
             role="img"
-            aria-label={`Departure map from the base, peak to valley ${sig(pv, 4)} mm over a radius of ${sig(h, 4)} mm`}
+            aria-label={t('inspector.preview.departureAria', { pv: sig(pv, 4), h: sig(h, 4) })}
           />
           <span className="absolute -left-0.5 top-0 text-[10px] text-secondary">y ↑</span>
           <span className="absolute -right-1 bottom-0 text-[10px] text-secondary">x →</span>
@@ -232,6 +235,7 @@ function DepartureMap({ shape, h }: { shape: Shape; h: number }) {
 }
 
 function PhaseProfile({ p, h }: { p: Phase; h: number }) {
+  const t = useT()
   const dark = useDark()
   const pts: [number, number][] = Array.from({ length: 97 }, (_, k) => {
     const r = (h * k) / 96
@@ -239,13 +243,13 @@ function PhaseProfile({ p, h }: { p: Phase; h: number }) {
   })
   return (
     <div className="py-1" data-testid="phase-profile">
-      <span className="text-[11px] font-semibold">Phase (order +1)</span>
+      <span className="text-[11px] font-semibold">{t('inspector.preview.phase')}</span>
       <LineChart
         series={[{ label: 'Φ / 2π', color: seriesColor(6, dark), points: pts }]}
         xDomain={[0, h]}
-        xLabel="Radius (mm)"
-        yLabel="Φ (waves)"
-        ariaLabel={`Phase profile from 0 to ${sig(pts.at(-1)?.[1] ?? 0, 4)} waves at a radius of ${sig(h, 4)} mm`}
+        xLabel={t('inspector.preview.radius')}
+        yLabel={t('inspector.preview.phaseAxis')}
+        ariaLabel={t('inspector.preview.phaseAria', { waves: sig(pts.at(-1)?.[1] ?? 0, 4), h: sig(h, 4) })}
       />
     </div>
   )
@@ -269,6 +273,7 @@ function Figure({ title, detail, value, extra }: { title: string; detail?: strin
 /** The DOE's paraxial power (from A₁, SURFACES §3), focal length, smallest
  *  zone period and zone count over the clear aperture. */
 function DOEFigures({ p, h, primaryUm }: { p: Phase; h: number; primaryUm: number }) {
+  const t = useT()
   const trace = phasePower(p, p.traceOrder, primaryUm)
   const design = phasePower(p, p.designOrder, p.designWavelengthUm)
   const period = minimumPeriod(p, h)
@@ -276,15 +281,15 @@ function DOEFigures({ p, h, primaryUm }: { p: Phase; h: number; primaryUm: numbe
   const same = p.traceOrder === p.designOrder && Math.abs(primaryUm - p.designWavelengthUm) < 1e-9
   const power = (v: number) => (v === 0 ? '0' : `${sig(v, 4)} mm⁻¹`)
   return (
-    <div className="select-text py-1" title="Paraxial power φ = −m λ A₁ / (π r_norm²), added to the base's refractive power. A DOE's Abbe number is about −3.45." data-testid="doe-figures">
-      <Figure title="Paraxial power" detail={`order ${p.traceOrder}, ${sig(primaryUm, 5)} µm`} value={power(trace)} extra={trace === 0 ? null : `f ${sig(1 / trace, 5)} mm`} />
-      {!same && <Figure title="At design" detail={`order ${p.designOrder}, ${sig(p.designWavelengthUm, 5)} µm`} value={power(design)} extra={design === 0 ? null : `f ${sig(1 / design, 5)} mm`} />}
+    <div className="select-text py-1" title={t('inspector.preview.doeHelp')} data-testid="doe-figures">
+      <Figure title={t('inspector.preview.power')} detail={t('inspector.preview.orderAt', { order: p.traceOrder, wavelength: sig(primaryUm, 5) })} value={power(trace)} extra={trace === 0 ? null : `f ${sig(1 / trace, 5)} mm`} />
+      {!same && <Figure title={t('inspector.preview.atDesign')} detail={t('inspector.preview.orderAt', { order: p.designOrder, wavelength: sig(p.designWavelengthUm, 5) })} value={power(design)} extra={design === 0 ? null : `f ${sig(1 / design, 5)} mm`} />}
       <Figure
-        title="Smallest zone period"
-        detail={period ? `at r = ${sig(period.radius, 4)} mm` : undefined}
+        title={t('inspector.preview.smallestZone')}
+        detail={period ? t('inspector.preview.atRadius', { r: sig(period.radius, 4) }) : undefined}
         value={period ? (period.period < 0.1 ? `${sig(period.period * 1000, 4)} µm` : `${sig(period.period, 4)} mm`) : '–'}
       />
-      <Figure title="Zones" detail={`over ±${sig(h, 4)} mm`} value={fmt(zones, 1)} />
+      <Figure title={t('inspector.preview.zones')} detail={t('inspector.preview.over', { h: sig(h, 4) })} value={fmt(zones, 1)} />
     </div>
   )
 }
@@ -294,6 +299,7 @@ function DOEFigures({ p, h, primaryUm }: { p: Phase; h: number; primaryUm: numbe
  *  freeforms, and for a DOE its phase profile and paraxial figures.
  *  Display geometry from `shapeSag`; the engine traces. */
 export function ShapePreview({ shape, semiDiameter, primaryUm }: { shape: Shape; semiDiameter: number | null; primaryUm: number }) {
+  const t = useT()
   const h = previewRadius(shape, semiDiameter)
   switch (previewKind(shape.type)) {
     case 'radial':
@@ -315,7 +321,7 @@ export function ShapePreview({ shape, semiDiameter, primaryUm }: { shape: Shape;
         <>
           <PhaseProfile p={p} h={h} />
           <DOEFigures p={p} h={h} primaryUm={primaryUm} />
-          {base && base.type !== 'plane' && <Profiles shape={base} h={h} axes={['y']} title="Base sag" />}
+          {base && base.type !== 'plane' && <Profiles shape={base} h={h} axes={['y']} title={t('inspector.preview.baseSag')} />}
         </>
       )
     }

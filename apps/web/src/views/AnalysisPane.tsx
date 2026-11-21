@@ -15,6 +15,7 @@ import {
 } from '@/components/ui/dropdown-menu'
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
 import { Tip } from '@/components/ui/tooltip'
+import { engineText, t as tt, useT } from '@/i18n'
 import { analysisShortTitle, analysisTitle, categoryTitle, groupedAnalyses } from '@/model/catalog'
 import { useDocument } from '@/state/document'
 import { command } from '@/state/commands'
@@ -40,7 +41,7 @@ class RenderGuard extends Component<{ children: ReactNode; resetKey: unknown }, 
     return p.resetKey !== s.key ? { error: null, key: p.resetKey } : null
   }
   render() {
-    if (this.state.error) return <div className="p-3 text-[12px] text-secondary">This result could not be drawn: {this.state.error}</div>
+    if (this.state.error) return <div className="p-3 text-[12px] text-secondary">{tt('analysis.pane.renderFailed', { message: this.state.error })}</div>
     return this.props.children
   }
 }
@@ -58,6 +59,7 @@ class RenderGuard extends Component<{ children: ReactNode; resetKey: unknown }, 
  *  in the help tag and the accessible label); the state line truncates and
  *  never decides the layout. */
 export function AnalysisPane({ pane }: { pane: Pane }) {
+  const t = useT()
   const ws = useWorkspace()
   const system = useDocument((s) => s.project.system)
   const focused = useView((s) => s.focusedPane === pane.key)
@@ -89,17 +91,17 @@ export function AnalysisPane({ pane }: { pane: Pane }) {
   const summary = settingsSummary(d?.default_settings ?? null, pane.settings)
   const caption = running
     ? run.stage
-      ? `${run.stage}…`
-      : 'Updating…'
+      ? t('analysis.pane.stage', { stage: engineText(run.stage) })
+      : t('analysis.pane.updating')
     : run?.status === 'failed'
-      ? 'Failed'
+      ? t('analysis.pane.failed')
       : !result
         ? pane.auto
-          ? 'Waiting'
-          : 'Not run'
+          ? t('analysis.pane.waiting')
+          : t('analysis.pane.notRun')
         : stale
-          ? 'Design changed'
-          : summary || 'Current'
+          ? t('analysis.pane.designChanged')
+          : summary || t('analysis.pane.current')
 
   const keys = useMemo(() => {
     if (!result) return []
@@ -108,7 +110,7 @@ export function AnalysisPane({ pane }: { pane: Pane }) {
     } catch {
       return []
     }
-  }, [pane.analysis, result, system])
+  }, [pane.analysis, result, system, t])
 
   return (
     <section
@@ -128,7 +130,7 @@ export function AnalysisPane({ pane }: { pane: Pane }) {
               <button
                 type="button"
                 className="flex min-w-0 cursor-default items-center gap-0.5 rounded px-0.5 hover:bg-hover"
-                aria-label={`${title}, choose analysis`}
+                aria-label={t('analysis.pane.chooseAnalysis', { title })}
                 title={title}
               >
                 <h2 className="truncate text-[13px] font-semibold @max-[300px]:text-[12px]">
@@ -158,23 +160,23 @@ export function AnalysisPane({ pane }: { pane: Pane }) {
         }
       >
         {running ? (
-          <Tip label={`Cancel (${shortcutLabel('mod+Period')})`}>
-            <Button variant="ghost" size="iconSm" aria-label="Cancel" onClick={() => ws.cancel(pane.key)}>
+          <Tip label={t('analysis.pane.cancelTip', { shortcut: shortcutLabel('mod+Period') })}>
+            <Button variant="ghost" size="iconSm" aria-label={t('common.cancel')} onClick={() => ws.cancel(pane.key)}>
               <Square />
             </Button>
           </Tip>
         ) : (
-          <Tip label={`Run (${shortcutLabel(command('runAll').shortcut!)})`}>
-            <Button variant="ghost" size="iconSm" aria-label="Run" onClick={() => ws.run(pane.key, { fresh: true })}>
+          <Tip label={t('analysis.pane.runTip', { shortcut: shortcutLabel(command('runAll').shortcut!) })}>
+            <Button variant="ghost" size="iconSm" aria-label={t('common.run')} onClick={() => ws.run(pane.key, { fresh: true })}>
               <Play />
             </Button>
           </Tip>
         )}
-        <Tip label={pane.auto ? 'Automatic update is on' : 'Automatic update is off'}>
+        <Tip label={pane.auto ? t('analysis.pane.autoOn') : t('analysis.pane.autoOff')}>
           <Button
             variant="ghost"
             size="iconSm"
-            aria-label="Automatic update"
+            aria-label={t('analysis.pane.automaticUpdate')}
             aria-pressed={pane.auto}
             className={cn('@max-[360px]:hidden', pane.auto && 'text-accent')}
             onClick={() => ws.updatePane(pane.key, { auto: !pane.auto })}
@@ -182,11 +184,11 @@ export function AnalysisPane({ pane }: { pane: Pane }) {
             <Zap />
           </Button>
         </Tip>
-        <Tip label="Settings">
+        <Tip label={t('analysis.pane.settings')}>
           <Button
             variant="ghost"
             size="iconSm"
-            aria-label="Settings"
+            aria-label={t('analysis.pane.settings')}
             aria-pressed={pane.settingsOpen}
             className={cn('@max-[360px]:hidden', pane.settingsOpen && 'bg-selected')}
             onClick={() => ws.updatePane(pane.key, { settingsOpen: !pane.settingsOpen })}
@@ -196,23 +198,23 @@ export function AnalysisPane({ pane }: { pane: Pane }) {
         </Tip>
         <DropdownMenu>
           <DropdownMenuTrigger asChild>
-            <Button variant="ghost" size="iconSm" aria-label="More">
+            <Button variant="ghost" size="iconSm" aria-label={t('common.more')}>
               <Ellipsis />
             </Button>
           </DropdownMenuTrigger>
           <DropdownMenuContent align="end">
             <DropdownMenuLabel>{title}</DropdownMenuLabel>
-            <DropdownMenuItem onSelect={() => ws.run(pane.key, { fresh: true })}>Run</DropdownMenuItem>
+            <DropdownMenuItem onSelect={() => ws.run(pane.key, { fresh: true })}>{t('common.run')}</DropdownMenuItem>
             <DropdownMenuItem onSelect={() => ws.updatePane(pane.key, { auto: !pane.auto })}>
-              {pane.auto ? 'Turn Off Automatic Update' : 'Turn On Automatic Update'}
+              {pane.auto ? t('analysis.pane.turnOffAuto') : t('analysis.pane.turnOnAuto')}
             </DropdownMenuItem>
             <DropdownMenuItem onSelect={() => ws.updatePane(pane.key, { settingsOpen: !pane.settingsOpen })}>
-              {pane.settingsOpen ? 'Hide Settings' : 'Show Settings'}
+              {pane.settingsOpen ? t('analysis.pane.hideSettings') : t('analysis.pane.showSettings')}
             </DropdownMenuItem>
-            <DropdownMenuItem onSelect={() => ws.updatePane(pane.key, { settings: {} })}>Reset Settings</DropdownMenuItem>
-            {result && <DropdownMenuItem onSelect={() => setDetailsOpen(true)}>Run Details…</DropdownMenuItem>}
-            <DropdownMenuItem onSelect={() => ws.addPane(pane.analysis, { settings: pane.settings })}>Duplicate Pane</DropdownMenuItem>
-            {result && <DropdownMenuItem onSelect={() => void navigator.clipboard?.writeText(JSON.stringify(result.json, null, 2))}>Copy Result as JSON</DropdownMenuItem>}
+            <DropdownMenuItem onSelect={() => ws.updatePane(pane.key, { settings: {} })}>{t('analysis.pane.resetSettings')}</DropdownMenuItem>
+            {result && <DropdownMenuItem onSelect={() => setDetailsOpen(true)}>{t('analysis.pane.runDetails')}</DropdownMenuItem>}
+            <DropdownMenuItem onSelect={() => ws.addPane(pane.analysis, { settings: pane.settings })}>{t('analysis.pane.duplicate')}</DropdownMenuItem>
+            {result && <DropdownMenuItem onSelect={() => void navigator.clipboard?.writeText(JSON.stringify(result.json, null, 2))}>{t('analysis.pane.copyJson')}</DropdownMenuItem>}
             <DropdownMenuSeparator />
             <PanelMenuItems panel={pane.key} Item={DropdownMenuItem} Separator={DropdownMenuSeparator} />
           </DropdownMenuContent>
@@ -251,32 +253,32 @@ export function AnalysisPane({ pane }: { pane: Pane }) {
         {stale && !running && (
           <div className="absolute inset-0 flex items-center justify-center p-4">
             <div className="glass-popover flex flex-col items-center gap-2 rounded-2xl px-5 py-3 text-center" data-testid="stale-card">
-              <span className="font-medium">Design changed</span>
+              <span className="font-medium">{t('analysis.pane.designChanged')}</span>
               <Button variant="prominent" className="rounded-full" onClick={() => ws.run(pane.key, { fresh: true })}>
-                <RefreshCw /> Update
+                <RefreshCw /> {t('analysis.pane.update')}
               </Button>
             </div>
           </div>
         )}
         {run?.status === 'failed' && (
           <div className="absolute inset-x-0 bottom-0 m-3 rounded-lg border border-separator bg-content p-3 text-[12px]" role="alert">
-            <p className="mb-1 font-medium text-danger">{title} failed</p>
-            <p className="select-text whitespace-pre-wrap text-secondary">{run.error}</p>
+            <p className="mb-1 font-medium text-danger">{t('analysis.pane.failedTitle', { title })}</p>
+            <p className="select-text whitespace-pre-wrap text-secondary">{(run.error ?? '').split('\n').map((l) => engineText(l)).join('\n')}</p>
             <Button size="sm" className="mt-2" onClick={() => ws.run(pane.key, { fresh: true })}>
-              Try Again
+              {t('analysis.pane.tryAgain')}
             </Button>
           </div>
         )}
         {!result && run?.status !== 'failed' && (
           <div className="absolute inset-0 flex flex-col items-center justify-center gap-2 text-secondary">
             {running ? (
-              <span>Computing {Math.round((run?.progress ?? 0) * 100)}%</span>
+              <span>{t('analysis.pane.computing', { percent: Math.round((run?.progress ?? 0) * 100) })}</span>
             ) : (
               <>
-                <span>{pane.auto ? 'Waiting for the design' : 'Runs on request'}</span>
+                <span>{pane.auto ? t('analysis.pane.waitingForDesign') : t('analysis.pane.runsOnRequest')}</span>
                 {!pane.auto && (
                   <Button variant="prominent" className="rounded-full" onClick={() => ws.run(pane.key, { fresh: true })}>
-                    <Play /> Run
+                    <Play /> {t('common.run')}
                   </Button>
                 )}
               </>
@@ -321,20 +323,21 @@ function BackendBadge({
   onOpenChange: (o: boolean) => void
   onRemedy: (key: string, value: JsonObject[string]) => void
 }) {
+  const t = useT()
   const ri = result.runInfo
   const backend = String(ri.backend ?? '')
   const gpu = backend.startsWith('gpu')
   const precision = String(ri.precision ?? (gpu ? 'f32' : 'f64')).replace(/_.*/, '')
   const label = `${gpu ? 'GPU' : 'CPU'} · ${precision}`
-  const facts = useMemo(() => runFacts(result), [result])
+  const facts = useMemo(() => runFacts(result), [result, t])
   const marks = facts.groups.length + (facts.fallback ? 1 : 0)
   const spoken = [
-    `Computed on ${facts.rows[0]?.[1] ?? backend}`,
-    facts.fallback ? `Ran on the CPU: ${facts.fallback}` : '',
-    facts.groups.length ? `${facts.groups.length} warning${facts.groups.length === 1 ? '' : 's'}: ${facts.groups.map(warningLine).join('. ')}` : '',
+    t('analysis.pane.spokenComputedOn', { backend: facts.rows[0]?.[1] ?? backend }),
+    facts.fallback ? t('analysis.pane.spokenFallback', { reason: facts.fallback }) : '',
+    facts.groups.length ? t('analysis.pane.spokenWarnings', { count: facts.groups.length, lines: facts.groups.map(warningLine).join(t('analysis.pane.spokenJoin')) }) : '',
   ]
     .filter(Boolean)
-    .join('. ')
+    .join(t('analysis.pane.spokenJoin'))
   return (
     <Popover open={open} onOpenChange={onOpenChange}>
       <Tip label={<span className="whitespace-pre-line">{badgeHelp(facts)}</span>}>
@@ -345,7 +348,7 @@ function BackendBadge({
               'flex shrink-0 cursor-default items-center gap-1 rounded-full px-2 py-[1px] text-[10px] font-medium',
               gpu ? 'bg-accent/15 text-accent' : 'bg-selected text-secondary',
             )}
-            aria-label={`Run details: ${spoken}`}
+            aria-label={t('analysis.pane.runDetailsLabel', { spoken })}
             data-testid="backend-badge"
           >
             {marks > 0 && (
@@ -371,11 +374,12 @@ function BackendBadge({
  *  engine and time; the attempts that did not compute the result; warnings
  *  grouped with their fields and a one-click remedy; the raw messages. */
 export function RunDetails({ result, settings, onRemedy }: { result: AnalysisResult; settings: JsonObject; onRemedy?: (key: string, value: JsonObject[string]) => void }) {
-  const f = useMemo(() => runFacts(result), [result])
+  const t = useT()
+  const f = useMemo(() => runFacts(result), [result, t])
   const [all, setAll] = useState(false)
   return (
     <div className="select-text text-[12px]" data-testid="run-details">
-      <h3 className="mb-1.5 text-[13px] font-semibold">Run Information</h3>
+      <h3 className="mb-1.5 text-[13px] font-semibold">{t('analysis.pane.runInformation')}</h3>
       <div className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-[2px]">
         {f.rows.map(([k, v]) => (
           <div key={k} className="contents">
@@ -386,7 +390,7 @@ export function RunDetails({ result, settings, onRemedy }: { result: AnalysisRes
       </div>
       {f.attempts.length > 0 && (
         <section className="mt-2.5 border-t border-separator pt-2">
-          <h4 className="mb-1 font-semibold">{f.attempts.length === 1 ? 'Attempt Not Used' : `${f.attempts.length} Attempts Not Used`}</h4>
+          <h4 className="mb-1 font-semibold">{t('analysis.pane.attemptsNotUsed', { count: f.attempts.length })}</h4>
           <ul className="space-y-1.5">
             {f.attempts.map((a, k) => (
               <li key={k}>
@@ -402,7 +406,7 @@ export function RunDetails({ result, settings, onRemedy }: { result: AnalysisRes
       )}
       {f.groups.length > 0 && (
         <section className="mt-2.5 border-t border-separator pt-2">
-          <h4 className="mb-1 font-semibold">{f.groups.length === 1 ? 'Warning' : `${f.groups.length} Warnings`}</h4>
+          <h4 className="mb-1 font-semibold">{t('analysis.pane.warningsHeading', { count: f.groups.length })}</h4>
           <ul className="space-y-1.5">
             {f.groups.map((g, k) => {
               const fix = remedyFor(g.remedy, settings)
@@ -424,7 +428,7 @@ export function RunDetails({ result, settings, onRemedy }: { result: AnalysisRes
           </ul>
           {f.raw.length > f.groups.length && (
             <details className="mt-1.5" open={all} onToggle={(e) => setAll((e.target as HTMLDetailsElement).open)}>
-              <summary className="cursor-default text-[11px] text-secondary">All {f.raw.length} messages from the engine</summary>
+              <summary className="cursor-default text-[11px] text-secondary">{t('analysis.pane.allMessages', { count: f.raw.length })}</summary>
               <ul className="mt-1 space-y-0.5 font-mono text-[11px] text-secondary">
                 {f.raw.map((w, k) => (
                   <li key={k}>{w}</li>
@@ -435,18 +439,19 @@ export function RunDetails({ result, settings, onRemedy }: { result: AnalysisRes
         </section>
       )}
       <Button size="sm" variant="ghost" className="mt-2 -ml-2" onClick={() => void navigator.clipboard?.writeText(JSON.stringify(result.runInfo, null, 2))}>
-        Copy Run Info
+        {t('analysis.pane.copyRunInfo')}
       </Button>
     </div>
   )
 }
 
 export function EmptyPanes() {
+  const t = useT()
   return (
     <div className="flex h-full flex-col items-center justify-center gap-2 bg-content text-secondary">
       <X className="size-5 opacity-0" />
-      <span>No analysis panes</span>
-      <span className="text-[12px]">Choose an analysis in the sidebar or with Add Analysis.</span>
+      <span>{t('analysis.pane.emptyTitle')}</span>
+      <span className="text-[12px]">{t('analysis.pane.emptyHint')}</span>
     </div>
   )
 }

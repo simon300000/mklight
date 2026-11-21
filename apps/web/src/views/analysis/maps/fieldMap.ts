@@ -4,6 +4,7 @@
 // `values [ny, nx, columns]`, row 0 at the lowest Hy, x fastest.
 
 import type { AnalysisResult, Json } from '@/engine/types'
+import { engineText, tMaybe } from '@/i18n'
 import { nf } from '@/model/format'
 import { arr, buffer, isObj, nums } from '@/views/results/common'
 import { finiteRange, outsideDisk, type Grid, type Range } from './heatScale'
@@ -15,9 +16,13 @@ export interface FieldColumn {
 }
 
 export const columnTitle = (c: FieldColumn) => {
+  const known = tMaybe(`maps.columns.${c.name}`)
+  if (known !== undefined) return known
   const t = c.name.replace(/_/g, ' ')
   return t.charAt(0).toUpperCase() + t.slice(1)
 }
+/** The engine's definition of a column, in the UI language. */
+export const columnDefinition = (c: FieldColumn | undefined) => (c?.definition ? engineText(c.definition) : undefined)
 export const columnUnit = (c: FieldColumn) => (c.unit === '' || c.unit === '1' ? '' : c.unit === 'deg' ? '°' : c.unit)
 export const columnTitleWithUnit = (c: FieldColumn) => (columnUnit(c) ? `${columnTitle(c)} (${columnUnit(c)})` : columnTitle(c))
 

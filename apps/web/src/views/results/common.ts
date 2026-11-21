@@ -2,6 +2,7 @@
 // shape, buffer lookup, field labels, canvas set-up and colour ramps.
 import { useLayoutEffect, useRef, useState, type RefObject } from 'react'
 import type { AnalysisResult, Json, JsonObject } from '@/engine/types'
+import { engineDiagnostic, engineText, t } from '@/i18n'
 import { nf, sig } from '@/model/format'
 import { fieldUnit, type System } from '@/model/system'
 import { FONT_FAMILY, wavelengthColor } from '@/lib/theme'
@@ -45,9 +46,21 @@ function fieldValueText(fv: Json | undefined, unit: string): string {
 /** "Field 2 · 14°" from a result's field index and value. */
 export function fieldLabel(system: System, field: Json | undefined, value: Json | undefined): string {
   const k = typeof field === 'number' ? field : NaN
-  const head = Number.isFinite(k) ? `Field ${k + 1}` : 'Field'
+  const head = Number.isFinite(k) ? t('common.fieldN', { n: k + 1 }) : t('common.field')
   const v = fieldValueText(value, systemFieldUnit(system))
   return v ? `${head} · ${v}` : head
+}
+
+/** An issue's message in the current language: by its code (the issue's scalar
+ *  fields are the parameters, `field` counted from 1), else the engine catalog. */
+export function issueMessage(i: JsonObject): string {
+  const message = String(i.message ?? '')
+  if (typeof i.code !== 'string') return engineText(message)
+  const params: Record<string, string | number> = {}
+  for (const [k, v] of Object.entries(i)) {
+    if (typeof v === 'string' || typeof v === 'number') params[k] = k === 'field' && typeof v === 'number' ? v + 1 : v
+  }
+  return engineDiagnostic(i.code, params, message)
 }
 
 /** Wavelengths (µm) by system index: from the result, else from the system. */

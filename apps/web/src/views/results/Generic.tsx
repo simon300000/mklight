@@ -2,9 +2,10 @@
 // sections for nested objects, and the buffers by name, dtype and shape.
 import type { ReactNode } from 'react'
 import type { AnalysisResult, Json, JsonObject, TypedArray } from '@/engine/types'
+import { t, useT } from '@/i18n'
 import { nf, sig } from '@/model/format'
 import { cn } from '@/lib/utils'
-import { arr, isObj } from './common'
+import { arr, isObj, issueMessage } from './common'
 
 const MAX_ROWS = 400
 const INLINE = 12
@@ -21,7 +22,7 @@ export function humanize(key: string): string {
 
 export function scalarText(v: Json | undefined): string {
   if (v === undefined || v === null) return '–'
-  if (typeof v === 'boolean') return v ? 'Yes' : 'No'
+  if (typeof v === 'boolean') return v ? t('common.yes') : t('common.no')
   if (typeof v === 'number') return Number.isInteger(v) && Math.abs(v) < 1e9 ? String(v).replace('-', '−') : sig(v, 6)
   if (typeof v === 'string') return ['inf', '-inf', 'nan', 'Infinity', '-Infinity'].includes(v) ? sig(nf(v)) : v
   return ''
@@ -31,9 +32,9 @@ function inlineText(v: Json | undefined): string {
   if (isScalarArray(v)) {
     const shown = v.length > INLINE ? v.slice(0, 8) : v
     const s = shown.map(scalarText).join(', ')
-    return v.length > INLINE ? `${s}, … (${v.length} values)` : `[${s}]`
+    return v.length > INLINE ? t('analysis.results.valuesMore', { shown: s, count: v.length }) : `[${s}]`
   }
-  if (Array.isArray(v)) return `${v.length} items`
+  if (Array.isArray(v)) return t('analysis.results.itemsInline', { count: v.length })
   return scalarText(v)
 }
 
@@ -74,9 +75,10 @@ function columnsOf(rows: JsonObject[]): string[] {
 }
 
 function RowTable(props: { rows: JsonObject[] }) {
+  useT()
   const cols = columnsOf(props.rows)
   const shown = props.rows.slice(0, MAX_ROWS)
-  if (!cols.length) return <div className="text-[12px] text-secondary">{props.rows.length} rows</div>
+  if (!cols.length) return <div className="text-[12px] text-secondary">{t('analysis.results.rows', { count: props.rows.length })}</div>
   return (
     <div className="mb-2 overflow-x-auto">
       <table className="text-[12px]">
@@ -101,7 +103,7 @@ function RowTable(props: { rows: JsonObject[] }) {
           ))}
         </tbody>
       </table>
-      {props.rows.length > MAX_ROWS && <div className="text-[11px] text-secondary">… {props.rows.length - MAX_ROWS} more rows</div>}
+      {props.rows.length > MAX_ROWS && <div className="text-[11px] text-secondary">{t('analysis.results.moreRows', { count: props.rows.length - MAX_ROWS })}</div>}
     </div>
   )
 }
@@ -128,9 +130,10 @@ function Matrix(props: { rows: Json[][] }) {
 }
 
 function ArrayBlock(props: { name: string; value: Json[]; depth: number }) {
+  useT()
   const v = props.value
   const open = props.depth < 1 && v.length <= 200
-  const note = `${v.length} ${v.length === 1 ? 'item' : 'items'}`
+  const note = t('analysis.results.item', { count: v.length })
   if (v.length && v.every(isObj)) {
     return (
       <Section title={humanize(props.name)} open={open} note={note}>
@@ -216,10 +219,11 @@ const DTYPES: [new (...a: never[]) => TypedArray, string][] = [
 export const dtypeOf = (b: TypedArray) => DTYPES.find(([T]) => b instanceof T)?.[1] ?? '?'
 
 function Buffers(props: { result: AnalysisResult }) {
+  useT()
   const names = Object.keys(props.result.buffers ?? {})
   if (!names.length) return null
   return (
-    <Section title="Buffers" open={false} note={`${names.length}`}>
+    <Section title={t('analysis.results.buffers')} open={false} note={`${names.length}`}>
       <table className="text-[12px]">
         <tbody>
           {names.map((n) => {
@@ -242,14 +246,15 @@ function Buffers(props: { result: AnalysisResult }) {
 const SEVERITY: Record<string, string> = { error: 'text-danger', warning: 'text-warning', info: 'text-secondary' }
 
 function Issues(props: { json: JsonObject }) {
+  useT()
   const issues = arr(props.json.issues).filter(isObj)
   const ok = props.json.ok === true
   return (
     <div className="mb-3">
       <div className={cn('mb-1 text-[13px]', ok ? 'text-label' : 'text-danger')}>
-        {ok ? 'The system is valid.' : 'The system has errors.'}
+        {ok ? t('analysis.results.systemValid') : t('analysis.results.systemErrors')}
         <span className="num ml-2 text-[12px] text-secondary">
-          {scalarText(props.json.errors ?? 0)} errors · {scalarText(props.json.warnings ?? 0)} warnings
+          {t('analysis.results.counts', { errors: scalarText(props.json.errors ?? 0), warnings: scalarText(props.json.warnings ?? 0) })}
         </span>
       </div>
       {issues.length > 0 && (
@@ -258,10 +263,10 @@ function Issues(props: { json: JsonObject }) {
             const sev = String(i.severity ?? 'info')
             return (
               <li key={k} className="flex gap-2 py-0.5">
-                <span className={cn('w-14 shrink-0 capitalize', SEVERITY[sev] ?? 'text-secondary')}>{sev}</span>
+                <span className={cn('w-14 shrink-0 capitalize', SEVERITY[sev] ?? 'text-secondary')}>{sev === 'error' ? t('common.error') : sev === 'warning' ? t('common.warning') : sev === 'info' ? t('common.info') : sev}</span>
                 <span className="text-label">
-                  {String(i.message ?? i.code ?? '')}
-                  {typeof i.surface === 'number' && <span className="text-secondary"> · surface {i.surface}</span>}
+                  {i.message === undefined && i.code !== undefined ? String(i.code) : issueMessage(i)}
+                  {typeof i.surface === 'number' && <span className="text-secondary">{t('analysis.results.onSurface', { n: i.surface })}</span>}
                   {typeof i.code === 'string' && <span className="ml-1 font-mono text-[11px] text-tertiary">{i.code}</span>}
                 </span>
               </li>
@@ -274,6 +279,7 @@ function Issues(props: { json: JsonObject }) {
 }
 
 export function GenericView(props: { analysis: string; result: AnalysisResult }) {
+  useT()
   const json = isObj(props.result.json) ? props.result.json : ({ value: props.result.json ?? null } as JsonObject)
   const validate = props.analysis === 'validate' && Array.isArray(json.issues)
   const rest: JsonObject = validate

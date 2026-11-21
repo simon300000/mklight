@@ -4,6 +4,7 @@
 // (`{mode, default_merit, spec, hold_efl}`) and the engine's
 // `merit_evaluation` report.
 
+import { currentLanguage, t, tMaybe } from '@/i18n'
 import type { Json, JsonObject } from '@/engine/types'
 import { nf, sig } from './format'
 
@@ -11,9 +12,9 @@ import { nf, sig } from './format'
 
 export type Comparison = 'equal' | 'less_than' | 'greater_than'
 export const COMPARISONS: { value: Comparison; symbol: string; help: string }[] = [
-  { value: 'equal', symbol: '=', help: 'Equal to the target' },
-  { value: 'less_than', symbol: '≤', help: 'An upper bound' },
-  { value: 'greater_than', symbol: '≥', help: 'A lower bound' },
+  { value: 'equal', symbol: '=', get help() { return t('optimize.comparisons.equal') } },
+  { value: 'less_than', symbol: '≤', get help() { return t('optimize.comparisons.lessThan') } },
+  { value: 'greater_than', symbol: '≥', get help() { return t('optimize.comparisons.greaterThan') } },
 ]
 export const comparisonSymbol = (c: Comparison) => COMPARISONS.find((x) => x.value === c)?.symbol ?? '='
 
@@ -45,7 +46,8 @@ export type ParamKind =
 
 export interface OperandParam {
   key: string
-  title: string
+  /** The parameter's name in the current language. */
+  readonly title: string
   kind: ParamKind
   required?: boolean
   defaultValue?: Json
@@ -53,127 +55,143 @@ export interface OperandParam {
 
 export interface OperandDescriptor {
   type: string
-  title: string
+  /** The operand's name and summary in the current language. */
+  readonly title: string
+  /** The category's stable name (group key); `categoryTitle` shows it. */
   category: string
   unit: string
-  summary: string
+  readonly summary: string
   params: OperandParam[]
   /** Defined at one field point. */
   singleField?: boolean
 }
 
 export const OPERAND_CATEGORIES = ['First order', 'Geometry', 'Real rays', 'Image quality', 'Ghosts and stray light', 'Manufacturing', 'Composition']
+const CATEGORY_KEYS: Record<string, string> = {
+  'First order': 'firstOrder',
+  Geometry: 'geometry',
+  'Real rays': 'realRays',
+  'Image quality': 'imageQuality',
+  'Ghosts and stray light': 'ghostsAndStrayLight',
+  Manufacturing: 'manufacturing',
+  Composition: 'composition',
+}
 
-const n = (key: string, title: string, unit = '', def = 0, required = true): OperandParam => ({
+/** A category's name in the current language. */
+export const categoryTitle = (category: string): string => tMaybe(`optimize.categories.${CATEGORY_KEYS[category] ?? category}`) ?? category
+
+/** A unit as shown (`rel.` is a word; the rest are symbols). */
+export const operandUnitText = (unit: string): string => (unit === 'rel.' ? t('optimize.relativeUnit') : unit)
+
+const paramText = (key: string) => tMaybe(`optimize.params.${key}`) ?? key
+const param = (key: string, kind: ParamKind, rest: Partial<OperandParam> = {}): OperandParam => ({
   key,
-  title,
-  kind: { type: 'number', unit },
-  required,
-  defaultValue: required ? def : undefined,
+  get title() {
+    return paramText(key)
+  },
+  kind,
+  ...rest,
 })
-const surface = (key = 'surface', title = 'Surface', required = false): OperandParam => ({ key, title, kind: { type: 'surface' }, required })
-const choice = (key: string, title: string, options: string[], def?: string): OperandParam => ({ key, title, kind: { type: 'choice', options }, defaultValue: def })
-const wl = (key: string, title: string, def: number): OperandParam => ({ key, title, kind: { type: 'wavelength' }, required: true, defaultValue: def })
-const pupil = [n('px', 'Pupil x', '', 0), n('py', 'Pupil y', '', 1)]
-const sampling: OperandParam = { key: 'sampling', title: 'Pupil sampling', kind: { type: 'sampling' }, defaultValue: { rings: 3, arms: 6 } }
+const n = (key: string, unit = '', def = 0, required = true): OperandParam =>
+  param(key, { type: 'number', unit }, { required, defaultValue: required ? def : undefined })
+const surface = (key = 'surface', required = false): OperandParam => param(key, { type: 'surface' }, { required })
+const choice = (key: string, options: string[], def?: string): OperandParam => param(key, { type: 'choice', options }, { defaultValue: def })
+const wl = (key: string, def: number): OperandParam => param(key, { type: 'wavelength' }, { required: true, defaultValue: def })
+const pupil = [n('px', '', 0), n('py', '', 1)]
+const sampling: OperandParam = param('sampling', { type: 'sampling' }, { defaultValue: { rings: 3, arms: 6 } })
 
-function d(type: string, title: string, category: string, unit: string, summary: string, params: OperandParam[] = [], singleField = false): OperandDescriptor {
-  return { type, title, category, unit, summary, params, singleField }
+function d(type: string, category: string, unit: string, params: OperandParam[] = [], singleField = false): OperandDescriptor {
+  return {
+    type,
+    get title() {
+      return tMaybe(`optimize.operands.${type}.title`) ?? type
+    },
+    category,
+    unit,
+    get summary() {
+      return tMaybe(`optimize.operands.${type}.summary`) ?? ''
+    },
+    params,
+    singleField,
+  }
 }
 
 const FO = 'First order', GE = 'Geometry', RR = 'Real rays', IQ = 'Image quality', GS = 'Ghosts and stray light', MA = 'Manufacturing', CO = 'Composition'
 
-/** The engine's operands (docs/OPTIMIZATION.md, operand reference). */
+/** The engine's operands (docs/OPTIMIZATION.md, operand reference); their names
+ *  and summaries are in the UI catalog (`optimize.operands`). */
 export const OPERANDS: OperandDescriptor[] = [
-  d('efl', 'EFL', FO, 'mm', 'Effective focal length (of the y section)'),
-  d('efl_x', 'EFL x', FO, 'mm', 'Focal length of the x section'),
-  d('efl_y', 'EFL y', FO, 'mm', 'Focal length of the y section'),
-  d('bfl', 'BFL', FO, 'mm', 'Back focal length: last surface to paraxial focus'),
-  d('bfl_x', 'BFL x', FO, 'mm', 'Back focus of the x section'),
-  d('bfl_y', 'BFL y', FO, 'mm', 'Back focus of the y section'),
-  d('anamorphic_squeeze', 'Anamorphic squeeze', FO, '', 'Signed EFL_y / EFL_x'),
-  d('f_number', 'F-number', FO, '', 'Image-space, working or real working F/#', [
-    choice('kind', 'Kind', ['paraxial_image_space', 'paraxial_working', 'real_working'], 'paraxial_image_space'),
-  ]),
-  d('magnification', 'Magnification', FO, '', 'Paraxial lateral magnification'),
-  d('entrance_pupil_diameter', 'Entrance pupil diameter', FO, 'mm', ''),
-  d('entrance_pupil_position', 'Entrance pupil position', FO, 'mm', 'From the first surface'),
-  d('exit_pupil_position', 'Exit pupil position', FO, 'mm', 'From the image surface'),
-  d('paraxial_ray', 'Paraxial ray', FO, 'mm / – / °', 'Marginal or chief ray height, slope or angle after a surface', [
-    choice('ray', 'Ray', ['marginal', 'chief'], 'marginal'),
-    choice('quantity', 'Quantity', ['height', 'slope', 'angle'], 'height'),
-    surface(),
-  ]),
-  d('petzval_sum', 'Petzval sum', FO, '1/mm', 'Σ c (N′ − N)/(N N′)'),
-  d('axial_colour', 'Axial color', FO, 'mm', 'Paraxial focus at short minus long λ', [wl('short', 'Short λ', 0), wl('long', 'Long λ', 2)]),
-  d('total_track', 'Total track', GE, 'mm', 'Sum of thicknesses', [surface('from', 'From'), surface('to', 'To')]),
-  d('centre_thickness', 'Center thickness', GE, 'mm', 'Axial gap after a surface', [surface('surface', 'Surface', true), surface('to', 'To')]),
-  d('edge_thickness', 'Edge thickness', GE, 'mm', 'Gap at the rim (or a height)', [surface('surface', 'Surface', true), surface('to', 'To'), n('height', 'Height', 'mm', 0, false)]),
-  d('min_thickness', 'Minimum thickness', GE, 'mm', 'Smallest gap of a medium', [
-    choice('measure', 'Measure', ['centre', 'edge'], 'centre'),
-    choice('medium', 'Medium', ['glass', 'air', 'any'], 'glass'),
-    surface('from', 'From'),
-    surface('to', 'To'),
-  ]),
-  d('max_thickness', 'Maximum thickness', GE, 'mm', 'Largest gap of a medium', [
-    choice('measure', 'Measure', ['centre', 'edge'], 'centre'),
-    choice('medium', 'Medium', ['glass', 'air', 'any'], 'glass'),
-    surface('from', 'From'),
-    surface('to', 'To'),
-  ]),
+  d('efl', FO, 'mm'),
+  d('efl_x', FO, 'mm'),
+  d('efl_y', FO, 'mm'),
+  d('bfl', FO, 'mm'),
+  d('bfl_x', FO, 'mm'),
+  d('bfl_y', FO, 'mm'),
+  d('anamorphic_squeeze', FO, ''),
+  d('f_number', FO, '', [choice('kind', ['paraxial_image_space', 'paraxial_working', 'real_working'], 'paraxial_image_space')]),
+  d('magnification', FO, ''),
+  d('entrance_pupil_diameter', FO, 'mm'),
+  d('entrance_pupil_position', FO, 'mm'),
+  d('exit_pupil_position', FO, 'mm'),
+  d('paraxial_ray', FO, 'mm / – / °', [choice('ray', ['marginal', 'chief'], 'marginal'), choice('quantity', ['height', 'slope', 'angle'], 'height'), surface()]),
+  d('petzval_sum', FO, '1/mm'),
+  d('axial_colour', FO, 'mm', [wl('short', 0), wl('long', 2)]),
+  d('total_track', GE, 'mm', [surface('from'), surface('to')]),
+  d('centre_thickness', GE, 'mm', [surface('surface', true), surface('to')]),
+  d('edge_thickness', GE, 'mm', [surface('surface', true), surface('to'), n('height', 'mm', 0, false)]),
+  d('min_thickness', GE, 'mm', [choice('measure', ['centre', 'edge'], 'centre'), choice('medium', ['glass', 'air', 'any'], 'glass'), surface('from'), surface('to')]),
+  d('max_thickness', GE, 'mm', [choice('measure', ['centre', 'edge'], 'centre'), choice('medium', ['glass', 'air', 'any'], 'glass'), surface('from'), surface('to')]),
   d(
     'real_ray',
-    'Real ray',
     RR,
     'mm / – / °',
-    'Position, direction or angle of one ray',
     [
-      choice('quantity', 'Quantity', ['x', 'y', 'z', 'l', 'm', 'n', 'angle_x', 'angle_y', 'incidence_angle', 'optical_path'], 'y'),
+      choice('quantity', ['x', 'y', 'z', 'l', 'm', 'n', 'angle_x', 'angle_y', 'incidence_angle', 'optical_path'], 'y'),
       surface(),
       ...pupil,
-      { key: 'global', title: 'Global frame', kind: { type: 'flag' } },
+      param('global', { type: 'flag' }),
     ],
     true,
   ),
-  d('ray_aberration', 'Ray aberration', RR, 'mm', 'Transverse aberration of one ray', [choice('axis', 'Axis', ['x', 'y'], 'y'), ...pupil, choice('reference', 'Reference', ['chief', 'centroid'], 'chief')], true),
-  d('wavefront_aberration', 'Wavefront aberration', RR, 'waves', 'OPD of one ray', [...pupil, choice('reference', 'Reference', ['chief', 'centroid'], 'chief')], true),
-  d('chief_ray_angle', 'Chief ray angle', RR, '°', 'Incidence of the chief ray (0 telecentric)', [surface()], true),
-  d('rms_spot', 'RMS spot radius', IQ, 'mm', 'About the centroid or the chief ray', [choice('reference', 'Reference', ['centroid', 'chief'], 'centroid'), sampling]),
-  d('spot_centroid', 'Spot centroid', IQ, 'mm', 'Centroid minus the chief ray', [choice('axis', 'Axis', ['x', 'y'], 'y')], true),
-  d('wavefront_rms', 'RMS wavefront', IQ, 'waves', 'Piston (and tilt) removed', [choice('reference', 'Reference', ['centroid', 'chief'], 'centroid'), sampling]),
-  d('mtf', 'MTF', IQ, '', 'Modulation at one frequency; use ≥ for a lower bound', [
-    n('frequency', 'Frequency', 'cyc/mm', 30),
-    choice('orientation', 'Orientation', ['tangential', 'sagittal', 'average'], 'average'),
-    choice('method', 'Method', ['diffraction', 'geometric'], 'diffraction'),
-    n('defocus_mm', 'Defocus', 'mm', 0, false),
+  d('ray_aberration', RR, 'mm', [choice('axis', ['x', 'y'], 'y'), ...pupil, choice('reference', ['chief', 'centroid'], 'chief')], true),
+  d('wavefront_aberration', RR, 'waves', [...pupil, choice('reference', ['chief', 'centroid'], 'chief')], true),
+  d('chief_ray_angle', RR, '°', [surface()], true),
+  d('rms_spot', IQ, 'mm', [choice('reference', ['centroid', 'chief'], 'centroid'), sampling]),
+  d('spot_centroid', IQ, 'mm', [choice('axis', ['x', 'y'], 'y')], true),
+  d('wavefront_rms', IQ, 'waves', [choice('reference', ['centroid', 'chief'], 'centroid'), sampling]),
+  d('mtf', IQ, '', [
+    n('frequency', 'cyc/mm', 30),
+    choice('orientation', ['tangential', 'sagittal', 'average'], 'average'),
+    choice('method', ['diffraction', 'geometric'], 'diffraction'),
+    n('defocus_mm', 'mm', 0, false),
   ]),
-  d('distortion', 'Distortion', IQ, '%', 'Real chief ray against the mapping', [choice('mapping', 'Mapping', ['f_tan_theta', 'f_theta'], 'f_tan_theta')], true),
-  d('lateral_colour', 'Lateral color', IQ, 'mm', 'Chief height at short minus long λ', [wl('short', 'Short λ', 0), wl('long', 'Long λ', 2)], true),
-  d('relative_illumination', 'Relative illumination', IQ, '', 'Against on axis', [], true),
-  d('ghost_focus', 'Ghost focus distance', GS, 'mm', 'Distance of the strongest ghosts’ focus from the image (larger is better)', [
-    { key: 'worst', title: 'Worst ghosts', kind: { type: 'integer', min: 1 }, defaultValue: 1 },
-    choice('metric', 'Metric', ['distance', 'peak'], 'distance'),
+  d('distortion', IQ, '%', [choice('mapping', ['f_tan_theta', 'f_theta'], 'f_tan_theta')], true),
+  d('lateral_colour', IQ, 'mm', [wl('short', 0), wl('long', 2)], true),
+  d('relative_illumination', IQ, '', [], true),
+  d('ghost_focus', GS, 'mm', [
+    param('worst', { type: 'integer', min: 1 }, { defaultValue: 1 }),
+    choice('metric', ['distance', 'peak'], 'distance'),
   ]),
-  d('ghost_irradiance', 'Ghost irradiance', GS, 'rel.', 'Ghost against primary', [
-    choice('metric', 'Metric', ['peak', 'mean', 'power'], 'peak'),
-    { key: 'max_reflections', title: 'Max reflections', kind: { type: 'integer', min: 2 }, defaultValue: 2 },
+  d('ghost_irradiance', GS, 'rel.', [
+    choice('metric', ['peak', 'mean', 'power'], 'peak'),
+    param('max_reflections', { type: 'integer', min: 2 }, { defaultValue: 2 }),
   ]),
-  d('stray_light_power', 'Stray light power', GS, 'rel.', 'Monte Carlo fraction; not for least squares', [
-    choice('class', 'Class', ['ghost', 'scatter', 'mechanical', 'sneak', 'all_non_primary'], 'all_non_primary'),
-    { key: 'rays', title: 'Rays', kind: { type: 'integer', min: 1000 }, defaultValue: 100000 },
+  d('stray_light_power', GS, 'rel.', [
+    choice('class', ['ghost', 'scatter', 'mechanical', 'sneak', 'all_non_primary'], 'all_non_primary'),
+    param('rays', { type: 'integer', min: 1000 }, { defaultValue: 100000 }),
   ]),
-  d('doe_min_zone_period', 'DOE minimum zone period', MA, 'mm', '', [surface('surface', 'Surface', true)]),
-  d('doe_max_phase_slope', 'DOE maximum phase slope', MA, 'rad/mm', '', [surface('surface', 'Surface', true)]),
-  d('doe_total_phase', 'DOE total phase', MA, 'rad', '', [surface('surface', 'Surface', true)]),
-  d('q_max_departure', 'Q-type maximum departure', MA, 'mm', 'From the best-fit sphere', [surface('surface', 'Surface', true)]),
-  d('q_max_departure_slope', 'Q-type departure slope', MA, 'mm/mm', '', [surface('surface', 'Surface', true)]),
-  d('freeform_max_departure', 'Freeform maximum departure', MA, 'mm', 'XY or Zernike sag from its base conic', [surface('surface', 'Surface', true)]),
-  d('combine', 'Combine', CO, '', 'Arithmetic on earlier operands', [
-    choice('op', 'Operation', ['sum', 'difference', 'product', 'quotient', 'abs', 'min', 'max'], 'sum'),
-    { key: 'args', title: 'Operands', kind: { type: 'operandList' }, required: true, defaultValue: [] },
+  d('doe_min_zone_period', MA, 'mm', [surface('surface', true)]),
+  d('doe_max_phase_slope', MA, 'rad/mm', [surface('surface', true)]),
+  d('doe_total_phase', MA, 'rad', [surface('surface', true)]),
+  d('q_max_departure', MA, 'mm', [surface('surface', true)]),
+  d('q_max_departure_slope', MA, 'mm/mm', [surface('surface', true)]),
+  d('freeform_max_departure', MA, 'mm', [surface('surface', true)]),
+  d('combine', CO, '', [
+    choice('op', ['sum', 'difference', 'product', 'quotient', 'abs', 'min', 'max'], 'sum'),
+    param('args', { type: 'operandList' }, { required: true, defaultValue: [] }),
   ]),
-  d('param_value', 'Parameter value', CO, '', 'Any model parameter'),
-  d('tolerance_sensitivity', 'Tolerance sensitivity', CO, '', 'Of a criterion to a parameter'),
+  d('param_value', CO, ''),
+  d('tolerance_sensitivity', CO, ''),
 ]
 
 const BY_TYPE = new Map(OPERANDS.map((o) => [o.type, o]))
@@ -187,11 +205,12 @@ export function operandTitle(type: string): string {
   return BY_TYPE.get(type)?.title ?? type.replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase())
 }
 
-/** Descriptors matching a search, by category. */
+/** Descriptors matching a search (the shown names and summaries, the operand
+ *  type id, the category), by category. */
 export function searchOperands(text: string): { category: string; items: OperandDescriptor[] }[] {
   const q = text.trim().toLowerCase()
   const hits = ADDABLE_OPERANDS.filter(
-    (o) => !q || o.title.toLowerCase().includes(q) || o.type.includes(q) || o.summary.toLowerCase().includes(q) || o.category.toLowerCase().includes(q),
+    (o) => !q || o.title.toLowerCase().includes(q) || o.type.includes(q) || o.summary.toLowerCase().includes(q) || categoryTitle(o.category).toLowerCase().includes(q),
   )
   return OPERAND_CATEGORIES.map((category) => ({ category, items: hits.filter((o) => o.category === category) })).filter((g) => g.items.length)
 }
@@ -261,18 +280,20 @@ export function localIssues(op: Operand, fieldCount: number, wavelengthCount: nu
   const out: string[] = []
   const desc = operandDescriptor(op.kind.type)
   if (!desc) return out
-  if (desc.singleField && op.field.field === 'all') out.push('Needs one field, not all fields.')
-  if (op.field.field === 'index' && typeof op.field.index === 'number' && op.field.index >= fieldCount) out.push(`Field ${op.field.index + 1} does not exist.`)
+  if (desc.singleField && op.field.field === 'all') out.push(t('optimize.issues.needsOneField'))
+  if (op.field.field === 'index' && typeof op.field.index === 'number' && op.field.index >= fieldCount) out.push(t('optimize.issues.fieldMissing', { n: op.field.index + 1 }))
   if (op.wavelength.wavelength === 'index' && typeof op.wavelength.index === 'number' && op.wavelength.index >= wavelengthCount)
-    out.push(`Wavelength ${op.wavelength.index + 1} does not exist.`)
-  for (const p of desc.params) if (p.required && (op.kind[p.key] === undefined || op.kind[p.key] === null)) out.push(`${p.title} is required.`)
-  if (!Number.isFinite(op.weight) || op.weight < 0) out.push('The weight must be zero or positive.')
+    out.push(t('optimize.issues.wavelengthMissing', { n: op.wavelength.index + 1 }))
+  for (const p of desc.params) if (p.required && (op.kind[p.key] === undefined || op.kind[p.key] === null)) out.push(t('optimize.issues.required', { title: p.title }))
+  if (!Number.isFinite(op.weight) || op.weight < 0) out.push(t('optimize.issues.weight'))
   return out
 }
 
 export const choiceTitle = (s: string) => {
-  const t = s.replace(/_/g, ' ')
-  return t.charAt(0).toUpperCase() + t.slice(1)
+  const shown = tMaybe(`optimize.choices.${s}`)
+  if (shown != null) return shown
+  const text = s.replace(/_/g, ' ')
+  return text.charAt(0).toUpperCase() + text.slice(1)
 }
 
 /** A short text of an operand's selectors and parameters, field and wavelength first. */
@@ -282,20 +303,20 @@ export function operandParameters(op: Operand): string {
   if (f.field === 'index') parts.push(`F${num(f.index, 0) + 1}`)
   else if (f.field === 'normalized') parts.push(`H(${sig(num(f.hx, 0), 4)}, ${sig(num(f.hy, 0), 4)})`)
   const w = op.wavelength
-  if (w.wavelength === 'all') parts.push('poly')
+  if (w.wavelength === 'all') parts.push(t('optimize.parameters.poly'))
   else if (w.wavelength === 'index') parts.push(`λ${num(w.index, 0) + 1}`)
   for (const p of operandDescriptor(op.kind.type)?.params ?? []) {
     const v = op.kind[p.key]
     if (v === undefined || v === null) continue
     switch (p.kind.type) {
       case 'surface':
-        parts.push(`${p.title.toLowerCase()} S${typeof v === 'number' ? v : '?'}`)
+        parts.push(t('optimize.parameters.surface', { title: p.title.toLowerCase(), n: typeof v === 'number' ? v : '?' }))
         break
       case 'wavelength':
-        parts.push(`${p.title} λ${num(v, 0) + 1}`)
+        parts.push(t('optimize.parameters.wavelength', { title: p.title, n: num(v, 0) + 1 }))
         break
       case 'choice':
-        parts.push(String(v).replace(/_/g, ' '))
+        parts.push(choiceTitle(String(v)).toLowerCase())
         break
       case 'flag':
         if (v === true) parts.push(p.title.toLowerCase())
@@ -306,10 +327,10 @@ export function operandParameters(op: Operand): string {
         break
       }
       case 'operandList':
-        parts.push('of ' + (Array.isArray(v) ? v.map((x) => `#${num(x, 0) + 1}`).join(', ') : ''))
+        parts.push(t('optimize.parameters.of', { list: Array.isArray(v) ? v.map((x) => `#${num(x, 0) + 1}`).join(', ') : '' }))
         break
       default:
-        parts.push(`${p.title.toLowerCase()} ${typeof v === 'number' ? sig(v, 4) : String(v)}`)
+        parts.push(t('optimize.parameters.value', { title: p.title.toLowerCase(), value: typeof v === 'number' ? sig(v, 4) : String(v) }))
     }
   }
   return parts.join(' ')
@@ -328,9 +349,9 @@ export function percentShare(f: number): string {
 
 export type Criterion = 'rms_spot' | 'wavefront' | 'mtf'
 export const CRITERIA: { value: Criterion; title: string }[] = [
-  { value: 'rms_spot', title: 'RMS spot radius' },
-  { value: 'wavefront', title: 'RMS wavefront' },
-  { value: 'mtf', title: 'MTF' },
+  { value: 'rms_spot', get title() { return t('optimize.criteria.rmsSpot') } },
+  { value: 'wavefront', get title() { return t('optimize.criteria.wavefront') } },
+  { value: 'mtf', get title() { return t('optimize.criteria.mtf') } },
 ]
 
 /** The engine's default merit generator (`DefaultMeritSpec`). */
@@ -459,22 +480,28 @@ export function defaultMeritJson(m: DefaultMerit): JsonObject {
 }
 
 export function defaultMeritSummary(m: DefaultMerit): string {
-  let s = m.criterion === 'rms_spot' ? 'RMS spot radius' : m.criterion === 'wavefront' ? 'RMS wavefront' : `MTF ≥ ${sig(m.mtfTarget, 4)} at ${m.mtfFrequencies.map((f) => sig(f, 4)).join(', ')} cyc/mm`
-  if (m.criterion === 'mtf' && m.worstField) s += ', weakest field'
-  s += ` · ${m.rings} rings × ${m.arms} arms`
-  if (m.thickness) s += ' · thickness limits'
-  if (m.squeezeTarget != null) s += ` · squeeze ${sig(m.squeezeTarget, 4)}`
+  let s: string
+  if (m.criterion === 'rms_spot') s = t('optimize.criteria.rmsSpot')
+  else if (m.criterion === 'wavefront') s = t('optimize.criteria.wavefront')
+  else
+    s = t(m.worstField ? 'optimize.summary.mtfWeakest' : 'optimize.summary.mtf', {
+      target: sig(m.mtfTarget, 4),
+      frequencies: m.mtfFrequencies.map((f) => sig(f, 4)).join(', '),
+    })
+  s += ` · ${t('optimize.summary.sampling', { rings: m.rings, arms: m.arms })}`
+  if (m.thickness) s += ` · ${t('optimize.summary.thickness')}`
+  if (m.squeezeTarget != null) s += ` · ${t('optimize.summary.squeeze', { value: sig(m.squeezeTarget, 4) })}`
   return s
 }
 
 export function defaultMeritCaption(c: Criterion): string {
   switch (c) {
     case 'rms_spot':
-      return 'The mean square RMS spot radius over the chosen fields and wavelengths, by their weights.'
+      return t('optimize.criteria.rmsSpotCaption')
     case 'wavefront':
-      return 'The mean square RMS wavefront error over the chosen fields and wavelengths, by their weights.'
+      return t('optimize.criteria.wavefrontCaption')
     case 'mtf':
-      return 'Polychromatic tangential and sagittal MTF lower bounds at each frequency.'
+      return t('optimize.criteria.mtfCaption')
   }
 }
 
@@ -682,11 +709,11 @@ export function specOperands(e: MeritEvaluation): { operands: Operand[]; options
 }
 
 export function evaluationHelp(e: MeritEvaluation | null): string {
-  if (!e) return 'The merit at the current design, before optimizing.'
-  const on = !e.reportedOn || e.reportedOn.startsWith('cpu') ? 'CPU f64 reference' : e.reportedOn
-  let s = `Merit ${sig(e.merit, 4)} at the current design (${on}).`
-  if (Number.isFinite(e.violation) && e.violation > 1e-9) s += ` Constraint violation ${sig(e.violation, 4)}.`
-  if (e.status.status === 'degraded') s += ` ${e.status.failures} residual${e.status.failures === 1 ? '' : 's'} carry penalty values (failed rays or operands).`
-  if (e.status.status === 'failed') s += ' The evaluation failed: no meaningful merit.'
-  return s
+  if (!e) return t('optimize.evaluation.none')
+  const on = !e.reportedOn || e.reportedOn.startsWith('cpu') ? t('optimize.evaluation.cpuReference') : e.reportedOn
+  const parts = [t('optimize.evaluation.merit', { merit: sig(e.merit, 4), on })]
+  if (Number.isFinite(e.violation) && e.violation > 1e-9) parts.push(t('optimize.evaluation.violation', { value: sig(e.violation, 4) }))
+  if (e.status.status === 'degraded') parts.push(t('optimize.evaluation.degraded', { count: e.status.failures }))
+  if (e.status.status === 'failed') parts.push(t('optimize.evaluation.failed'))
+  return parts.join(currentLanguage() === 'zh-Hans' ? '' : ' ')
 }
