@@ -6,6 +6,7 @@ using Microsoft.UI.Xaml.Controls.Primitives;
 using Microsoft.UI.Xaml.Input;
 using Microsoft.UI.Xaml.Media;
 using Microsoft.UI.Xaml.Shapes;
+using MKLight.App.Support;
 using MKLight.App.ViewModels;
 using MKLight.App.ViewModels.Jobs;
 using MKLight.Model;
@@ -28,7 +29,7 @@ public sealed partial class TolerancePanel : UserControl
     static readonly CultureInfo C = CultureInfo.InvariantCulture;
     readonly ToleranceSession _s;
     readonly DesignSession _session;
-    readonly JobPanelFrame _frame = new("Tolerance", "\uE9E9");
+    readonly JobPanelFrame _frame = new(Loc.S("Jobs_Tolerance_Panel_Title"), "\uE9E9");
     readonly HashSet<Guid> _selection = [];
     readonly DispatcherTimer _clock = new() { Interval = TimeSpan.FromSeconds(1) };
     bool _queued;
@@ -59,13 +60,14 @@ public sealed partial class TolerancePanel : UserControl
         var offset = _builtPhase == _s.Phase ? _frame.Scroller.VerticalOffset : 0;
         _builtPhase = _s.Phase;
         var n = _s.Settings.Rows.Count;
-        _frame.Subtitle = $"{n} tolerance{(n == 1 ? "" : "s")} · {(_session.Document.System.Name.Length > 0 ? _session.Document.System.Name : "the design")}";
+        var designName = _session.Document.System.Name.Length > 0 ? _session.Document.System.Name : Loc.S("Jobs_Tolerance_Panel_TheDesign");
+        _frame.Subtitle = n == 1 ? Loc.F("Jobs_Tolerance_Panel_Subtitle_One", n, designName) : Loc.F("Jobs_Tolerance_Panel_Subtitle_Many", n, designName);
         if (_s.IsRunning && !_clock.IsEnabled) _clock.Start();
         _frame.Body = _s.Phase switch
         {
             JobPhase.Running => Running(),
             JobPhase.Finished => Results(),
-            JobPhase.Failed => JobUI.Failure("Tolerancing Failed", _s.Failure ?? ""),
+            JobPhase.Failed => JobUI.Failure(Loc.S("Jobs_Tolerance_Panel_FailedTitle"), EngineText.T(_s.Failure ?? "")),
             _ => Setup(),
         };
         Actions();
@@ -96,40 +98,40 @@ public sealed partial class TolerancePanel : UserControl
         var p = new StackPanel { Spacing = 16, Padding = new Thickness(0, 0, 0, 8) };
         if (_s.Result is not null)
         {
-            var last = new HyperlinkButton { Content = "Show the last results", Padding = new Thickness(0, 2, 0, 2), FontSize = 12.5 };
+            var last = new HyperlinkButton { Content = Loc.S("Jobs_Tolerance_Panel_ShowLastResults"), Padding = new Thickness(0, 2, 0, 2), FontSize = 12.5 };
             last.Click += (_, _) => _s.ShowResult();
             p.Children.Add(last);
         }
 
         // Tolerances.
         var t = new StackPanel { Spacing = 6 };
-        var defaults = JobUI.Secondary("Default Tolerances…", "\uE8FD", () => { }, "Generate a set from a class of manufacture");
+        var defaults = JobUI.Secondary(Loc.S("Jobs_Tolerance_Panel_DefaultTolerancesButton"), "\uE8FD", () => { }, Loc.S("Jobs_Tolerance_Panel_DefaultTolerancesHelp"));
         defaults.Flyout = GeneratorFlyout();
         var add = new DropDownButton { Content = new FontIcon { Glyph = "\uE710", FontSize = 12 }, Flyout = AddMenu(), MinHeight = 32, CornerRadius = new CornerRadius(16) };
-        ToolTipService.SetToolTip(add, "Add a tolerance");
-        AutomationProperties.SetName(add, "Add a tolerance");
+        ToolTipService.SetToolTip(add, Loc.S("Jobs_Tolerance_Panel_AddTolerance"));
+        AutomationProperties.SetName(add, Loc.S("Jobs_Tolerance_Panel_AddTolerance"));
         var tools = JobUI.Row(4, defaults, add,
-            JobUI.Icon("\uE8C8", "Duplicate the selected tolerances", () =>
+            JobUI.Icon("\uE8C8", Loc.S("Jobs_Tolerance_Panel_DuplicateSelected"), () =>
             {
                 var ids = _selection.ToHashSet();
                 List<Guid> copies = [];
-                Edit("Duplicate Tolerance", x => copies = x.Duplicate(ids));
+                Edit(Loc.S("Jobs_Tolerance_Panel_Undo_DuplicateTolerance"), x => copies = x.Duplicate(ids));
                 _selection.Clear();
                 _selection.UnionWith(copies);
             }, _selection.Count > 0, 30),
-            JobUI.Icon("\uE738", "Delete the selected tolerances (Delete)", DeleteSelected, _selection.Count > 0, 30));
+            JobUI.Icon("\uE738", Loc.S("Jobs_Tolerance_Panel_DeleteSelected"), DeleteSelected, _selection.Count > 0, 30));
         t.Children.Add(tools);
-        t.Children.Add(JobUI.Labeled("Test fringes at", JobUI.Row(5, new NumberField("test-wl", () => st.TestWavelengthUm * 1000,
-            v => Edit("Change Test Wavelength", x => x.TestWavelengthUm = v is > 0 ? v.Value / 1000 : ToleranceSettings.DefaultTestWavelengthUm), 70, "632.8", name: "Test wavelength in nm"),
-            JobUI.Text("nm", "SecondaryText")), "Power and irregularity in test fringes are counted at this wavelength"));
+        t.Children.Add(JobUI.Labeled(Loc.S("Jobs_Tolerance_Panel_TestFringesAt"), JobUI.Row(5, new NumberField("test-wl", () => st.TestWavelengthUm * 1000,
+            v => Edit(Loc.S("Jobs_Tolerance_Panel_Undo_ChangeTestWavelength"), x => x.TestWavelengthUm = v is > 0 ? v.Value / 1000 : ToleranceSettings.DefaultTestWavelengthUm), 70, "632.8", name: Loc.S("Jobs_Tolerance_Panel_TestWavelengthName")),
+            JobUI.Text("nm", "SecondaryText")), Loc.S("Jobs_Tolerance_Panel_TestFringesHelp")));
         if (st.Rows.Count == 0)
-            t.Children.Add(JobUI.Hint("No tolerances. Generate a default set, or add one with +."));
+            t.Children.Add(JobUI.Hint(Loc.S("Jobs_Tolerance_Panel_NoTolerances")));
         else t.Children.Add(Table(st, sys, issues));
-        p.Children.Add(JobUI.Group("Tolerances", t, JobUI.Text($"{st.Rows.Count}", "CaptionText")));
+        p.Children.Add(JobUI.Group(Loc.S("Jobs_Tolerance_Panel_TolerancesGroup"), t, JobUI.Text($"{st.Rows.Count}", "CaptionText")));
 
         // Compensators.
         var c = new StackPanel { Spacing = 4 };
-        if (st.Compensators.Count == 0) c.Children.Add(JobUI.Hint("None: every build is judged as it is."));
+        if (st.Compensators.Count == 0) c.Children.Add(JobUI.Hint(Loc.S("Jobs_Tolerance_Panel_NoCompensators")));
         foreach (var comp in st.Compensators)
         {
             var row = new Grid { ColumnSpacing = 6 };
@@ -139,50 +141,50 @@ public sealed partial class TolerancePanel : UserControl
             row.Children.Add(JobUI.Text(comp.Title(sys)));
             var id = comp.Id;
             var range = JobUI.Row(4, JobUI.Text("±", "SecondaryText"), new NumberField($"comp-{id}", () => comp.Range,
-                v => Edit("Change Compensator Range", x => { if (x.Compensators.FirstOrDefault(k => k.Id == id) is { } k) k.Range = v is > 0 ? v : null; }), 64, "free",
-                name: $"Range of {comp.Title(sys)}"), JobUI.Text(comp.Param.Unit(sys), "CaptionText"));
+                v => Edit(Loc.S("Jobs_Tolerance_Panel_Undo_ChangeCompensatorRange"), x => { if (x.Compensators.FirstOrDefault(k => k.Id == id) is { } k) k.Range = v is > 0 ? v : null; }), 64, Loc.S("Jobs_Tolerance_Panel_RangeFree"),
+                name: Loc.F("Jobs_Tolerance_Panel_RangeOf", comp.Title(sys))), JobUI.Text(comp.Param.Unit(sys), "CaptionText"));
             Grid.SetColumn(range, 1);
             row.Children.Add(range);
-            var remove = JobUI.Icon("\uE711", "Remove the compensator", () => Edit("Remove Compensator", x => x.Compensators.RemoveAll(k => k.Id == id)), true, 24);
+            var remove = JobUI.Icon("\uE711", Loc.S("Jobs_Tolerance_Panel_RemoveCompensatorHelp"), () => Edit(Loc.S("Jobs_Tolerance_Panel_Undo_RemoveCompensator"), x => x.Compensators.RemoveAll(k => k.Id == id)), true, 24);
             Grid.SetColumn(remove, 2);
             row.Children.Add(remove);
             c.Children.Add(row);
         }
-        var addComp = new DropDownButton { Content = "Add Compensator", Flyout = CompensatorMenu(sys), FontSize = 12.5, MinHeight = 28 };
+        var addComp = new DropDownButton { Content = Loc.S("Jobs_Tolerance_Panel_AddCompensator"), Flyout = CompensatorMenu(sys), FontSize = 12.5, MinHeight = 28 };
         c.Children.Add(addComp);
-        p.Children.Add(JobUI.Group("Compensators", c));
+        p.Children.Add(JobUI.Group(Loc.S("Jobs_Tolerance_Panel_CompensatorsGroup"), c));
 
         // Criterion.
         var merit = _s.Merit;
         var cr = new StackPanel { Spacing = 6 };
         var kinds = ToleranceCriterionKinds.All;
-        cr.Children.Add(JobUI.Labeled("Criterion", JobUI.Choice(kinds.Select(k => k.Title()).ToList(), kinds.ToList().IndexOf(st.Criterion.Kind),
-            k => Edit("Change Criterion", x => x.Criterion.Kind = kinds[k]), 150)));
+        cr.Children.Add(JobUI.Labeled(Loc.S("Jobs_Tolerance_Panel_Criterion"), JobUI.Choice(kinds.Select(k => k.Title()).ToList(), kinds.ToList().IndexOf(st.Criterion.Kind),
+            k => Edit(Loc.S("Jobs_Tolerance_Panel_Undo_ChangeCriterion"), x => x.Criterion.Kind = kinds[k]), 150)));
         var display = st.Criterion.Display(merit);
-        cr.Children.Add(JobUI.Labeled("Pass limit", JobUI.Row(5, new NumberField("threshold", () => st.Criterion.Threshold,
-            v => Edit("Change Pass Limit", x => x.Criterion.Threshold = v), 76, "none", name: "Pass limit"), JobUI.Text(display.Unit(), "CaptionText")),
-            display.HigherIsBetter() ? "The lowest value a build may have; gives the yield" : "The highest value a build may have; gives the yield"));
+        cr.Children.Add(JobUI.Labeled(Loc.S("Jobs_Tolerance_Panel_PassLimit"), JobUI.Row(5, new NumberField("threshold", () => st.Criterion.Threshold,
+            v => Edit(Loc.S("Jobs_Tolerance_Panel_Undo_ChangePassLimit"), x => x.Criterion.Threshold = v), 76, Loc.S("Jobs_Tolerance_Panel_PassLimitNone"), name: Loc.S("Jobs_Tolerance_Panel_PassLimit")), JobUI.Text(display.Unit(), "CaptionText")),
+            display.HigherIsBetter() ? Loc.S("Jobs_Tolerance_Panel_PassLimitHelpLowest") : Loc.S("Jobs_Tolerance_Panel_PassLimitHelpHighest")));
         cr.Children.Add(JobUI.Hint(st.Criterion.Kind == ToleranceCriterionKind.DesignMerit
-            ? "Each build is judged by the Optimize page's merit function."
-            : st.Criterion.Kind == ToleranceCriterionKind.Mtf ? "The MTF at the frequencies of the merit settings, as a shortfall from 1." : "Over the design's fields and wavelengths, by their weights.", 11.5));
-        p.Children.Add(JobUI.Group("Criterion", cr));
+            ? Loc.S("Jobs_Tolerance_Panel_CriterionHintMerit")
+            : st.Criterion.Kind == ToleranceCriterionKind.Mtf ? Loc.S("Jobs_Tolerance_Panel_CriterionHintMtf") : Loc.S("Jobs_Tolerance_Panel_CriterionHintFields"), 11.5));
+        p.Children.Add(JobUI.Group(Loc.S("Jobs_Tolerance_Panel_Criterion"), cr));
 
         // Analysis.
         var a = new StackPanel { Spacing = 6 };
         var modes = ToleranceModes.All;
-        var modeSeg = JobUI.Segments(modes.Select(m => m.Title()).ToList(), modes.ToList().IndexOf(st.Mode), k => Edit("Change Analysis", x => x.Mode = modes[k]));
+        var modeSeg = JobUI.Segments(modes.Select(m => m.Title()).ToList(), modes.ToList().IndexOf(st.Mode), k => Edit(Loc.S("Jobs_Tolerance_Panel_Undo_ChangeAnalysis"), x => x.Mode = modes[k]));
         a.Children.Add(modeSeg);
         if (st.Mode != ToleranceMode.Sensitivity)
         {
-            a.Children.Add(JobUI.Labeled("Trials", new NumberField("trials", () => st.Trials, v => Edit("Change Trials", x => x.Trials = Math.Max(2, (int)Math.Round(v ?? 200))), 80, "200", MeritFormat.Short, optional: false, name: "Trials")));
-            a.Children.Add(JobUI.Labeled("Seed", new NumberField("tol-seed", () => st.Seed, v => Edit("Change Seed", x => x.Seed = Math.Max(0, (long)Math.Round(v ?? 0))), 80, "0", MeritFormat.Short, optional: false, name: "Seed")));
-            a.Children.Add(JobUI.Labeled("Levels", PercentileField(st), "Percentiles of the builds, in 0…100"));
-            a.Children.Add(JobUI.Labeled("Keep trials", new NumberField("record", () => st.RecordTrials, v => Edit("Change Kept Trials", x => x.RecordTrials = Math.Clamp((int)Math.Round(v ?? 200), 0, ToleranceSettings.MaxRecordTrials)), 80, "200", MeritFormat.Short, optional: false, name: "Kept trials"),
-                "How many trials keep their perturbations and compensators (to preview them)"));
+            a.Children.Add(JobUI.Labeled(Loc.S("Jobs_Tolerance_Panel_Trials"), new NumberField("trials", () => st.Trials, v => Edit(Loc.S("Jobs_Tolerance_Panel_Undo_ChangeTrials"), x => x.Trials = Math.Max(2, (int)Math.Round(v ?? 200))), 80, "200", MeritFormat.Short, optional: false, name: Loc.S("Jobs_Tolerance_Panel_Trials"))));
+            a.Children.Add(JobUI.Labeled(Loc.S("Jobs_Tolerance_Panel_Seed"), new NumberField("tol-seed", () => st.Seed, v => Edit(Loc.S("Jobs_Tolerance_Panel_Undo_ChangeSeed"), x => x.Seed = Math.Max(0, (long)Math.Round(v ?? 0))), 80, "0", MeritFormat.Short, optional: false, name: Loc.S("Jobs_Tolerance_Panel_Seed"))));
+            a.Children.Add(JobUI.Labeled(Loc.S("Jobs_Tolerance_Panel_Levels"), PercentileField(st), Loc.S("Jobs_Tolerance_Panel_LevelsHelp")));
+            a.Children.Add(JobUI.Labeled(Loc.S("Jobs_Tolerance_Panel_KeepTrials"), new NumberField("record", () => st.RecordTrials, v => Edit(Loc.S("Jobs_Tolerance_Panel_Undo_ChangeKeptTrials"), x => x.RecordTrials = Math.Clamp((int)Math.Round(v ?? 200), 0, ToleranceSettings.MaxRecordTrials)), 80, "200", MeritFormat.Short, optional: false, name: Loc.S("Jobs_Tolerance_Panel_KeptTrialsName")),
+                Loc.S("Jobs_Tolerance_Panel_KeepTrialsHelp")));
             if (_s.Result?.SecondsPerTrial is > 0 and { } spt)
-                a.Children.Add(JobUI.Hint($"Last run: {Duration(spt)} per trial, so {st.Trials.ToString(C)} trials take about {Duration(spt * st.Trials)}.", 11.5));
+                a.Children.Add(JobUI.Hint(Loc.F("Jobs_Tolerance_Panel_LastRunEstimate", Duration(spt), st.Trials.ToString(C), Duration(spt * st.Trials)), 11.5));
         }
-        p.Children.Add(JobUI.Group("Analysis", a));
+        p.Children.Add(JobUI.Group(Loc.S("Jobs_Tolerance_Panel_AnalysisGroup"), a));
         if (_s.RunProblem() is { } why) p.Children.Add(JobUI.Warning(why));
         return p;
     }
@@ -196,11 +198,11 @@ public sealed partial class TolerancePanel : UserControl
             if (box.Text == Text()) return;
             var values = box.Text.Split([',', ';', ' '], StringSplitOptions.RemoveEmptyEntries).Select(LensValueParser.Number).ToList();
             if (values.Any(v => v is null) || ToleranceSettings.ValidPercentiles(values.Select(v => v!.Value)) is not { } ok) { box.Text = Text(); return; }
-            Edit("Change Levels", x => x.Percentiles = ok);
+            Edit(Loc.S("Jobs_Tolerance_Panel_Undo_ChangeLevels"), x => x.Percentiles = ok);
         }
         box.LostFocus += (_, _) => Commit();
         box.KeyDown += (_, e) => { if (e.Key == VirtualKey.Enter) { Commit(); e.Handled = true; } };
-        AutomationProperties.SetName(box, "Levels in percent");
+        AutomationProperties.SetName(box, Loc.S("Jobs_Tolerance_Panel_LevelsName"));
         return box;
     }
 
@@ -211,7 +213,7 @@ public sealed partial class TolerancePanel : UserControl
     {
         if (_selection.Count == 0) return;
         var ids = _selection.ToHashSet();
-        Edit(ids.Count == 1 ? "Delete Tolerance" : "Delete Tolerances", x => x.Delete(ids));
+        Edit(ids.Count == 1 ? Loc.S("Jobs_Tolerance_Panel_Undo_DeleteTolerance") : Loc.S("Jobs_Tolerance_Panel_Undo_DeleteTolerances"), x => x.Delete(ids));
         _selection.Clear();
     }
 
@@ -278,9 +280,9 @@ public sealed partial class TolerancePanel : UserControl
         };
         b.Click += (_, _) => _s.ToggleGroup(group.Key);
         var n = group.Rows.Count.ToString(C);
-        ToolTipService.SetToolTip(b, closed ? $"Show the {n} tolerances of {group.Key}" : $"Hide the tolerances of {group.Key}");
+        ToolTipService.SetToolTip(b, closed ? Loc.F("Jobs_Tolerance_Panel_Group_Show", n, group.Name) : Loc.F("Jobs_Tolerance_Panel_Group_Hide", group.Name));
         AutomationProperties.SetName(b, group.Title);
-        AutomationProperties.SetItemStatus(b, closed ? $"Collapsed, {n} tolerances" + (problems > 0 ? $", {problems.ToString(C)} with problems" : "") : "Expanded");
+        AutomationProperties.SetItemStatus(b, closed ? (problems > 0 ? Loc.F("Jobs_Tolerance_Panel_Group_CollapsedProblems", n, problems.ToString(C)) : Loc.F("Jobs_Tolerance_Panel_Group_Collapsed", n)) : Loc.S("Jobs_Tolerance_Panel_Group_Expanded"));
         AutomationProperties.SetHeadingLevel(b, Microsoft.UI.Xaml.Automation.Peers.AutomationHeadingLevel.Level3);
         return b;
     }
@@ -294,11 +296,11 @@ public sealed partial class TolerancePanel : UserControl
             Background = new SolidColorBrush(Microsoft.UI.Colors.Transparent), BorderThickness = new Thickness(0), VerticalAlignment = VerticalAlignment.Center,
         };
         ToolTipService.SetToolTip(b, help);
-        AutomationProperties.SetName(b, $"{text}: {help}");
+        AutomationProperties.SetName(b, Loc.F("Jobs_Tolerance_Panel_MenuButtonName", text, help));
         return b;
     }
 
-    static string SurfaceTitle(OpticalSystem sys, int i) => $"S{i.ToString(C)}" + (i == sys.Stop ? " (stop)" : "");
+    static string SurfaceTitle(OpticalSystem sys, int i) => i == sys.Stop ? Loc.F("Jobs_Tolerance_Panel_SurfaceStop", i.ToString(C)) : $"S{i.ToString(C)}";
 
     static MenuFlyoutItem Item(string text, Action click, bool enabled = true)
     {
@@ -321,7 +323,7 @@ public sealed partial class TolerancePanel : UserControl
             for (var i = 1; i <= last && i < sys.Surfaces.Count; i++)
             {
                 var sid = sys.Surfaces[i].Id;
-                menu.Items.Add(Item(SurfaceTitle(sys, i), () => Edit("Change Tolerance Surface", s => { if (s.Rows.FirstOrDefault(r => r.Id == id) is { } r) r.Surface = sid; }), sid != row.Surface));
+                menu.Items.Add(Item(SurfaceTitle(sys, i), () => Edit(Loc.S("Jobs_Tolerance_Panel_Undo_ChangeToleranceSurface"), s => { if (s.Rows.FirstOrDefault(r => r.Id == id) is { } r) r.Surface = sid; }), sid != row.Surface));
             }
             return menu;
         }
@@ -334,14 +336,14 @@ public sealed partial class TolerancePanel : UserControl
                 !(moving.Count > 0 && moving[0] == f && moving[^1] == l)));
         }
         menu.Items.Add(new MenuFlyoutSeparator());
-        var firstSub = new MenuFlyoutSubItem { Text = "First Surface" };
+        var firstSub = new MenuFlyoutSubItem { Text = Loc.S("Jobs_Tolerance_Panel_FirstSurface") };
         for (var i = 1; i <= last; i++)
         {
             var f = i;
             firstSub.Items.Add(Item(SurfaceTitle(sys, i), () => SetElement(id, f, Math.Max(f, moving.Count > 0 ? moving[^1] : f), pivot), moving.Count == 0 || moving[0] != i));
         }
         menu.Items.Add(firstSub);
-        var lastSub = new MenuFlyoutSubItem { Text = "Last Surface" };
+        var lastSub = new MenuFlyoutSubItem { Text = Loc.S("Jobs_Tolerance_Panel_LastSurface") };
         for (var i = moving.Count > 0 ? moving[0] : 1; i <= last; i++)
         {
             var l = i;
@@ -351,8 +353,8 @@ public sealed partial class TolerancePanel : UserControl
         return menu;
     }
 
-    void SetElement(Guid id, int first, int last, TolerancePivotChoice pivot, string name = "Change Element") =>
-        Edit(name, s => pivot.Apply(s, id, _session.Document.System, first, last));
+    void SetElement(Guid id, int first, int last, TolerancePivotChoice pivot, string? name = null) =>
+        Edit(name ?? Loc.S("Jobs_Tolerance_Panel_Undo_ChangeElement"), s => pivot.Apply(s, id, _session.Document.System, first, last));
 
     /// <summary>
     /// "S3 S4 S5 move together · pivot S3, first vertex" under the first element row of a group (the rows starting on one
@@ -373,26 +375,26 @@ public sealed partial class TolerancePanel : UserControl
             ToggleMenuFlyoutItem Choice(string text, TolerancePivotChoice c)
             {
                 var item = new ToggleMenuFlyoutItem { Text = text, IsChecked = c == current };
-                item.Click += (_, _) => SetElement(id, f, l, c, "Change Element Pivot");
+                item.Click += (_, _) => SetElement(id, f, l, c, Loc.S("Jobs_Tolerance_Panel_Undo_ChangeElementPivot"));
                 return item;
             }
-            menu.Items.Add(Choice($"First Vertex (S{f.ToString(C)})", TolerancePivotChoice.First));
-            if (l != f) menu.Items.Add(Choice($"Last Vertex (S{l.ToString(C)})", TolerancePivotChoice.Last));
-            var surfaces = new MenuFlyoutSubItem { Text = "Surface" };
+            menu.Items.Add(Choice(Loc.F("Jobs_Tolerance_Panel_PivotFirstVertex", f.ToString(C)), TolerancePivotChoice.First));
+            if (l != f) menu.Items.Add(Choice(Loc.F("Jobs_Tolerance_Panel_PivotLastVertex", l.ToString(C)), TolerancePivotChoice.Last));
+            var surfaces = new MenuFlyoutSubItem { Text = Loc.S("Jobs_Tolerance_Panel_PivotSurface") };
             for (var i = 1; i <= Math.Max(sys.ImageIndex - 1, 1); i++)
                 surfaces.Items.Add(Choice(SurfaceTitle(sys, i), new TolerancePivotChoice(TolerancePivotPlace.Surface, i)));
             menu.Items.Add(new MenuFlyoutSeparator());
             menu.Items.Add(surfaces);
         }
-        var label = JobUI.Text("pivot " + pivotText, "CaptionText", 11.5);
+        var label = JobUI.Text(Loc.F("Jobs_Tolerance_Panel_PivotLabel", pivotText), "CaptionText", 11.5);
         JobUI.Bind(label, "AccentTextFillColorPrimaryBrush", b => label.Foreground = b);
         var pivot = new Button
         {
             Content = label, Flyout = menu, Padding = new Thickness(3, 0, 3, 1), MinWidth = 0, MinHeight = 0, VerticalAlignment = VerticalAlignment.Center,
             Background = new SolidColorBrush(Microsoft.UI.Colors.Transparent), BorderThickness = new Thickness(0),
         };
-        ToolTipService.SetToolTip(pivot, $"The vertex the element tilts about; every element tolerance starting on S{(moving.Count > 0 ? moving[0] : 0).ToString(C)} uses it");
-        AutomationProperties.SetName(pivot, $"Pivot {pivotText}");
+        ToolTipService.SetToolTip(pivot, Loc.F("Jobs_Tolerance_Panel_PivotHelp", (moving.Count > 0 ? moving[0] : 0).ToString(C)));
+        AutomationProperties.SetName(pivot, Loc.F("Jobs_Tolerance_Panel_PivotName", pivotText));
         var moves = JobUI.Text(TolerancePivotChoice.MovingText(moving), "CaptionText", 11.5);
         moves.VerticalAlignment = VerticalAlignment.Center;
         var dot = JobUI.Text("·", "CaptionText", 11.5);
@@ -400,7 +402,7 @@ public sealed partial class TolerancePanel : UserControl
         var line = JobUI.Row(5, link, moves, dot, pivot);
         line.Margin = new Thickness(10, 0, 8, 2);
         line.Tag = "tolerance-element-line";
-        AutomationProperties.SetName(line, $"Moves {string.Join(", ", moving.Select(i => "surface " + i.ToString(C)))}, pivot {pivotText}");
+        AutomationProperties.SetName(line, Loc.F("Jobs_Tolerance_Panel_ElementLineName", string.Join(Loc.S("Jobs_Tolerance_Panel_ListSeparator"), moving.Select(i => Loc.F("Jobs_Tolerance_Panel_ElementLineSurface", i.ToString(C)))), pivotText));
         return line;
     }
 
@@ -416,15 +418,15 @@ public sealed partial class TolerancePanel : UserControl
         kind.VerticalAlignment = VerticalAlignment.Center;
         UIElement surface = row.Kind == ToleranceKind.Other ? JobUI.Text("", "SecondaryNumberText")
             : MenuButton(row.Kind.IsElement() ? row.ElementTitle(sys) ?? row.SurfaceLabel(sys) : row.SurfaceLabel(sys), SurfaceMenu(row, sys),
-                row.Kind.IsElement() ? "The element: the surfaces that move together" : "The surface (a thickness is the gap after it)");
+                row.Kind.IsElement() ? Loc.S("Jobs_Tolerance_Panel_SurfaceColumnElementHelp") : Loc.S("Jobs_Tolerance_Panel_SurfaceColumnSurfaceHelp"));
         var name = JobUI.Row(2, kind, surface);
         name.VerticalAlignment = VerticalAlignment.Center;
-        ToolTipService.SetToolTip(name, row.Label(sys) + " · " + row.Distribution.Title);
+        ToolTipService.SetToolTip(name, row.DisplayLabel(sys) + " · " + row.Distribution.Title);
         g.Children.Add(name);
         void SetLimit(bool plus, double? v)
         {
             var x = Math.Abs(v ?? 0);
-            Edit("Change Tolerance", s =>
+            Edit(Loc.S("Jobs_Tolerance_Panel_Undo_ChangeTolerance"), s =>
             {
                 if (s.Rows.FirstOrDefault(r => r.Id == id) is not { } r) return;
                 if (r.Minus == r.Plus) { r.Minus = x; r.Plus = x; }
@@ -432,9 +434,9 @@ public sealed partial class TolerancePanel : UserControl
             });
         }
         FrameworkElement limits = row.Minus == row.Plus
-            ? JobUI.Row(2, JobUI.Text("±", "SecondaryText"), new NumberField($"lim-{id}", () => row.Plus, v => SetLimit(true, v), 62, "0", name: $"{row.Label(sys)} limit"))
-            : JobUI.Row(2, new NumberField($"lim-{id}-m", () => -row.Minus, v => SetLimit(false, v), 58, "0", name: $"{row.Label(sys)} minus"),
-                new NumberField($"lim-{id}-p", () => row.Plus, v => SetLimit(true, v), 58, "0", name: $"{row.Label(sys)} plus"));
+            ? JobUI.Row(2, JobUI.Text("±", "SecondaryText"), new NumberField($"lim-{id}", () => row.Plus, v => SetLimit(true, v), 62, "0", name: Loc.F("Jobs_Tolerance_Panel_LimitName", row.DisplayLabel(sys))))
+            : JobUI.Row(2, new NumberField($"lim-{id}-m", () => -row.Minus, v => SetLimit(false, v), 58, "0", name: Loc.F("Jobs_Tolerance_Panel_LimitMinusName", row.DisplayLabel(sys))),
+                new NumberField($"lim-{id}-p", () => row.Plus, v => SetLimit(true, v), 58, "0", name: Loc.F("Jobs_Tolerance_Panel_LimitPlusName", row.DisplayLabel(sys))));
         Grid.SetColumn(limits, 1);
         g.Children.Add(limits);
         var units = row.Kind.Units();
@@ -449,7 +451,7 @@ public sealed partial class TolerancePanel : UserControl
                 menu.Items.Add(item);
             }
             var b = new Button { Content = row.Unit.Label(), Flyout = menu, Padding = new Thickness(4, 1, 4, 2), MinWidth = 0, MinHeight = 0, FontSize = 12, Background = new SolidColorBrush(Microsoft.UI.Colors.Transparent), BorderThickness = new Thickness(0) };
-            ToolTipService.SetToolTip(b, "The unit of the limits (changing it converts them)");
+            ToolTipService.SetToolTip(b, Loc.S("Jobs_Tolerance_Panel_UnitHelp"));
             unit = b;
         }
         else unit = JobUI.Text(row.Unit.Label(), "CaptionText");
@@ -488,7 +490,7 @@ public sealed partial class TolerancePanel : UserControl
             Queue();
         };
         border.ContextFlyout = RowMenu(row);
-        AutomationProperties.SetName(border, $"{row.Label(sys)}, {row.LimitsText}");
+        AutomationProperties.SetName(border, Loc.F("Jobs_Tolerance_Panel_RowName", row.DisplayLabel(sys), row.LimitsText));
         return border;
     }
 
@@ -498,26 +500,26 @@ public sealed partial class TolerancePanel : UserControl
         var row = _s.Settings.Rows.FirstOrDefault(r => r.Id == id);
         if (row?.ConvertedTo(unit, ctx) is not { } converted)
         {
-            _session.ShowToast("This unit needs the surface's clear aperture or the glass's Abbe number, which the design does not give yet.");
+            _session.ShowToast(Loc.S("Jobs_Tolerance_Panel_UnitNeedsData"));
             return;
         }
-        Edit("Change Tolerance Unit", s => { var i = s.Rows.FindIndex(r => r.Id == id); if (i >= 0) { converted.Id = id; s.Rows[i] = converted; } });
+        Edit(Loc.S("Jobs_Tolerance_Panel_Undo_ChangeToleranceUnit"), s => { var i = s.Rows.FindIndex(r => r.Id == id); if (i >= 0) { converted.Id = id; s.Rows[i] = converted; } });
     }
 
     MenuFlyout RowMenu(ToleranceRow row)
     {
         var id = row.Id;
         var menu = new MenuFlyout();
-        var dist = new MenuFlyoutSubItem { Text = "Distribution" };
+        var dist = new MenuFlyoutSubItem { Text = Loc.S("Jobs_Tolerance_Panel_Distribution") };
         foreach (var d in ToleranceDistribution.Choices)
         {
             var item = new RadioMenuFlyoutItem { Text = d.Title, IsChecked = d == row.Distribution, GroupName = "dist" };
-            item.Click += (_, _) => Edit("Change Distribution", s => { if (s.Rows.FirstOrDefault(r => r.Id == id) is { } r) r.Distribution = d; });
+            item.Click += (_, _) => Edit(Loc.S("Jobs_Tolerance_Panel_Undo_ChangeDistribution"), s => { if (s.Rows.FirstOrDefault(r => r.Id == id) is { } r) r.Distribution = d; });
             dist.Items.Add(item);
         }
         menu.Items.Add(dist);
-        var symmetric = new ToggleMenuFlyoutItem { Text = "Symmetric Limits", IsChecked = row.Minus == row.Plus };
-        symmetric.Click += (_, _) => Edit(row.Minus == row.Plus ? "Asymmetric Limits" : "Symmetric Limits", s =>
+        var symmetric = new ToggleMenuFlyoutItem { Text = Loc.S("Jobs_Tolerance_Panel_SymmetricLimits"), IsChecked = row.Minus == row.Plus };
+        symmetric.Click += (_, _) => Edit(row.Minus == row.Plus ? Loc.S("Jobs_Tolerance_Panel_Undo_AsymmetricLimits") : Loc.S("Jobs_Tolerance_Panel_Undo_SymmetricLimits"), s =>
         {
             if (s.Rows.FirstOrDefault(r => r.Id == id) is not { } r) return;
             if (r.Minus == r.Plus) r.Minus = r.Plus * 0.5 is var h && h > 0 ? h : r.Plus;
@@ -525,11 +527,11 @@ public sealed partial class TolerancePanel : UserControl
         });
         menu.Items.Add(symmetric);
         menu.Items.Add(new MenuFlyoutSeparator());
-        var dup = new MenuFlyoutItem { Text = "Duplicate" };
-        dup.Click += (_, _) => Edit("Duplicate Tolerance", s => s.Duplicate(new HashSet<Guid> { id }));
+        var dup = new MenuFlyoutItem { Text = Loc.S("Jobs_Tolerance_Panel_Duplicate") };
+        dup.Click += (_, _) => Edit(Loc.S("Jobs_Tolerance_Panel_Undo_DuplicateTolerance"), s => s.Duplicate(new HashSet<Guid> { id }));
         menu.Items.Add(dup);
-        var del = new MenuFlyoutItem { Text = "Delete" };
-        del.Click += (_, _) => { Edit("Delete Tolerance", s => s.Delete(new HashSet<Guid> { id })); _selection.Remove(id); };
+        var del = new MenuFlyoutItem { Text = Loc.S("Jobs_Tolerance_Panel_Delete") };
+        del.Click += (_, _) => { Edit(Loc.S("Jobs_Tolerance_Panel_Undo_DeleteTolerance"), s => s.Delete(new HashSet<Guid> { id })); _selection.Remove(id); };
         menu.Items.Add(del);
         return menu;
     }
@@ -545,7 +547,7 @@ public sealed partial class TolerancePanel : UserControl
             foreach (var i in lens)
             {
                 var sid = sys.Surfaces[i].Id;
-                var item = new MenuFlyoutItem { Text = $"Surface {i}" + (sys.Surfaces[i].Label.Length > 0 ? $" · {sys.Surfaces[i].Label}" : "") };
+                var item = new MenuFlyoutItem { Text = sys.Surfaces[i].Label.Length > 0 ? Loc.F("Jobs_Tolerance_Panel_AddSurfaceLabeled", i, sys.Surfaces[i].Label) : Loc.F("Jobs_Tolerance_Panel_AddSurface", i) };
                 item.Click += (_, _) =>
                 {
                     List<Guid> added = [];
@@ -554,7 +556,7 @@ public sealed partial class TolerancePanel : UserControl
                         ToleranceKind.Radius => 3, ToleranceKind.Thickness => 0.05, ToleranceKind.DecenterX or ToleranceKind.DecenterY => 0.025,
                         ToleranceKind.Index => 0.0005, ToleranceKind.Abbe => 0.5, ToleranceKind.TiltX or ToleranceKind.TiltY => 1, _ => 0.5,
                     };
-                    Edit("Add Tolerance", s => added = s.Add([new ToleranceRow(kind, sid, amount)], _selection.FirstOrDefault() is var f && f != Guid.Empty ? f : null));
+                    Edit(Loc.S("Jobs_Tolerance_Panel_Undo_AddTolerance"), s => added = s.Add([new ToleranceRow(kind, sid, amount)], _selection.FirstOrDefault() is var f && f != Guid.Empty ? f : null));
                     _selection.Clear();
                     _selection.UnionWith(added);
                 };
@@ -575,7 +577,7 @@ public sealed partial class TolerancePanel : UserControl
                 item.Click += (_, _) =>
                 {
                     var amount = kind is ToleranceKind.ElementDecenterX or ToleranceKind.ElementDecenterY ? 0.03 : 1;
-                    Edit("Add Tolerance", s => s.Add([new ToleranceRow(kind, first, amount, last: last)]));
+                    Edit(Loc.S("Jobs_Tolerance_Panel_Undo_AddTolerance"), s => s.Add([new ToleranceRow(kind, first, amount, last: last)]));
                 };
                 sub.Items.Add(item);
             }
@@ -593,9 +595,9 @@ public sealed partial class TolerancePanel : UserControl
             var sub = new MenuFlyoutSubItem { Text = group };
             foreach (var param in items)
             {
-                var item = new MenuFlyoutItem { Text = ToleranceCompensator.IsBackFocus(param, sys) ? "Back focus" : param.Label(sys) };
+                var item = new MenuFlyoutItem { Text = ToleranceCompensator.IsBackFocus(param, sys) ? Loc.S("Jobs_Tolerance_Panel_BackFocus") : param.Label(sys) };
                 var p = param;
-                item.Click += (_, _) => Edit("Add Compensator", s =>
+                item.Click += (_, _) => Edit(Loc.S("Jobs_Tolerance_Panel_Undo_AddCompensator"), s =>
                 {
                     if (s.Compensators.Any(c => sys.Canonical(c.Param) == sys.Canonical(p))) return;
                     s.Compensators.Add(new ToleranceCompensator(p, p is ParamPath.Thickness ? 0.5 : null));
@@ -616,30 +618,30 @@ public sealed partial class TolerancePanel : UserControl
         void Fill()
         {
             body.Children.Clear();
-            body.Children.Add(JobUI.Text("Default Tolerances", "PanelTitleText"));
+            body.Children.Add(JobUI.Text(Loc.S("Jobs_Tolerance_Panel_Generator_Title"), "PanelTitleText"));
             var presets = ToleranceGeneratorPresets.All;
-            body.Children.Add(JobUI.Labeled("Class", JobUI.Choice(presets.Select(x => x.Title()).ToList(), gen.Preset is { } pr ? presets.ToList().IndexOf(pr) : -1,
+            body.Children.Add(JobUI.Labeled(Loc.S("Jobs_Tolerance_Panel_Generator_Class"), JobUI.Choice(presets.Select(x => x.Title()).ToList(), gen.Preset is { } pr ? presets.ToList().IndexOf(pr) : -1,
                 k => { gen.Apply(presets[k]); Fill(); }, 140)));
-            (string Title, string Unit, Func<double> Get, Action<double> Set)[] values =
+            (string Id, string Title, string Unit, Func<double> Get, Action<double> Set)[] values =
             [
-                ("Power", "fr", () => gen.RadiusFringes, v => gen.RadiusFringes = v),
-                ("Irregularity", "fr", () => gen.IrregularityFringes, v => gen.IrregularityFringes = v),
-                ("Thickness", "mm", () => gen.ThicknessMM, v => gen.ThicknessMM = v),
-                ("Surface decenter", "mm", () => gen.DecentreMM, v => gen.DecentreMM = v),
-                ("Surface tilt", "′", () => gen.TiltArcmin, v => gen.TiltArcmin = v),
-                ("Element decenter", "mm", () => gen.ElementDecentreMM, v => gen.ElementDecentreMM = v),
-                ("Element tilt", "′", () => gen.ElementTiltArcmin, v => gen.ElementTiltArcmin = v),
-                ("Index", "Δn", () => gen.Index, v => gen.Index = v),
-                ("Abbe number", "%", () => gen.AbbePercent, v => gen.AbbePercent = v),
+                ("Power", Loc.S("Jobs_Tolerance_Panel_Generator_Power"), "fr", () => gen.RadiusFringes, v => gen.RadiusFringes = v),
+                ("Irregularity", Loc.S("Jobs_Tolerance_Panel_Generator_Irregularity"), "fr", () => gen.IrregularityFringes, v => gen.IrregularityFringes = v),
+                ("Thickness", Loc.S("Jobs_Tolerance_Panel_Generator_Thickness"), "mm", () => gen.ThicknessMM, v => gen.ThicknessMM = v),
+                ("Surface decenter", Loc.S("Jobs_Tolerance_Panel_Generator_SurfaceDecenter"), "mm", () => gen.DecentreMM, v => gen.DecentreMM = v),
+                ("Surface tilt", Loc.S("Jobs_Tolerance_Panel_Generator_SurfaceTilt"), "′", () => gen.TiltArcmin, v => gen.TiltArcmin = v),
+                ("Element decenter", Loc.S("Jobs_Tolerance_Panel_Generator_ElementDecenter"), "mm", () => gen.ElementDecentreMM, v => gen.ElementDecentreMM = v),
+                ("Element tilt", Loc.S("Jobs_Tolerance_Panel_Generator_ElementTilt"), "′", () => gen.ElementTiltArcmin, v => gen.ElementTiltArcmin = v),
+                ("Index", Loc.S("Jobs_Tolerance_Panel_Generator_Index"), "Δn", () => gen.Index, v => gen.Index = v),
+                ("Abbe number", Loc.S("Jobs_Tolerance_Panel_Generator_AbbeNumber"), "%", () => gen.AbbePercent, v => gen.AbbePercent = v),
             ];
-            foreach (var (title, unit, get, set) in values)
-                body.Children.Add(JobUI.Labeled(title, JobUI.Row(5, new NumberField($"gen-{title}", () => get(), v => { set(Math.Max(0, v ?? 0)); gen.Preset = null; }, 70, "0", name: title),
+            foreach (var (key, title, unit, get, set) in values)
+                body.Children.Add(JobUI.Labeled(title, JobUI.Row(5, new NumberField($"gen-{key}", () => get(), v => { set(Math.Max(0, v ?? 0)); gen.Preset = null; }, 70, "0", name: title),
                     new TextBlock { Text = unit, Width = 22, Style = JobUI.Style("CaptionText") })));
-            body.Children.Add(JobUI.Hint("0 leaves a kind out. Generating replaces the tolerances; the compensators stay.", 11.5));
-            var go = JobUI.Primary("Generate", null, () =>
+            body.Children.Add(JobUI.Hint(Loc.S("Jobs_Tolerance_Panel_Generator_Hint"), 11.5));
+            var go = JobUI.Primary(Loc.S("Jobs_Tolerance_Panel_Generator_Generate"), null, () =>
             {
                 flyout.Hide();
-                Edit("Default Tolerances", s => { s.Generator = gen.Clone(); s.Generate(_session.Document.System); });
+                Edit(Loc.S("Jobs_Tolerance_Panel_Undo_DefaultTolerances"), s => { s.Generator = gen.Clone(); s.Generate(_session.Document.System); });
                 _selection.Clear();
             });
             go.HorizontalAlignment = HorizontalAlignment.Stretch;
@@ -657,13 +659,13 @@ public sealed partial class TolerancePanel : UserControl
         var p = new StackPanel { Spacing = 14 };
         var timing = _s.Timing();
         var elapsed = _s.StartedAt is { } s ? (DateTime.UtcNow - s).TotalSeconds : 0;
-        p.Children.Add(JobUI.Row(24, JobUI.BigNumber("Elapsed", Duration(elapsed)),
-            JobUI.BigNumber("Time left", timing.SecondsLeft is { } left ? "≈ " + Duration(left) : "—")));
-        if (timing.TrialsDone is { } done) p.Children.Add(JobUI.BigNumber("Trials", $"{done.ToString(C)} / {_s.Settings.Trials.ToString(C)}"));
-        if (timing.SecondsPerTrial is { } spt) p.Children.Add(JobUI.Hint($"{Duration(spt)} per trial", 12));
+        p.Children.Add(JobUI.Row(24, JobUI.BigNumber(Loc.S("Jobs_Tolerance_Panel_Elapsed"), Duration(elapsed)),
+            JobUI.BigNumber(Loc.S("Jobs_Tolerance_Panel_TimeLeft"), timing.SecondsLeft is { } left ? "≈ " + Duration(left) : "—")));
+        if (timing.TrialsDone is { } done) p.Children.Add(JobUI.BigNumber(Loc.S("Jobs_Tolerance_Panel_Trials"), $"{done.ToString(C)} / {_s.Settings.Trials.ToString(C)}"));
+        if (timing.SecondsPerTrial is { } spt) p.Children.Add(JobUI.Hint(Loc.F("Jobs_Tolerance_Panel_PerTrial", Duration(spt)), 12));
         p.Children.Add(new ProgressBar { Value = _s.Progress.Fraction * 100, Maximum = 100, IsIndeterminate = _s.Progress.Fraction <= 0 });
-        p.Children.Add(JobUI.Text(_s.Progress.Stage.Length > 0 ? _s.Progress.Stage : "Running", "SecondaryText"));
-        p.Children.Add(JobUI.Hint("Stop keeps the sensitivities and the trials completed. Cancel discards the run. You can close this panel; the job continues."));
+        p.Children.Add(JobUI.Text(_s.Progress.Stage.Length > 0 ? EngineText.T(_s.Progress.Stage) : Loc.S("Jobs_Tolerance_Panel_Running"), "SecondaryText"));
+        p.Children.Add(JobUI.Hint(Loc.S("Jobs_Tolerance_Panel_RunningHint")));
         return p;
     }
 
@@ -676,22 +678,22 @@ public sealed partial class TolerancePanel : UserControl
         var d = r.Display;
         var sys = _s.RunSystem ?? _session.Document.System;
         var head = new Grid();
-        var criterion = JobUI.Text(d.Title() + (d.Unit().Length == 0 ? "" : $" ({d.Unit()})"), "PanelTitleText");
+        var criterion = JobUI.Text(d.Unit().Length == 0 ? d.Title() : Loc.F("Jobs_Tolerance_Panel_TitleWithUnit", d.Title(), d.Unit()), "PanelTitleText");
         criterion.VerticalAlignment = VerticalAlignment.Center;
         head.Children.Add(criterion);
         var export = new DropDownButton
         {
-            Content = JobUI.Row(6, new FontIcon { Glyph = "\uE72D", FontSize = 12 }, new TextBlock { Text = "Export" }), Flyout = ExportMenu(r),
+            Content = JobUI.Row(6, new FontIcon { Glyph = "\uE72D", FontSize = 12 }, new TextBlock { Text = Loc.S("Jobs_Tolerance_Panel_Export") }), Flyout = ExportMenu(r),
             HorizontalAlignment = HorizontalAlignment.Right, MinHeight = 28, FontSize = 12.5, Padding = new Thickness(10, 3, 8, 4),
         };
-        ToolTipService.SetToolTip(export, "Copy a summary as text, or save the tables as CSV");
-        AutomationProperties.SetName(export, "Export");
+        ToolTipService.SetToolTip(export, Loc.S("Jobs_Tolerance_Panel_ExportHelp"));
+        AutomationProperties.SetName(export, Loc.S("Jobs_Tolerance_Panel_Export"));
         head.Children.Add(export);
         p.Children.Add(head);
-        if (r.Stopped) p.Children.Add(JobUI.Hint("Stopped early: the results of what completed."));
+        if (r.Stopped) p.Children.Add(JobUI.Hint(Loc.S("Jobs_Tolerance_Panel_StoppedEarly")));
         var big = JobUI.Row(24);
-        if (r.HasNominal) big.Children.Add(JobUI.BigNumber("Nominal", d.FormatWithUnit(d.Value(r.Nominal))));
-        if (r.HasSensitivity && double.IsFinite(r.Predicted)) big.Children.Add(JobUI.BigNumber("RSS prediction", d.FormatWithUnit(d.Value(r.Predicted))));
+        if (r.HasNominal) big.Children.Add(JobUI.BigNumber(Loc.S("Jobs_Tolerance_Panel_Nominal"), d.FormatWithUnit(d.Value(r.Nominal))));
+        if (r.HasSensitivity && double.IsFinite(r.Predicted)) big.Children.Add(JobUI.BigNumber(Loc.S("Jobs_Tolerance_Panel_RssPrediction"), d.FormatWithUnit(d.Value(r.Predicted))));
         p.Children.Add(big);
         if (r.HasMonteCarlo)
         {
@@ -699,7 +701,7 @@ public sealed partial class TolerancePanel : UserControl
             foreach (var pc in r.Percentiles)
             {
                 var row = new Grid();
-                row.Children.Add(JobUI.Text($"{MeritFormat.Short(pc.Level)} % of builds", "SecondaryText"));
+                row.Children.Add(JobUI.Text(Loc.F("Jobs_Tolerance_Panel_LevelOfBuilds", MeritFormat.Short(pc.Level)), "SecondaryText"));
                 var v = JobUI.Text((d.HigherIsBetter() ? "≥ " : "≤ ") + d.FormatWithUnit(d.Value(pc.Value)), "NumberText");
                 v.HorizontalAlignment = HorizontalAlignment.Right;
                 row.Children.Add(v);
@@ -708,15 +710,16 @@ public sealed partial class TolerancePanel : UserControl
             if (r.Yield is { } y)
             {
                 var row = new Grid();
-                row.Children.Add(JobUI.Text($"Yield (pass limit {(r.Threshold is { } th ? d.FormatWithUnit(d.Value(th)) : "—")})", "SecondaryText"));
+                row.Children.Add(JobUI.Text(Loc.F("Jobs_Tolerance_Panel_Yield", r.Threshold is { } th ? d.FormatWithUnit(d.Value(th)) : "—"), "SecondaryText"));
                 var v = JobUI.Text(MeritFormat.Percent(y), "NumberText");
                 v.FontWeight = Microsoft.UI.Text.FontWeights.SemiBold;
                 v.HorizontalAlignment = HorizontalAlignment.Right;
                 row.Children.Add(v);
                 levels.Children.Add(row);
             }
-            levels.Children.Add(JobUI.Hint($"{r.Trials.ToString(C)} trials" + (r.Failures > 0 ? $", {r.Failures.ToString(C)} failed" : "") + $", seed {r.Seed.ToString(C)}"
-                + (r.SecondsPerTrial is { } spt ? $" · {Duration(spt)} per trial" : ""), 11.5));
+            var runSummary = r.Failures > 0 ? Loc.F("Jobs_Tolerance_Panel_TrialsSummaryFailed", r.Trials.ToString(C), r.Failures.ToString(C), r.Seed.ToString(C))
+                : Loc.F("Jobs_Tolerance_Panel_TrialsSummary", r.Trials.ToString(C), r.Seed.ToString(C));
+            levels.Children.Add(JobUI.Hint(r.SecondsPerTrial is { } spt ? Loc.F("Jobs_Tolerance_Panel_TrialsSummaryTimed", runSummary, Duration(spt)) : runSummary, 11.5));
             p.Children.Add(JobUI.Card(levels, 8));
         }
         if (_s.Previewed is not null) p.Children.Add(PreviewCard(r, d));
@@ -730,27 +733,27 @@ public sealed partial class TolerancePanel : UserControl
     MenuFlyout ExportMenu(ViewModels.Jobs.ToleranceResult r)
     {
         var menu = new MenuFlyout();
-        var copy = new MenuFlyoutItem { Text = "Copy Summary", Icon = new FontIcon { Glyph = "\uE8C8" } };
+        var copy = new MenuFlyoutItem { Text = Loc.S("Jobs_Tolerance_Panel_CopySummary"), Icon = new FontIcon { Glyph = "\uE8C8" } };
         copy.Click += (_, _) =>
         {
             if (_s.SummaryText() is not { } text) return;
             var package = new DataPackage();
             package.SetText(text);
             Clipboard.SetContent(package);
-            _session.ShowToast("The tolerance summary is on the clipboard.");
+            _session.ShowToast(Loc.S("Jobs_Tolerance_Panel_SummaryCopied"));
         };
         menu.Items.Add(copy);
         menu.Items.Add(new MenuFlyoutSeparator());
         var name = _session.Document.System.Name;
         if (r.HasSensitivity)
         {
-            var item = new MenuFlyoutItem { Text = "Save Sensitivity Table as CSV\u2026" };
+            var item = new MenuFlyoutItem { Text = Loc.S("Jobs_Tolerance_Panel_SaveSensitivityCsv") };
             item.Click += (_, _) => _ = SaveCsvAsync(ToleranceExport.FileName(name, "sensitivity"), _s.SensitivityCsv());
             menu.Items.Add(item);
         }
         if (r.HasMonteCarlo)
         {
-            var item = new MenuFlyoutItem { Text = "Save Monte Carlo Trials as CSV\u2026" };
+            var item = new MenuFlyoutItem { Text = Loc.S("Jobs_Tolerance_Panel_SaveTrialsCsv") };
             item.Click += (_, _) => _ = SaveCsvAsync(ToleranceExport.FileName(name, "trials"), _s.TrialsCsv());
             menu.Items.Add(item);
         }
@@ -767,14 +770,14 @@ public sealed partial class TolerancePanel : UserControl
             SuggestedFileName = System.IO.Path.GetFileNameWithoutExtension(suggested), DefaultFileExtension = ".csv",
             SuggestedStartLocation = Microsoft.Windows.Storage.Pickers.PickerLocationId.DocumentsLibrary,
         };
-        picker.FileTypeChoices.Add("CSV (comma-separated values)", [".csv"]);
+        picker.FileTypeChoices.Add(Loc.S("Jobs_Tolerance_Panel_CsvFileType"), [".csv"]);
         if ((await picker.PickSaveFileAsync())?.Path is not { } path) return;
         try
         {
             await System.IO.File.WriteAllTextAsync(path, text);
-            _session.ShowToast($"Saved {System.IO.Path.GetFileName(path)}.");
+            _session.ShowToast(Loc.F("Jobs_Tolerance_Panel_Saved", System.IO.Path.GetFileName(path)));
         }
-        catch (Exception e) when (e is System.IO.IOException or UnauthorizedAccessException) { _session.ShowToast($"Could not save: {e.Message}"); }
+        catch (Exception e) when (e is System.IO.IOException or UnauthorizedAccessException) { _session.ShowToast(Loc.F("Jobs_Tolerance_Panel_CouldNotSave", e.Message)); }
     }
 
     /// <summary>Each compensator: the range the sensitivity evaluations used against the range allowed, its nominal and its Monte-Carlo spread.</summary>
@@ -794,7 +797,7 @@ public sealed partial class TolerancePanel : UserControl
             head.Children.Add(title);
             if (c.Range is { } rg)
             {
-                var allowed = JobUI.Text($"allowed \u00B1{MeritFormat.Short(rg)} {unit}", "CaptionText");
+                var allowed = JobUI.Text(Loc.F("Jobs_Tolerance_Panel_Comp_Allowed", MeritFormat.Short(rg), unit), "CaptionText");
                 allowed.HorizontalAlignment = HorizontalAlignment.Right;
                 head.Children.Add(allowed);
             }
@@ -802,7 +805,7 @@ public sealed partial class TolerancePanel : UserControl
             if (usage is { Fractions: { } f } u)
             {
                 var bar = RangeBar(f.From, f.To, u.AtLimit);
-                ToolTipService.SetToolTip(bar, $"The sensitivity evaluations moved it from {MeritFormat.Short(u.Low)} to +{MeritFormat.Short(u.High)} {unit} of \u00B1{MeritFormat.Short(u.Range!.Value)} allowed");
+                ToolTipService.SetToolTip(bar, Loc.F("Jobs_Tolerance_Panel_Comp_RangeBarHelp", MeritFormat.Short(u.Low), MeritFormat.Short(u.High), unit, MeritFormat.Short(u.Range!.Value)));
                 box.Children.Add(bar);
             }
             var pairs = new Grid { ColumnSpacing = 8, RowSpacing = 2 };
@@ -821,21 +824,21 @@ public sealed partial class TolerancePanel : UserControl
                 Grid.SetColumn(v, 1);
                 pairs.Children.Add(v);
             }
-            if (nominal is { } n) Pair("Nominal", $"{MeritFormat.Short(n)} {unit}", "The compensator re-optimized on the design as it is");
+            if (nominal is { } n) Pair(Loc.S("Jobs_Tolerance_Panel_Nominal"), $"{MeritFormat.Short(n)} {unit}", Loc.S("Jobs_Tolerance_Panel_Comp_NominalHelp"));
             if (usage is { } used)
-                Pair("Range used", $"{ToleranceCompensatorUsage.Signed4(used.Low)} to {ToleranceCompensatorUsage.Signed4(used.High)} {unit}", "The moves the sensitivity evaluations needed, from nominal");
+                Pair(Loc.S("Jobs_Tolerance_Panel_Comp_RangeUsed"), Loc.F("Jobs_Tolerance_Panel_Comp_RangeUsedValue", ToleranceCompensatorUsage.Signed4(used.Low), ToleranceCompensatorUsage.Signed4(used.High), unit), Loc.S("Jobs_Tolerance_Panel_Comp_RangeUsedHelp"));
             if (j < r.CompensatorMean.Count)
             {
                 var mean = r.CompensatorMean[j];
-                Pair("Monte Carlo mean", $"{MeritFormat.Short(mean)} {unit}" + (nominal is { } n0 ? $" ({ToleranceCompensatorUsage.Signed4(mean - n0)})" : ""), "The mean over the trials, and its shift from nominal");
+                Pair(Loc.S("Jobs_Tolerance_Panel_Comp_Mean"), nominal is { } n0 ? Loc.F("Jobs_Tolerance_Panel_Comp_MeanWithShift", MeritFormat.Short(mean), unit, ToleranceCompensatorUsage.Signed4(mean - n0)) : $"{MeritFormat.Short(mean)} {unit}", Loc.S("Jobs_Tolerance_Panel_Comp_MeanHelp"));
                 var sd = j < r.CompensatorStd.Count ? r.CompensatorStd[j] : double.NaN;
-                Pair("Monte Carlo \u03C3", double.IsFinite(sd) ? $"{sd.ToString("G4", C)} (\u00B13\u03C3 {(3 * sd).ToString("G4", C)}) {unit}" : "\u2014", "The standard deviation over the trials, and three times it");
+                Pair(Loc.S("Jobs_Tolerance_Panel_Comp_Sigma"), double.IsFinite(sd) ? Loc.F("Jobs_Tolerance_Panel_Comp_SigmaValue", sd.ToString("G4", C), (3 * sd).ToString("G4", C), unit) : "\u2014", Loc.S("Jobs_Tolerance_Panel_Comp_SigmaHelp"));
             }
             box.Children.Add(pairs);
-            if (usage is { AtLimit: true }) box.Children.Add(JobUI.Warning("It reached its limit: some builds need more adjustment than allowed."));
+            if (usage is { AtLimit: true }) box.Children.Add(JobUI.Warning(Loc.S("Jobs_Tolerance_Panel_Comp_AtLimit")));
             p.Children.Add(box);
         }
-        return JobUI.Group("Compensators", p);
+        return JobUI.Group(Loc.S("Jobs_Tolerance_Panel_CompensatorsGroup"), p);
     }
 
     /// <summary>The used part of a compensator's \u00B1range (fractions \u22121 \u2026 1), centred on nominal; orange when it reached the limit.</summary>
@@ -868,19 +871,19 @@ public sealed partial class TolerancePanel : UserControl
         var title = JobUI.Text(_s.Previewed!.Title(r, _s.RunSystem, _s.ResultRows), "PanelTitleText");
         JobUI.Bind(title, "AccentTextFillColorPrimaryBrush", b => title.Foreground = b);
         head.Children.Add(title);
-        var end = new HyperlinkButton { Content = "End Preview", Padding = new Thickness(0), FontSize = 12, HorizontalAlignment = HorizontalAlignment.Right };
+        var end = new HyperlinkButton { Content = Loc.S("Jobs_Tolerance_Panel_EndPreview"), Padding = new Thickness(0), FontSize = 12, HorizontalAlignment = HorizontalAlignment.Right };
         end.Click += (_, _) => _s.EndPreview();
         head.Children.Add(end);
         p.Children.Add(head);
-        if (_s.PreviewError is { } err) p.Children.Add(JobUI.Warning(err));
-        else if (_s.Preview is not { } pv) p.Children.Add(JobUI.Hint("Rebuilding the build in the engine…"));
+        if (_s.PreviewError is { } err) p.Children.Add(JobUI.Warning(EngineText.T(err)));
+        else if (_s.Preview is not { } pv) p.Children.Add(JobUI.Hint(Loc.S("Jobs_Tolerance_Panel_Rebuilding")));
         else
         {
-            p.Children.Add(JobUI.Text($"Criterion {d.FormatWithUnit(d.Value(pv.Criterion))}" + (r.HasNominal ? $" (nominal {d.FormatWithUnit(d.Value(r.Nominal))})" : ""), "NumberText"));
+            p.Children.Add(JobUI.Text(r.HasNominal ? Loc.F("Jobs_Tolerance_Panel_PreviewCriterionNominal", d.FormatWithUnit(d.Value(pv.Criterion)), d.FormatWithUnit(d.Value(r.Nominal))) : Loc.F("Jobs_Tolerance_Panel_PreviewCriterion", d.FormatWithUnit(d.Value(pv.Criterion))), "NumberText"));
             for (var j = 0; j < Math.Min(pv.Compensators.Count, r.Compensators.Count); j++)
             {
                 var nominal = j < r.NominalCompensators.Count ? r.NominalCompensators[j] : double.NaN;
-                p.Children.Add(JobUI.Text($"{r.Compensators[j].Param.Label(_s.RunSystem ?? _session.Document.System)}: {MeritFormat.Short(pv.Compensators[j])} ({MeritFormat.Signed(pv.Compensators[j] - nominal)})", "CaptionText"));
+                p.Children.Add(JobUI.Text(Loc.F("Jobs_Tolerance_Panel_PreviewCompensator", r.Compensators[j].Param.Label(_s.RunSystem ?? _session.Document.System), MeritFormat.Short(pv.Compensators[j]), MeritFormat.Signed(pv.Compensators[j] - nominal)), "CaptionText"));
             }
             var changes = ToleranceBuildChange.Changes(pv.Perturbations, ToleranceBuildChange.RunLimits(_s.RunSettings), _s.ResultRows, _s.RunSystem ?? _session.Document.System);
             foreach (var c in changes.OrderByDescending(c => Math.Abs(c.Fraction)).Take(8))
@@ -911,7 +914,7 @@ public sealed partial class TolerancePanel : UserControl
             g.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
             g.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(70) });
             g.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
-            var label = s.Id >= 0 && s.Id < _s.ResultRows.Count ? _s.ResultRows[s.Id].Label(sys) : s.Label;
+            var label = s.Id >= 0 && s.Id < _s.ResultRows.Count ? _s.ResultRows[s.Id].DisplayLabel(sys) : EngineText.T(s.Label);
             var limits = s.Id >= 0 && s.Id < _s.ResultRows.Count ? _s.ResultRows[s.Id].LimitText(s.WorsePlus) : "";
             var name = JobUI.Text(label);
             if (worst.Contains(s.Id)) JobUI.Bind(name, "WarningBrush", b => name.Foreground = b);
@@ -930,16 +933,16 @@ public sealed partial class TolerancePanel : UserControl
             g.Children.Add(right);
             var c = new TolerancePreviewCase.Sensitivity(s.Id, s.WorsePlus);
             var on = Equals(_s.Previewed, c);
-            var eye = JobUI.Icon(on ? "\uED1A" : "\uE7B3", on ? "End the preview" : "Preview this build at its worse limit in the window",
+            var eye = JobUI.Icon(on ? "\uED1A" : "\uE7B3", on ? Loc.S("Jobs_Tolerance_Panel_EndThePreview") : Loc.S("Jobs_Tolerance_Panel_PreviewWorseLimit"),
                 () => _ = _s.PreviewAsync(on ? null : c), true, 26);
             if (on) JobUI.Bind(eye, "AccentTextFillColorPrimaryBrush", b => eye.Foreground = b);
             Grid.SetColumn(eye, 2);
             g.Children.Add(eye);
-            AutomationProperties.SetName(g, $"{label}: {MeritFormat.Share(share)} of the RSS");
+            AutomationProperties.SetName(g, Loc.F("Jobs_Tolerance_Panel_SensitivityRowName", label, MeritFormat.Share(share)));
             p.Children.Add(g);
         }
-        var more = r.Sensitivities.Count > 25 ? $" (the largest 25 of {r.Sensitivities.Count.ToString(C)})" : "";
-        return JobUI.Group("Sensitivity" + more, p, JobUI.Text("share of RSS", "CaptionText"));
+        var heading = r.Sensitivities.Count > 25 ? Loc.F("Jobs_Tolerance_Panel_SensitivityGroupLargest", r.Sensitivities.Count.ToString(C)) : Loc.S("Jobs_Tolerance_Panel_SensitivityGroup");
+        return JobUI.Group(heading, p, JobUI.Text(Loc.S("Jobs_Tolerance_Panel_ShareOfRss"), "CaptionText"));
     }
 
     /// <summary>The Monte-Carlo histogram with the nominal and the levels marked, and the worst trials (a click previews one).</summary>
@@ -1009,8 +1012,8 @@ public sealed partial class TolerancePanel : UserControl
             var hit = ToleranceHistogram.IndexOf(bins, v) is { } k && bins[k].Count > 0 ? k : (int?)null;
             _s.SelectBin(hit == selected ? null : hit);
         };
-        ToolTipService.SetToolTip(canvas, "Click a bar to list its trials");
-        AutomationProperties.SetName(canvas, $"Distribution of {values.Count.ToString(C)} Monte Carlo trials of the {d.Title()}");
+        ToolTipService.SetToolTip(canvas, Loc.S("Jobs_Tolerance_Panel_HistogramHelp"));
+        AutomationProperties.SetName(canvas, Loc.F("Jobs_Tolerance_Panel_HistogramName", values.Count.ToString(C), d.Title()));
         p.Children.Add(canvas);
         var scale = new Grid();
         scale.Children.Add(JobUI.Text(d.Format(lo), "CaptionText"));
@@ -1019,33 +1022,36 @@ public sealed partial class TolerancePanel : UserControl
         scale.Children.Add(right);
         p.Children.Add(scale);
         var levels = string.Join(", ", r.Percentiles.Select(x => MeritFormat.Short(x.Level)));
-        p.Children.Add(JobUI.Hint((r.HasNominal ? $"Solid: the nominal {d.FormatWithUnit(d.Value(r.Nominal))}. " : "") + (levels.Length > 0 ? $"Dashed: {levels} % of builds." : ""), 11));
+        var legend = r.HasNominal
+            ? levels.Length > 0 ? Loc.F("Jobs_Tolerance_Panel_HistogramSolidDashed", d.FormatWithUnit(d.Value(r.Nominal)), levels) : Loc.F("Jobs_Tolerance_Panel_HistogramSolid", d.FormatWithUnit(d.Value(r.Nominal)))
+            : levels.Length > 0 ? Loc.F("Jobs_Tolerance_Panel_HistogramDashed", levels) : "";
+        p.Children.Add(JobUI.Hint(legend, 11));
 
         // The selected bar's trials, or the worst.
         var trials = selected is { } bin ? ToleranceHistogram.Trials(r, bins, bin) : r.TrialsWorstFirst;
         if (_limitBin != selected) { _limitBin = selected; _trialLimit = 6; }
         var head = new Grid { Margin = new Thickness(0, 4, 0, 0) };
-        var title = JobUI.Text(selected is { } sel ? ToleranceHistogram.Title(d, bins[sel], trials.Count) : "Worst trials");
+        var title = JobUI.Text(selected is { } sel ? ToleranceHistogram.Title(d, bins[sel], trials.Count) : Loc.S("Jobs_Tolerance_Panel_WorstTrialsTitle"));
         title.FontWeight = Microsoft.UI.Text.FontWeights.SemiBold;
         head.Children.Add(title);
         if (selected is not null)
         {
-            var worst = new HyperlinkButton { Content = "Worst Trials", Padding = new Thickness(0), FontSize = 12, HorizontalAlignment = HorizontalAlignment.Right };
+            var worst = new HyperlinkButton { Content = Loc.S("Jobs_Tolerance_Panel_WorstTrialsButton"), Padding = new Thickness(0), FontSize = 12, HorizontalAlignment = HorizontalAlignment.Right };
             worst.Click += (_, _) => _s.SelectBin(null);
-            ToolTipService.SetToolTip(worst, "List the worst trials instead of the selected bar's");
+            ToolTipService.SetToolTip(worst, Loc.S("Jobs_Tolerance_Panel_WorstTrialsHelp"));
             head.Children.Add(worst);
         }
         p.Children.Add(head);
-        if (trials.Count == 0) p.Children.Add(JobUI.Hint("No trial in this bar."));
+        if (trials.Count == 0) p.Children.Add(JobUI.Hint(Loc.S("Jobs_Tolerance_Panel_NoTrialInBar")));
         foreach (var k in trials.Take(_trialLimit)) p.Children.Add(TrialRow(r, d, k));
         if (trials.Count > _trialLimit)
         {
-            var more = new HyperlinkButton { Content = $"Show {Math.Min(trials.Count - _trialLimit, 20).ToString(C)} more", Padding = new Thickness(0), FontSize = 12 };
+            var more = new HyperlinkButton { Content = Loc.F("Jobs_Tolerance_Panel_ShowMore", Math.Min(trials.Count - _trialLimit, 20).ToString(C)), Padding = new Thickness(0), FontSize = 12 };
             more.Click += (_, _) => { _trialLimit += 20; Queue(); };
             p.Children.Add(more);
         }
-        p.Children.Add(JobUI.Hint(selected is null ? "Click a bar of the histogram for its trials; the eye rebuilds a trial in the window." : "The eye rebuilds a trial in the window, read-only.", 11));
-        var group = JobUI.Group("Monte Carlo", p, JobUI.Text($"{r.Trials.ToString(C)} builds", "CaptionText"));
+        p.Children.Add(JobUI.Hint(selected is null ? Loc.S("Jobs_Tolerance_Panel_HistogramHint") : Loc.S("Jobs_Tolerance_Panel_HistogramHintSelected"), 11));
+        var group = JobUI.Group(Loc.S("Jobs_Tolerance_Panel_MonteCarloGroup"), p, JobUI.Text(Loc.F("Jobs_Tolerance_Panel_Builds", r.Trials.ToString(C)), "CaptionText"));
         group.Tag = "tolerance-monte-carlo";
         return group;
     }
@@ -1073,7 +1079,7 @@ public sealed partial class TolerancePanel : UserControl
         g.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
         g.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
         g.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
-        g.Children.Add(JobUI.Text($"Trial {(k + 1).ToString(C)}", "NumberText"));
+        g.Children.Add(JobUI.Text(Loc.F("Jobs_Tolerance_Panel_Trial", (k + 1).ToString(C)), "NumberText"));
         var value = d.FormatWithUnit(d.Value(r.TrialCriteria[k]));
         var v = JobUI.Text(value, "NumberText");
         Grid.SetColumn(v, 1);
@@ -1091,8 +1097,8 @@ public sealed partial class TolerancePanel : UserControl
         Grid.SetColumn(eye, 3);
         g.Children.Add(eye);
         b.Content = g;
-        ToolTipService.SetToolTip(b, on ? "End the preview" : $"Preview trial {(k + 1).ToString(C)} in the window: its perturbations{(r.Compensators.Count == 0 ? "" : " and re-optimized compensators")}; not applied");
-        AutomationProperties.SetName(b, $"Trial {(k + 1).ToString(C)}, {value}");
+        ToolTipService.SetToolTip(b, on ? Loc.S("Jobs_Tolerance_Panel_EndThePreview") : r.Compensators.Count == 0 ? Loc.F("Jobs_Tolerance_Panel_PreviewTrial", (k + 1).ToString(C)) : Loc.F("Jobs_Tolerance_Panel_PreviewTrialCompensated", (k + 1).ToString(C)));
+        AutomationProperties.SetName(b, Loc.F("Jobs_Tolerance_Panel_TrialName", (k + 1).ToString(C), value));
         b.Click += (_, _) => _ = _s.PreviewAsync(on ? null : c);
         return b;
     }
@@ -1105,19 +1111,19 @@ public sealed partial class TolerancePanel : UserControl
         switch (_s.Phase)
         {
             case JobPhase.Setup:
-                _frame.SetActions(null, JobUI.Primary("Run Tolerancing", "\uE768", () => _s.Start(), problem ?? "Start the run (Ctrl+Enter)", problem is null));
+                _frame.SetActions(null, JobUI.Primary(Loc.S("Jobs_Tolerance_Panel_Run"), "\uE768", () => _s.Start(), problem ?? Loc.S("Jobs_Tolerance_Panel_RunHelp"), problem is null));
                 break;
             case JobPhase.Failed:
-                _frame.SetActions(null, JobUI.Secondary("Back", null, _s.EditSettings, "Back to the tolerances"),
-                    JobUI.Primary("Try Again", "\uE72C", () => _s.Start(fresh: true), "Run the job again with the same settings", problem is null));
+                _frame.SetActions(null, JobUI.Secondary(Loc.S("Jobs_Tolerance_Panel_Back"), null, _s.EditSettings, Loc.S("Jobs_Tolerance_Panel_BackHelp")),
+                    JobUI.Primary(Loc.S("Jobs_Tolerance_Panel_TryAgain"), "\uE72C", () => _s.Start(fresh: true), Loc.S("Jobs_Tolerance_Panel_TryAgainHelp"), problem is null));
                 break;
             case JobPhase.Running:
                 _frame.SetActions(JobUI.Progress(_s.Progress),
-                    JobUI.Secondary("Cancel", null, _s.Cancel, "End the run and discard it", destructive: true),
-                    JobUI.Secondary("Stop", "\uE71A", _s.Stop, "End now and keep the sensitivities and the trials completed", _s.CanStop));
+                    JobUI.Secondary(Loc.S("Common_Cancel"), null, _s.Cancel, Loc.S("Jobs_Tolerance_Panel_CancelHelp"), destructive: true),
+                    JobUI.Secondary(Loc.S("Jobs_Tolerance_Panel_Stop"), "\uE71A", _s.Stop, Loc.S("Jobs_Tolerance_Panel_StopHelp"), _s.CanStop));
                 break;
             default:
-                _frame.SetActions(null, JobUI.Primary("Edit Tolerances", null, _s.EditSettings, "Back to the tolerance set (the results are kept)"));
+                _frame.SetActions(null, JobUI.Primary(Loc.S("Jobs_Tolerance_Panel_EditTolerances"), null, _s.EditSettings, Loc.S("Jobs_Tolerance_Panel_EditTolerancesHelp")));
                 break;
         }
     }

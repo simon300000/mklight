@@ -1,5 +1,6 @@
 using System.Globalization;
 using System.Text.Json.Nodes;
+using MKLight.App.Support;
 using MKLight.Engine;
 using MKLight.Model;
 
@@ -26,21 +27,33 @@ public abstract record TolerancePreviewCase
         _ => throw new InvalidOperationException(),
     };
 
-    /// <summary>"Tolerance: trial 17, compensated", "Tolerance: Decentre y S3 at +0.02 mm".</summary>
+    /// <summary>"Tolerance: trial 17, compensated", "Tolerance: Decentre y S3 at +0.02 mm" (in the UI language).</summary>
     public string Title(ToleranceResult? result, OpticalSystem? runSystem, IReadOnlyList<ToleranceRow> resultRows)
     {
-        var compensated = result is null || result.Compensators.Count == 0 ? "" : ", compensated";
+        var compensated = result is not null && result.Compensators.Count > 0;
         switch (this)
         {
             case Trial t:
-                return $"Tolerance: trial {t.K + 1}{compensated}";
+                return compensated ? Loc.F("Jobs_Tolerance_Result_PreviewTrialCompensated", t.K + 1) : Loc.F("Jobs_Tolerance_Result_PreviewTrial", t.K + 1);
             case Sensitivity s:
                 var what = runSystem is not null && s.Operand >= 0 && s.Operand < resultRows.Count
-                    ? $"{resultRows[s.Operand].Label(runSystem)} at {resultRows[s.Operand].LimitText(s.Plus)}"
-                    : result?.Sensitivities.FirstOrDefault(x => x.Id == s.Operand)?.Label ?? $"operand {s.Operand + 1}";
-                return "Tolerance: " + what + compensated;
+                    ? Loc.F("Jobs_Tolerance_Result_PreviewAtLimit", resultRows[s.Operand].DisplayLabel(runSystem), resultRows[s.Operand].LimitText(s.Plus))
+                    : result?.Sensitivities.FirstOrDefault(x => x.Id == s.Operand)?.Label is { } label ? EngineText.T(label) : Loc.F("Jobs_Tolerance_Result_PreviewOperand", s.Operand + 1);
+                return compensated ? Loc.F("Jobs_Tolerance_Result_PreviewCaseCompensated", what) : Loc.F("Jobs_Tolerance_Result_PreviewCase", what);
             default: throw new InvalidOperationException();
         }
+    }
+
+    /// <summary>Whether a window preview title is one of <see cref="Title"/>'s (in the UI language, or English).</summary>
+    public static bool IsTitle(string? title)
+    {
+        if (title is null) return false;
+        foreach (var format in new[] { Loc.S("Jobs_Tolerance_Result_PreviewCase"), Loc.English("Jobs_Tolerance_Result_PreviewCase") ?? "Tolerance: {0}" })
+        {
+            var prefix = format.Split("{0}")[0];
+            if (prefix.Length > 0 && title.StartsWith(prefix, StringComparison.Ordinal)) return true;
+        }
+        return false;
     }
 }
 
@@ -142,7 +155,7 @@ public sealed record ToleranceBuildChange(int Id, string Label, double Fraction,
             var f = d / lim;
             var shown = (d > 0 ? row.Plus : row.Minus) * Math.Abs(f);
             output.Add(new ToleranceBuildChange(
-                k, system is null ? row.Kind.Title() : row.Label(system), f, (d > 0 ? "+" : "−") + MeritFormat.Short(Tidy(shown)) + row.Unit.Suffix(),
+                k, system is null ? row.Kind.Title() : row.DisplayLabel(system), f, (d > 0 ? "+" : "−") + MeritFormat.Short(Tidy(shown)) + row.Unit.Suffix(),
                 row.LimitsText));
         }
         return [.. output.OrderByDescending(c => Math.Abs(c.Fraction))];
@@ -337,7 +350,7 @@ public static class ToleranceReport
     public static string Summary(ToleranceResult r, IReadOnlyList<ToleranceRow> rows, OpticalSystem system, string title)
     {
         var d = r.Display;
-        var lines = new List<string> { $"Tolerance analysis: {title}", $"Criterion: {d.Title()}{(d.Unit().Length == 0 ? "" : $" ({d.Unit()})")}" };
+        var lines = new List<string> { $"Tolerance analysis: {title}", $"Criterion: {d.EnglishTitle()}{(d.Unit().Length == 0 ? "" : $" ({d.Unit()})")}" };
         if (r.Stopped) lines.Add("Stopped early: statistics of the completed evaluations.");
         if (r.HasSensitivity)
         {
@@ -361,7 +374,7 @@ public static class ToleranceReport
         for (var j = 0; j < r.Compensators.Count; j++)
         {
             var c = r.Compensators[j];
-            var line = "Compensator " + new ToleranceCompensator(c.Param, c.Range).Title(system);
+            var line = "Compensator " + new ToleranceCompensator(c.Param, c.Range).EnglishTitle(system);
             if (r.CompensatorRange(j) is { } range) line += $": moved {MeritFormat.Short(range.Low)} to +{MeritFormat.Short(range.High)} {c.Param.Unit(system)}";
             if (c.Range is { } rg) line += $" of ±{MeritFormat.Short(rg)}";
             if (j < r.CompensatorStd.Count) line += $"; Monte Carlo σ {MeritFormat.Short(r.CompensatorStd[j])}";
@@ -401,7 +414,7 @@ public static class ToleranceReport
         var d = r.Display;
         var recorded = r.Records.Count > 0;
         var comps = recorded ? Enumerable.Range(1, r.Compensators.Count).Select(j => $"compensator_{j}").ToList() : [];
-        var perts = recorded ? rows.Select(row => Csv(system is null ? row.Kind.Title() : row.Label(system))).ToList() : [];
+        var perts = recorded ? rows.Select(row => Csv(system is null ? row.Kind.EnglishTitle() : row.Label(system))).ToList() : [];
         var output = new List<string> { string.Join(",", ["trial", "criterion", Name(d), .. comps, .. perts]) };
         for (var k = 0; k < r.TrialCriteria.Count; k++)
         {
