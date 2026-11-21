@@ -3,6 +3,7 @@ using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Automation;
 using Microsoft.UI.Xaml.Controls;
 using MKLight.App.Plotting;
+using MKLight.App.Support;
 using MKLight.App.ViewModels;
 using MKLight.App.ViewModels.Jobs;
 using MKLight.App.Views.Analysis.Results;
@@ -28,10 +29,11 @@ public sealed partial class LayoutComparison : UserControl
     readonly ProgressRing?[] _rings = new ProgressRing?[2];
     readonly List<DesignFigures.Lease> _leases = [];
 
-    public LayoutComparison(Workspace ws, OpticalSystem? before, OpticalSystem? after, string beforeTitle = "Before", string afterTitle = "Candidate")
+    /// <param name="beforeTitle">The design's caption (Before by default); <paramref name="afterTitle"/> the candidate's (Candidate).</param>
+    public LayoutComparison(Workspace ws, OpticalSystem? before, OpticalSystem? after, string? beforeTitle = null, string? afterTitle = null)
     {
         _ws = ws;
-        _sides = [(before, beforeTitle), (after, afterTitle)];
+        _sides = [(before, beforeTitle ?? Loc.S("Jobs_Layout_Before")), (after, afterTitle ?? Loc.S("Jobs_Layout_Candidate"))];
         IsTabStop = false;
         var grid = new Grid { ColumnSpacing = 8 };
         for (var i = 0; i < 2; i++)
@@ -64,7 +66,7 @@ public sealed partial class LayoutComparison : UserControl
         JobUI.Bind(card, "ContentSurfaceBrush", b => card.Background = b);
         JobUI.Bind(card, "CardStrokeColorDefaultBrush", b => card.BorderBrush = b);
         var column = JobUI.Column(3, JobUI.Text(title, "CaptionText"), card);
-        AutomationProperties.SetName(column, $"{title} layout");
+        AutomationProperties.SetName(column, Loc.F("Jobs_Layout_Name", title));
         return column;
     }
 

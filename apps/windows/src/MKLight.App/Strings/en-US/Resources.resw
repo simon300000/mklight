@@ -24,6 +24,183 @@
   <!-- area: Analysis -->
   <!-- end area: Analysis -->
   <!-- area: Jobs -->
+  <data name="Jobs_Controls_AppliedNotice" xml:space="preserve"><value>Applied to the design. Undo with Ctrl+Z.</value></data>
+  <data name="Jobs_Controls_ApplyToDesign" xml:space="preserve"><value>Apply to Design</value></data>
+  <data name="Jobs_Controls_Back" xml:space="preserve"><value>Back</value></data>
+  <data name="Jobs_Controls_BackHelp" xml:space="preserve"><value>Back to the job's settings</value></data>
+  <data name="Jobs_Controls_BigNumberName" xml:space="preserve"><value>{0} {1}</value></data>
+  <data name="Jobs_Controls_Discard" xml:space="preserve"><value>Discard</value></data>
+  <data name="Jobs_Controls_Done" xml:space="preserve"><value>Done</value></data>
+  <data name="Jobs_Controls_MeritByIteration" xml:space="preserve"><value>Merit by iteration</value></data>
+  <data name="Jobs_Controls_Running" xml:space="preserve"><value>Running</value></data>
+  <data name="Jobs_Controls_StepperFewer" xml:space="preserve"><value>Fewer {0}</value></data>
+  <data name="Jobs_Controls_StepperMore" xml:space="preserve"><value>More {0}</value></data>
+  <data name="Jobs_Controls_StepperValue" xml:space="preserve"><value>{0} {1}</value></data>
+  <data name="Jobs_Controls_Stop" xml:space="preserve"><value>Stop</value></data>
+  <data name="Jobs_Controls_TryAgain" xml:space="preserve"><value>Try Again</value></data>
+  <data name="Jobs_Controls_TryAgainHelp" xml:space="preserve"><value>Run the job again with the same settings</value></data>
+  <data name="Jobs_GlassMap_AxisAbbe" xml:space="preserve"><value>Abbe number V_d</value></data>
+  <data name="Jobs_GlassMap_AxisIndex" xml:space="preserve"><value>Refractive index n_d</value></data>
+  <data name="Jobs_GlassMap_AxisPgf" xml:space="preserve"><value>Partial dispersion P_g,F</value></data>
+  <data name="Jobs_GlassMap_Legend" xml:space="preserve"><value>Ringed: the candidate's glasses, labeled with their surfaces. Hollow: the design's glasses they replace.</value></data>
+  <data name="Jobs_GlassMap_Name" xml:space="preserve"><value>Glass map, the candidate's glasses: {0}</value></data>
+  <data name="Jobs_GlassMap_Plane" xml:space="preserve"><value>Plane</value></data>
+  <data name="Jobs_GlassMap_PlaneHelp" xml:space="preserve"><value>Refractive index nd or partial dispersion Pg,F against Abbe number Vd</value></data>
+  <data name="Jobs_GlassMap_Title" xml:space="preserve"><value>Glass Map</value></data>
+  <data name="Jobs_GlassSub_Activity" xml:space="preserve"><value>Substituting</value></data>
+  <data name="Jobs_GlassSub_ActivityCount" xml:space="preserve"><value>Substituting · {0}</value></data>
+  <data name="Jobs_GlassSub_AllLoaded" xml:space="preserve"><value>All loaded</value></data>
+  <data name="Jobs_GlassSub_AlwaysInclude" xml:space="preserve"><value>Always include</value></data>
+  <data name="Jobs_GlassSub_Applied" xml:space="preserve"><value>Applied</value></data>
+  <data name="Jobs_GlassSub_ApplyHelp" xml:space="preserve"><value>Apply the previewed combination as one step you can undo</value></data>
+  <data name="Jobs_GlassSub_AutoVariablesHint" xml:space="preserve"><value>Each combination re-optimizes every curvature and the back focus.</value></data>
+  <data name="Jobs_GlassSub_BestGlasses" xml:space="preserve"><value>Best glasses so far</value></data>
+  <data name="Jobs_GlassSub_BestMerit" xml:space="preserve"><value>Best merit</value></data>
+  <data name="Jobs_GlassSub_CancelHelp" xml:space="preserve"><value>End the run and discard it</value></data>
+  <data name="Jobs_GlassSub_Candidate" xml:space="preserve"><value>Candidate {0}</value></data>
+  <data name="Jobs_GlassSub_Catalogs" xml:space="preserve"><value>Catalogs</value></data>
+  <data name="Jobs_GlassSub_Choose" xml:space="preserve"><value>Choose</value></data>
+  <data name="Jobs_GlassSub_Combinations" xml:space="preserve"><value>Combinations</value></data>
+  <data name="Jobs_GlassSub_CombinationsToTry" xml:space="preserve"><value>Combinations to try</value></data>
+  <data name="Jobs_GlassSub_ConstraintsNotMet" xml:space="preserve"><value>constraints not met</value></data>
+  <data name="Jobs_GlassSub_CutShort" xml:space="preserve"><value>{0} · cut short</value></data>
+  <data name="Jobs_GlassSub_DiscardHelp" xml:space="preserve"><value>Drop this result; the design stays as it is</value></data>
+  <data name="Jobs_GlassSub_DoneHelp" xml:space="preserve"><value>Back to the glasses and the search settings</value></data>
+  <data name="Jobs_GlassSub_EditMerit" xml:space="preserve"><value>Edit Merit and Variables…</value></data>
+  <data name="Jobs_GlassSub_FailedTitle" xml:space="preserve"><value>Glass Substitution Failed</value></data>
+  <data name="Jobs_GlassSub_FindGlasses" xml:space="preserve"><value>Find Glasses</value></data>
+  <data name="Jobs_GlassSub_FindGlassesHelp" xml:space="preserve"><value>Start the search (Ctrl+Enter)</value></data>
+  <data name="Jobs_GlassSub_FixErrors" xml:space="preserve"><value>Fix the design's errors first.</value></data>
+  <data name="Jobs_GlassSub_GroupCandidates" xml:space="preserve"><value>Candidates for Every Lens</value></data>
+  <data name="Jobs_GlassSub_GroupGlasses" xml:space="preserve"><value>Glasses That May Change</value></data>
+  <data name="Jobs_GlassSub_GroupMerit" xml:space="preserve"><value>Merit</value></data>
+  <data name="Jobs_GlassSub_KeepBest" xml:space="preserve"><value>Keep the best</value></data>
+  <data name="Jobs_GlassSub_Limits" xml:space="preserve"><value>Limits</value></data>
+  <data name="Jobs_GlassSub_ListAnd" xml:space="preserve"><value>{0} and {1}</value></data>
+  <data name="Jobs_GlassSub_ListSeparator" xml:space="preserve"><value>, </value></data>
+  <data name="Jobs_GlassSub_MaxClimate" xml:space="preserve"><value>Max. climate class</value></data>
+  <data name="Jobs_GlassSub_MaxClimateHelp" xml:space="preserve"><value>Climate resistance class (CR)</value></data>
+  <data name="Jobs_GlassSub_MaxCost" xml:space="preserve"><value>Max. relative cost</value></data>
+  <data name="Jobs_GlassSub_MaxCostHelp" xml:space="preserve"><value>Catalog relative cost</value></data>
+  <data name="Jobs_GlassSub_MaxStain" xml:space="preserve"><value>Max. stain class</value></data>
+  <data name="Jobs_GlassSub_MaxStainHelp" xml:space="preserve"><value>Stain resistance class (FR)</value></data>
+  <data name="Jobs_GlassSub_MeltOffsetHelp" xml:space="preserve"><value>Melt offset Δn_d / ΔV_d: a replacement glass is installed without it</value></data>
+  <data name="Jobs_GlassSub_Merit" xml:space="preserve"><value>Merit</value></data>
+  <data name="Jobs_GlassSub_MeritCustom" xml:space="preserve"><value>Custom merit, {0} operands.</value></data>
+  <data name="Jobs_GlassSub_MeritCustomHeld" xml:space="preserve"><value>Custom merit, {0} operands, focal length held.</value></data>
+  <data name="Jobs_GlassSub_MeritDefault" xml:space="preserve"><value>Default merit: {0}.</value></data>
+  <data name="Jobs_GlassSub_MeritDefaultHeld" xml:space="preserve"><value>Default merit: {0}, focal length held.</value></data>
+  <data name="Jobs_GlassSub_MinTransmission" xml:space="preserve"><value>Min. transmission</value></data>
+  <data name="Jobs_GlassSub_MinTransmissionHelp" xml:space="preserve"><value>Internal transmission at the shortest wavelength through the lens's center thickness (0…1)</value></data>
+  <data name="Jobs_GlassSub_ModelTag" xml:space="preserve"><value>model</value></data>
+  <data name="Jobs_GlassSub_NamesPlaceholder" xml:space="preserve"><value>names</value></data>
+  <data name="Jobs_GlassSub_Nearest" xml:space="preserve"><value>Nearest</value></data>
+  <data name="Jobs_GlassSub_NeverUse" xml:space="preserve"><value>Never use</value></data>
+  <data name="Jobs_GlassSub_NoCombinations" xml:space="preserve"><value>No Combinations</value></data>
+  <data name="Jobs_GlassSub_NoCombinationsDetail" xml:space="preserve"><value>No combination could be evaluated.</value></data>
+  <data name="Jobs_GlassSub_NoGlass" xml:space="preserve"><value>The design has no glass to replace.</value></data>
+  <data name="Jobs_GlassSub_NoResult" xml:space="preserve"><value>The engine returned no glass combinations.</value></data>
+  <data name="Jobs_GlassSub_NoneTickedHint" xml:space="preserve"><value>With no glass ticked, every model glass (n_d, V_d) snaps to its nearest real glasses.</value></data>
+  <data name="Jobs_GlassSub_NoneValue" xml:space="preserve"><value>none</value></data>
+  <data name="Jobs_GlassSub_NotPreviewed" xml:space="preserve"><value>Not previewed</value></data>
+  <data name="Jobs_GlassSub_OffsetNote_Many" xml:space="preserve"><value>{0} carry melt offsets. A replacement glass is installed without them, even the same glass: the offset belonged to the original melt.</value></data>
+  <data name="Jobs_GlassSub_OffsetNote_One" xml:space="preserve"><value>{0} carries a melt offset. A replacement glass is installed without it, even the same glass: the offset belonged to the original melt.</value></data>
+  <data name="Jobs_GlassSub_OverrideHelp" xml:space="preserve"><value>Candidates for surface {0} only</value></data>
+  <data name="Jobs_GlassSub_OverrideTitle" xml:space="preserve"><value>Candidates for S{0} · {1}</value></data>
+  <data name="Jobs_GlassSub_OwnCandidates" xml:space="preserve"><value>Own candidates for this lens</value></data>
+  <data name="Jobs_GlassSub_Preparing" xml:space="preserve"><value>Preparing</value></data>
+  <data name="Jobs_GlassSub_PreparingCandidates" xml:space="preserve"><value>Preparing candidates</value></data>
+  <data name="Jobs_GlassSub_PreviewTitle" xml:space="preserve"><value>Glass candidate {0} · merit {1}</value></data>
+  <data name="Jobs_GlassSub_PreviewTitleChange" xml:space="preserve"><value>Glass candidate {0} · merit {1} ({2}{3})</value></data>
+  <data name="Jobs_GlassSub_Previewed" xml:space="preserve"><value>Previewed in the window</value></data>
+  <data name="Jobs_GlassSub_ProgressCombinations" xml:space="preserve"><value>{0} combinations</value></data>
+  <data name="Jobs_GlassSub_RankName" xml:space="preserve"><value>Rank {0}, merit {1}, glasses {2}</value></data>
+  <data name="Jobs_GlassSub_RuleNearest" xml:space="preserve"><value>The nearest glasses</value></data>
+  <data name="Jobs_GlassSub_RuleWindow" xml:space="preserve"><value>Glasses within a window</value></data>
+  <data name="Jobs_GlassSub_RunningHint" xml:space="preserve"><value>Stop keeps the combinations ranked so far. Cancel discards the run. You can close this panel; the search continues.</value></data>
+  <data name="Jobs_GlassSub_Search" xml:space="preserve"><value>Search</value></data>
+  <data name="Jobs_GlassSub_SearchHammer" xml:space="preserve"><value>Thorough (global search)</value></data>
+  <data name="Jobs_GlassSub_SearchHammerDetail" xml:space="preserve"><value>Hops over glasses and shape together to escape local minima; slower.</value></data>
+  <data name="Jobs_GlassSub_SearchTabu" xml:space="preserve"><value>Quick (tabu search)</value></data>
+  <data name="Jobs_GlassSub_SearchTabuDetail" xml:space="preserve"><value>Tries glass combinations, each re-optimized from the current shape.</value></data>
+  <data name="Jobs_GlassSub_SelectAll" xml:space="preserve"><value>All</value></data>
+  <data name="Jobs_GlassSub_SelectNone" xml:space="preserve"><value>None</value></data>
+  <data name="Jobs_GlassSub_ShapeChanges" xml:space="preserve"><value>Shape changes ({0})</value></data>
+  <data name="Jobs_GlassSub_ShapeIterations" xml:space="preserve"><value>Shape iterations each</value></data>
+  <data name="Jobs_GlassSub_ShapeIterationsHelp" xml:space="preserve"><value>Damped least-squares iterations that re-optimize the shape for each glass combination</value></data>
+  <data name="Jobs_GlassSub_ShapeUnchanged" xml:space="preserve"><value>shape unchanged</value></data>
+  <data name="Jobs_GlassSub_Status" xml:space="preserve"><value>Status</value></data>
+  <data name="Jobs_GlassSub_StatusDone_Many" xml:space="preserve"><value>{0} combinations re-optimized.</value></data>
+  <data name="Jobs_GlassSub_StatusDone_One" xml:space="preserve"><value>{0} combination re-optimized.</value></data>
+  <data name="Jobs_GlassSub_StatusFailed_Many" xml:space="preserve"><value>{0} combinations re-optimized, {1} failed.</value></data>
+  <data name="Jobs_GlassSub_StatusFailed_One" xml:space="preserve"><value>{0} combination re-optimized, {1} failed.</value></data>
+  <data name="Jobs_GlassSub_StatusJoin" xml:space="preserve"><value>{0} {1}</value></data>
+  <data name="Jobs_GlassSub_StatusName_Melt" xml:space="preserve"><value>melt</value></data>
+  <data name="Jobs_GlassSub_StatusName_Obsolete" xml:space="preserve"><value>obsolete</value></data>
+  <data name="Jobs_GlassSub_StatusName_Preferred" xml:space="preserve"><value>preferred</value></data>
+  <data name="Jobs_GlassSub_StatusName_Special" xml:space="preserve"><value>special</value></data>
+  <data name="Jobs_GlassSub_StatusName_Standard" xml:space="preserve"><value>standard</value></data>
+  <data name="Jobs_GlassSub_StatusSelect" xml:space="preserve"><value>Select a combination to preview it in the window.</value></data>
+  <data name="Jobs_GlassSub_StatusStopped" xml:space="preserve"><value>Stopped early: the ranking so far.</value></data>
+  <data name="Jobs_GlassSub_StatusTimeLimit" xml:space="preserve"><value>The time limit ended the search.</value></data>
+  <data name="Jobs_GlassSub_Status_Melt" xml:space="preserve"><value>Melt</value></data>
+  <data name="Jobs_GlassSub_Status_Obsolete" xml:space="preserve"><value>Obsolete</value></data>
+  <data name="Jobs_GlassSub_Status_Preferred" xml:space="preserve"><value>Preferred</value></data>
+  <data name="Jobs_GlassSub_Status_Special" xml:space="preserve"><value>Special</value></data>
+  <data name="Jobs_GlassSub_Status_Standard" xml:space="preserve"><value>Standard</value></data>
+  <data name="Jobs_GlassSub_StopHelp" xml:space="preserve"><value>End now and keep the combinations ranked so far</value></data>
+  <data name="Jobs_GlassSub_SubtitleNone" xml:space="preserve"><value>Snap model glasses to real glasses</value></data>
+  <data name="Jobs_GlassSub_Subtitle_Many" xml:space="preserve"><value>{0} glasses may change</value></data>
+  <data name="Jobs_GlassSub_Subtitle_One" xml:space="preserve"><value>{0} glass may change</value></data>
+  <data name="Jobs_GlassSub_SummaryAllCatalogs" xml:space="preserve"><value>all catalogs</value></data>
+  <data name="Jobs_GlassSub_SummaryLimits" xml:space="preserve"><value>limits</value></data>
+  <data name="Jobs_GlassSub_SummaryMtf" xml:space="preserve"><value>MTF ≥ {0} at {1} cyc/mm</value></data>
+  <data name="Jobs_GlassSub_SummaryMtfWeakest" xml:space="preserve"><value>MTF ≥ {0} at {1} cyc/mm, weakest field</value></data>
+  <data name="Jobs_GlassSub_SummaryNearest" xml:space="preserve"><value>{0} nearest</value></data>
+  <data name="Jobs_GlassSub_SummaryRings" xml:space="preserve"><value>{0} rings × {1} arms</value></data>
+  <data name="Jobs_GlassSub_SummarySqueeze" xml:space="preserve"><value>squeeze {0}</value></data>
+  <data name="Jobs_GlassSub_SummaryThickness" xml:space="preserve"><value>thickness limits</value></data>
+  <data name="Jobs_GlassSub_TimeLimit" xml:space="preserve"><value>Time limit</value></data>
+  <data name="Jobs_GlassSub_TimeLimitName" xml:space="preserve"><value>Time limit in seconds</value></data>
+  <data name="Jobs_GlassSub_Title" xml:space="preserve"><value>Glass Substitution</value></data>
+  <data name="Jobs_GlassSub_UndoApply" xml:space="preserve"><value>Apply Glass Substitution</value></data>
+  <data name="Jobs_GlassSub_UsesShared" xml:space="preserve"><value>Uses the candidates for every lens.</value></data>
+  <data name="Jobs_GlassSub_VariablesPinned" xml:space="preserve"><value>Every variable is pinned. Unpin one, or vary the automatic set.</value></data>
+  <data name="Jobs_GlassSub_VariablesPinnedOrSolved" xml:space="preserve"><value>Every variable is pinned or controlled by a solve. Add a free variable, or vary the automatic set.</value></data>
+  <data name="Jobs_GlassSub_VariablesReoptimized_Many" xml:space="preserve"><value>{0} variables re-optimized</value></data>
+  <data name="Jobs_GlassSub_VariablesReoptimized_One" xml:space="preserve"><value>{0} variable re-optimized</value></data>
+  <data name="Jobs_GlassSub_VaryAuto" xml:space="preserve"><value>Re-optimize every curvature and the back focus</value></data>
+  <data name="Jobs_GlassSub_VaryDesign" xml:space="preserve"><value>Re-optimize the design variables ({0})</value></data>
+  <data name="Jobs_GlassSub_WindowNdName" xml:space="preserve"><value>n_d window</value></data>
+  <data name="Jobs_GlassSub_WindowVdName" xml:space="preserve"><value>V_d window</value></data>
+  <data name="Jobs_Layout_Before" xml:space="preserve"><value>Before</value></data>
+  <data name="Jobs_Layout_Candidate" xml:space="preserve"><value>Candidate</value></data>
+  <data name="Jobs_Layout_Name" xml:space="preserve"><value>{0} layout</value></data>
+  <data name="Jobs_Preview_Computing" xml:space="preserve"><value>Computing the candidate's spot diagram…</value></data>
+  <data name="Jobs_Preview_Design" xml:space="preserve"><value>Design</value></data>
+  <data name="Jobs_Preview_DesignAndCandidate" xml:space="preserve"><value>Design and candidate</value></data>
+  <data name="Jobs_Preview_NoResult" xml:space="preserve"><value>The spot diagram has no result yet.</value></data>
+  <data name="Jobs_Preview_OpenSpot" xml:space="preserve"><value>Open a Spot Diagram to compare its numbers here.</value></data>
+  <data name="Jobs_Preview_RowName" xml:space="preserve"><value>{0}: design {1}, candidate {2}</value></data>
+  <data name="Jobs_Preview_SpotDiagram" xml:space="preserve"><value>Spot diagram</value></data>
+  <data name="Jobs_Registration_AddSolve" xml:space="preserve"><value>Add Solve</value></data>
+  <data name="Jobs_Solves_ApplyHelp" xml:space="preserve"><value>Apply the result as one step you can undo (Ctrl+Enter)</value></data>
+  <data name="Jobs_Solves_ApplyHelpNoChange" xml:space="preserve"><value>The solves change nothing: the design already holds their values</value></data>
+  <data name="Jobs_Solves_CommittedHint" xml:space="preserve"><value>The design now holds these solved values.</value></data>
+  <data name="Jobs_Solves_DoneHelp" xml:space="preserve"><value>Back to the design's solves</value></data>
+  <data name="Jobs_Solves_DryRunHint" xml:space="preserve"><value>Dry run: the values the solves would set. Nothing has changed yet.</value></data>
+  <data name="Jobs_Solves_EmptyDescription" xml:space="preserve"><value>Add solves in the surface inspector: marginal or chief ray height on a thickness, angle or F-number on a curvature, pickups.</value></data>
+  <data name="Jobs_Solves_EmptyTitle" xml:space="preserve"><value>No Solves</value></data>
+  <data name="Jobs_Solves_FailedTitle" xml:space="preserve"><value>Solving Failed</value></data>
+  <data name="Jobs_Solves_None" xml:space="preserve"><value>none</value></data>
+  <data name="Jobs_Solves_NotReady" xml:space="preserve"><value>The design is not ready yet.</value></data>
+  <data name="Jobs_Solves_Residual" xml:space="preserve"><value>residual {0}</value></data>
+  <data name="Jobs_Solves_RowName" xml:space="preserve"><value>{0}, {1}: {2} to {3}, residual {4}</value></data>
+  <data name="Jobs_Solves_Solving" xml:space="preserve"><value>Solving…</value></data>
+  <data name="Jobs_Solves_Subtitle_Many" xml:space="preserve"><value>{0} solves in {1}</value></data>
+  <data name="Jobs_Solves_Subtitle_One" xml:space="preserve"><value>{0} solve in {1}</value></data>
+  <data name="Jobs_Solves_TheDesign" xml:space="preserve"><value>the design</value></data>
+  <data name="Jobs_Solves_Title" xml:space="preserve"><value>Apply Solves</value></data>
   <!-- end area: Jobs -->
   <!-- area: Results -->
   <!-- end area: Results -->

@@ -4,6 +4,7 @@ using Microsoft.UI.Xaml.Automation;
 using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Controls.Primitives;
 using Microsoft.UI.Xaml.Media;
+using MKLight.App.Support;
 using MKLight.App.ViewModels;
 using MKLight.App.ViewModels.Jobs;
 using MKLight.Engine;
@@ -23,7 +24,7 @@ public sealed partial class GlassSubstitutionPanel : UserControl
 {
     readonly GlassSubstitutionSession _s;
     readonly DesignSession _session;
-    readonly JobPanelFrame _frame = new("Glass Substitution", "\uEB42");
+    readonly JobPanelFrame _frame = new(Loc.S("Jobs_GlassSub_Title"), "\uEB42");
     IReadOnlyList<CatalogInfo> _catalogs = [];
     bool _queued;
     JobPhase? _builtPhase;
@@ -64,13 +65,13 @@ public sealed partial class GlassSubstitutionPanel : UserControl
         var offset = _builtPhase == _s.Phase ? _frame.Scroller.VerticalOffset : 0;
         _builtPhase = _s.Phase;
         var n = _s.Settings.Selected.Count;
-        _frame.Subtitle = n == 0 ? "Snap model glasses to real glasses" : $"{n} glass{(n == 1 ? "" : "es")} may change";
+        _frame.Subtitle = n == 0 ? Loc.S("Jobs_GlassSub_SubtitleNone") : Loc.F(n == 1 ? "Jobs_GlassSub_Subtitle_One" : "Jobs_GlassSub_Subtitle_Many", n);
         _comparison = null;
         _frame.Body = _s.Phase switch
         {
             JobPhase.Running => Running(),
             JobPhase.Finished => Results(),
-            JobPhase.Failed => JobUI.Failure("Glass Substitution Failed", _s.Failure ?? ""),
+            JobPhase.Failed => JobUI.Failure(Loc.S("Jobs_GlassSub_FailedTitle"), EngineText.T(_s.Failure ?? "")),
             _ => Setup(),
         };
         Actions();
@@ -86,63 +87,67 @@ public sealed partial class GlassSubstitutionPanel : UserControl
 
         var slots = _s.Slots;
         var g = new StackPanel { Spacing = 4 };
-        if (slots.Count == 0) g.Children.Add(JobUI.Hint("The design has no glass to replace."));
+        if (slots.Count == 0) g.Children.Add(JobUI.Hint(Loc.S("Jobs_GlassSub_NoGlass")));
         foreach (var slot in slots) g.Children.Add(SlotRow(slot));
-        var all = new HyperlinkButton { Content = "All", Padding = new Thickness(4, 2, 4, 2), FontSize = 12 };
+        var all = new HyperlinkButton { Content = Loc.S("Jobs_GlassSub_SelectAll"), Padding = new Thickness(4, 2, 4, 2), FontSize = 12 };
         all.Click += (_, _) => { st.Selected.UnionWith(slots.Select(x => x.Id)); _s.NotifyChanged(); };
-        var none = new HyperlinkButton { Content = "None", Padding = new Thickness(4, 2, 4, 2), FontSize = 12 };
+        var none = new HyperlinkButton { Content = Loc.S("Jobs_GlassSub_SelectNone"), Padding = new Thickness(4, 2, 4, 2), FontSize = 12 };
         none.Click += (_, _) => { st.Selected.Clear(); _s.NotifyChanged(); };
         g.Children.Add(JobUI.Row(4, all, none));
-        if (st.Selected.Count == 0) g.Children.Add(JobUI.Hint("With no glass ticked, every model glass (n_d, V_d) snaps to its nearest real glasses."));
+        if (st.Selected.Count == 0) g.Children.Add(JobUI.Hint(Loc.S("Jobs_GlassSub_NoneTickedHint")));
         if (st.OffsetNote(_session.Document.System) is { } note) g.Children.Add(JobUI.Hint(note));
-        p.Children.Add(JobUI.Group("Glasses That May Change", g));
+        p.Children.Add(JobUI.Group(Loc.S("Jobs_GlassSub_GroupGlasses"), g));
 
-        p.Children.Add(JobUI.Group("Candidates for Every Lens", CandidateForm(() => st.Candidates, c => { st.Candidates = c; _s.NotifyChanged(); }, "all")));
+        p.Children.Add(JobUI.Group(Loc.S("Jobs_GlassSub_GroupCandidates"), CandidateForm(() => st.Candidates, c => { st.Candidates = c; _s.NotifyChanged(); }, "all")));
 
         var search = new StackPanel { Spacing = 6 };
         var algs = Enum.GetValues<GlassSearch>();
-        search.Children.Add(JobUI.Labeled("Search", JobUI.Choice(algs.Select(GlassSubstitutionSettings.Title).ToList(), Array.IndexOf(algs, st.Algorithm),
+        search.Children.Add(JobUI.Labeled(Loc.S("Jobs_GlassSub_Search"), JobUI.Choice(algs.Select(GlassSubstitutionSettings.Title).ToList(), Array.IndexOf(algs, st.Algorithm),
             k => { st.Algorithm = algs[k]; _s.NotifyChanged(); }, 150)));
         search.Children.Add(JobUI.Hint(GlassSubstitutionSettings.Detail(st.Algorithm), 11.5));
-        search.Children.Add(JobUI.Labeled("Combinations to try", Int("combinations", () => st.MaxCombinations, v => st.MaxCombinations = Math.Max(1, v))));
-        search.Children.Add(JobUI.Labeled("Time limit", JobUI.Row(5, new NumberField("time", () => st.MaxSeconds,
-            v => { st.MaxSeconds = v is > 0 ? v : null; _s.NotifyChanged(); }, 80, "none", name: "Time limit in seconds"), JobUI.Text("s", "SecondaryText"))));
-        search.Children.Add(JobUI.Labeled("Shape iterations each", Int("local", () => st.LocalIterations, v => st.LocalIterations = Math.Max(1, v)),
-            "Damped least-squares iterations that re-optimize the shape for each glass combination"));
-        search.Children.Add(JobUI.Labeled("Keep the best", Int("top", () => st.TopN, v => st.TopN = Math.Max(1, v))));
-        p.Children.Add(JobUI.Group("Search", search));
+        search.Children.Add(JobUI.Labeled(Loc.S("Jobs_GlassSub_CombinationsToTry"), Int("combinations", () => st.MaxCombinations, v => st.MaxCombinations = Math.Max(1, v))));
+        search.Children.Add(JobUI.Labeled(Loc.S("Jobs_GlassSub_TimeLimit"), JobUI.Row(5, new NumberField("time", () => st.MaxSeconds,
+            v => { st.MaxSeconds = v is > 0 ? v : null; _s.NotifyChanged(); }, 80, Loc.S("Jobs_GlassSub_NoneValue"), name: Loc.S("Jobs_GlassSub_TimeLimitName")), JobUI.Text("s", "SecondaryText"))));
+        search.Children.Add(JobUI.Labeled(Loc.S("Jobs_GlassSub_ShapeIterations"), Int("local", () => st.LocalIterations, v => st.LocalIterations = Math.Max(1, v)),
+            Loc.S("Jobs_GlassSub_ShapeIterationsHelp")));
+        search.Children.Add(JobUI.Labeled(Loc.S("Jobs_GlassSub_KeepBest"), Int("top", () => st.TopN, v => st.TopN = Math.Max(1, v))));
+        p.Children.Add(JobUI.Group(Loc.S("Jobs_GlassSub_Search"), search));
 
         var merit = new StackPanel { Spacing = 6 };
         var m = MeritSettings.FromSection(_session.Document.Section("merit"));
-        merit.Children.Add(JobUI.Hint((m.Mode == MeritMode.Custom ? $"Custom merit, {m.Operands.Count} operands" : "Default merit: " + Summary(m.Defaults))
-            + (m.HoldEfl ? ", focal length held." : "."), 12.5));
+        merit.Children.Add(JobUI.Hint(m.Mode == MeritMode.Custom
+            ? Loc.F(m.HoldEfl ? "Jobs_GlassSub_MeritCustomHeld" : "Jobs_GlassSub_MeritCustom", m.Operands.Count)
+            : Loc.F(m.HoldEfl ? "Jobs_GlassSub_MeritDefaultHeld" : "Jobs_GlassSub_MeritDefault", Summary(m.Defaults)), 12.5));
         var vars = DesignVariables.Of(_session.Document);
-        if (vars.Count == 0) merit.Children.Add(JobUI.Hint("Each combination re-optimizes every curvature and the back focus."));
+        if (vars.Count == 0) merit.Children.Add(JobUI.Hint(Loc.S("Jobs_GlassSub_AutoVariablesHint")));
         else
         {
-            var design = new RadioButton { Content = $"Re-optimize the design variables ({vars.Count(v => !v.IsPinned)})", IsChecked = st.UseDesignVariables, GroupName = "gs-vary", MinWidth = 0 };
-            var auto = new RadioButton { Content = "Re-optimize every curvature and the back focus", IsChecked = !st.UseDesignVariables, GroupName = "gs-vary", MinWidth = 0 };
+            var design = new RadioButton { Content = Loc.F("Jobs_GlassSub_VaryDesign", vars.Count(v => !v.IsPinned)), IsChecked = st.UseDesignVariables, GroupName = "gs-vary", MinWidth = 0 };
+            var auto = new RadioButton { Content = Loc.S("Jobs_GlassSub_VaryAuto"), IsChecked = !st.UseDesignVariables, GroupName = "gs-vary", MinWidth = 0 };
             design.Checked += (_, _) => { st.UseDesignVariables = true; };
             auto.Checked += (_, _) => { st.UseDesignVariables = false; };
             merit.Children.Add(JobUI.Column(0, design, auto));
         }
-        var edit = new HyperlinkButton { Content = "Edit Merit and Variables…", Padding = new Thickness(0, 2, 0, 2), FontSize = 12.5 };
+        var edit = new HyperlinkButton { Content = Loc.S("Jobs_GlassSub_EditMerit"), Padding = new Thickness(0, 2, 0, 2), FontSize = 12.5 };
         edit.Click += (_, _) => _session.ShowInspectorPage("optimize");
         merit.Children.Add(edit);
-        p.Children.Add(JobUI.Group("Merit", merit));
-        if (_session.Workspace.ModelErrors.Count > 0) p.Children.Add(JobUI.Warning("Fix the design's errors first."));
+        p.Children.Add(JobUI.Group(Loc.S("Jobs_GlassSub_GroupMerit"), merit));
+        if (_session.Workspace.ModelErrors.Count > 0) p.Children.Add(JobUI.Warning(Loc.S("Jobs_GlassSub_FixErrors")));
         return p;
     }
 
     static string Summary(DefaultMeritSettings d)
     {
-        var s = d.Criterion == MeritCriterion.Mtf
-            ? $"MTF ≥ {MeritFormat.Short(d.MtfTarget)} at {string.Join(", ", d.MtfFrequencies.Select(MeritFormat.Short))} cyc/mm" + (d.WorstField ? ", weakest field" : "")
-            : DefaultMeritSettings.Title(d.Criterion);
-        s += $" · {d.Rings} rings × {d.Arms} arms";
-        if (d.Thickness) s += " · thickness limits";
-        if (d.SqueezeTarget is { } q) s += $" · squeeze {MeritFormat.Short(q)}";
-        return s;
+        var parts = new List<string>
+        {
+            d.Criterion == MeritCriterion.Mtf
+                ? Loc.F(d.WorstField ? "Jobs_GlassSub_SummaryMtfWeakest" : "Jobs_GlassSub_SummaryMtf", MeritFormat.Short(d.MtfTarget), string.Join(", ", d.MtfFrequencies.Select(MeritFormat.Short)))
+                : DefaultMeritSettings.Title(d.Criterion),
+            Loc.F("Jobs_GlassSub_SummaryRings", d.Rings, d.Arms),
+        };
+        if (d.Thickness) parts.Add(Loc.S("Jobs_GlassSub_SummaryThickness"));
+        if (d.SqueezeTarget is { } q) parts.Add(Loc.F("Jobs_GlassSub_SummarySqueeze", MeritFormat.Short(q)));
+        return string.Join(" · ", parts);
     }
 
     NumberField Int(string key, Func<int> get, Action<int> set) =>
@@ -155,14 +160,14 @@ public sealed partial class GlassSubstitutionPanel : UserControl
         ((TextBlock)head.Children[1]).FontWeight = Microsoft.UI.Text.FontWeights.SemiBold;
         if (slot.IsModel)
         {
-            var tag = new Border { Padding = new Thickness(5, 0, 5, 1), CornerRadius = new CornerRadius(7), Child = JobUI.Text("model", "CaptionText", 10), VerticalAlignment = VerticalAlignment.Center };
+            var tag = new Border { Padding = new Thickness(5, 0, 5, 1), CornerRadius = new CornerRadius(7), Child = JobUI.Text(Loc.S("Jobs_GlassSub_ModelTag"), "CaptionText", 10), VerticalAlignment = VerticalAlignment.Center };
             JobUI.Bind(tag, "SubtleFillColorSecondaryBrush", b => tag.Background = b);
             head.Children.Add(tag);
         }
         if (!slot.Offset.IsZero)
         {
             var o = JobUI.Text(LensFormat.Offset(slot.Offset), "CaptionText");
-            ToolTipService.SetToolTip(o, "Melt offset Δn_d / ΔV_d: a replacement glass is installed without it");
+            ToolTipService.SetToolTip(o, Loc.S("Jobs_GlassSub_MeltOffsetHelp"));
             head.Children.Add(o);
         }
         var content = JobUI.Column(0, head);
@@ -178,7 +183,7 @@ public sealed partial class GlassSubstitutionPanel : UserControl
             if (check.IsChecked == true) st.Selected.Add(slot.Id); else st.Selected.Remove(slot.Id);
             _s.NotifyChanged();
         };
-        var overrideButton = JobUI.Icon(own is null ? "\uE9E9" : "\uE71C", $"Candidates for surface {slot.Index} only", () => { }, true, 26);
+        var overrideButton = JobUI.Icon(own is null ? "\uE9E9" : "\uE71C", Loc.F("Jobs_GlassSub_OverrideHelp", slot.Index), () => { }, true, 26);
         overrideButton.Flyout = OverrideFlyout(slot);
         var g = new Grid();
         g.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
@@ -197,15 +202,15 @@ public sealed partial class GlassSubstitutionPanel : UserControl
         void Fill()
         {
             body.Children.Clear();
-            body.Children.Add(JobUI.Text($"Candidates for S{slot.Index} · {slot.Material}", "PanelTitleText"));
-            body.Children.Add(JobUI.Check("Own candidates for this lens", st.Overrides.ContainsKey(slot.Id), on =>
+            body.Children.Add(JobUI.Text(Loc.F("Jobs_GlassSub_OverrideTitle", slot.Index, slot.Material), "PanelTitleText"));
+            body.Children.Add(JobUI.Check(Loc.S("Jobs_GlassSub_OwnCandidates"), st.Overrides.ContainsKey(slot.Id), on =>
             {
                 if (on) st.Overrides[slot.Id] = st.Candidates; else st.Overrides.Remove(slot.Id);
                 Fill();
             }));
             if (st.Overrides.ContainsKey(slot.Id))
                 body.Children.Add(CandidateForm(() => st.Overrides.GetValueOrDefault(slot.Id) ?? st.Candidates, c => { st.Overrides[slot.Id] = c; Fill(); }, $"s{slot.Index}"));
-            else body.Children.Add(JobUI.Hint("Uses the candidates for every lens."));
+            else body.Children.Add(JobUI.Hint(Loc.S("Jobs_GlassSub_UsesShared")));
         }
         Fill();
         flyout.Content = body;
@@ -220,7 +225,7 @@ public sealed partial class GlassSubstitutionPanel : UserControl
         var p = new StackPanel { Spacing = 6 };
 
         var catalogs = new MenuFlyout();
-        var allItem = new MenuFlyoutItem { Text = "All loaded" };
+        var allItem = new MenuFlyoutItem { Text = Loc.S("Jobs_GlassSub_AllLoaded") };
         allItem.Click += (_, _) => set(get() with { Catalogs = [] });
         catalogs.Items.Add(allItem);
         catalogs.Items.Add(new MenuFlyoutSeparator());
@@ -236,7 +241,7 @@ public sealed partial class GlassSubstitutionPanel : UserControl
             };
             catalogs.Items.Add(item);
         }
-        p.Children.Add(JobUI.Labeled("Catalogs", Menu(c.Catalogs.Count == 0 ? "All loaded" : string.Join(", ", c.Catalogs), catalogs)));
+        p.Children.Add(JobUI.Labeled(Loc.S("Jobs_GlassSub_Catalogs"), Menu(c.Catalogs.Count == 0 ? Loc.S("Jobs_GlassSub_AllLoaded") : string.Join(", ", c.Catalogs), catalogs)));
 
         var statuses = new MenuFlyout();
         foreach (var s in GlassCandidates.AllStatuses)
@@ -252,27 +257,27 @@ public sealed partial class GlassSubstitutionPanel : UserControl
             };
             statuses.Items.Add(item);
         }
-        p.Children.Add(JobUI.Labeled("Status", Menu(string.Join(", ", GlassCandidates.AllStatuses.Where(c.Statuses.Contains).Select(Title)), statuses)));
+        p.Children.Add(JobUI.Labeled(Loc.S("Jobs_GlassSub_Status"), Menu(string.Join(Loc.S("Jobs_GlassSub_ListSeparator"), GlassCandidates.AllStatuses.Where(c.Statuses.Contains).Select(Title)), statuses)));
 
-        p.Children.Add(JobUI.Labeled("Choose", JobUI.Choice(["The nearest glasses", "Glasses within a window"], c.Rule == CandidateRule.Nearest ? 0 : 1,
+        p.Children.Add(JobUI.Labeled(Loc.S("Jobs_GlassSub_Choose"), JobUI.Choice([Loc.S("Jobs_GlassSub_RuleNearest"), Loc.S("Jobs_GlassSub_RuleWindow")], c.Rule == CandidateRule.Nearest ? 0 : 1,
             k => set(get() with { Rule = k == 0 ? CandidateRule.Nearest : CandidateRule.Window }), 150)));
         if (c.Rule == CandidateRule.Nearest)
-            p.Children.Add(JobUI.Stepper("Nearest", c.Nearest, 1, 200, n => set(get() with { Nearest = n })));
+            p.Children.Add(JobUI.Stepper(Loc.S("Jobs_GlassSub_Nearest"), c.Nearest, 1, 200, n => set(get() with { Nearest = n })));
         else
             p.Children.Add(JobUI.Row(6,
-                JobUI.Text("n_d ±", "SecondaryText"), new NumberField($"{key}-wnd", () => c.WindowNd, v => set(get() with { WindowNd = Math.Max(v ?? 0.05, 1e-4) }), 64, name: "n_d window"),
-                JobUI.Text("V_d ±", "SecondaryText"), new NumberField($"{key}-wvd", () => c.WindowVd, v => set(get() with { WindowVd = Math.Max(v ?? 5, 0.1) }), 56, name: "V_d window")));
-        p.Children.Add(JobUI.Labeled("Always include", Names(c.Include, "N-BK7, SCHOTT:F2", v => set(get() with { Include = v }))));
-        p.Children.Add(JobUI.Labeled("Never use", Names(c.Exclude, "names", v => set(get() with { Exclude = v }))));
+                JobUI.Text("n_d ±", "SecondaryText"), new NumberField($"{key}-wnd", () => c.WindowNd, v => set(get() with { WindowNd = Math.Max(v ?? 0.05, 1e-4) }), 64, name: Loc.S("Jobs_GlassSub_WindowNdName")),
+                JobUI.Text("V_d ±", "SecondaryText"), new NumberField($"{key}-wvd", () => c.WindowVd, v => set(get() with { WindowVd = Math.Max(v ?? 5, 0.1) }), 56, name: Loc.S("Jobs_GlassSub_WindowVdName"))));
+        p.Children.Add(JobUI.Labeled(Loc.S("Jobs_GlassSub_AlwaysInclude"), Names(c.Include, "N-BK7, SCHOTT:F2", v => set(get() with { Include = v }))));
+        p.Children.Add(JobUI.Labeled(Loc.S("Jobs_GlassSub_NeverUse"), Names(c.Exclude, Loc.S("Jobs_GlassSub_NamesPlaceholder"), v => set(get() with { Exclude = v }))));
         var limits = new Grid { ColumnSpacing = 8, RowSpacing = 4 };
         limits.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
         limits.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
         (string Title, string Help, double? Value, Func<GlassCandidates, double?, GlassCandidates> With)[] rows =
         [
-            ("Min. transmission", "Internal transmission at the shortest wavelength through the lens's center thickness (0…1)", c.MinTransmission, (x, v) => x with { MinTransmission = v }),
-            ("Max. relative cost", "Catalog relative cost", c.MaxRelativeCost, (x, v) => x with { MaxRelativeCost = v }),
-            ("Max. climate class", "Climate resistance class (CR)", c.MaxClimateClass, (x, v) => x with { MaxClimateClass = v }),
-            ("Max. stain class", "Stain resistance class (FR)", c.MaxStainClass, (x, v) => x with { MaxStainClass = v }),
+            (Loc.S("Jobs_GlassSub_MinTransmission"), Loc.S("Jobs_GlassSub_MinTransmissionHelp"), c.MinTransmission, (x, v) => x with { MinTransmission = v }),
+            (Loc.S("Jobs_GlassSub_MaxCost"), Loc.S("Jobs_GlassSub_MaxCostHelp"), c.MaxRelativeCost, (x, v) => x with { MaxRelativeCost = v }),
+            (Loc.S("Jobs_GlassSub_MaxClimate"), Loc.S("Jobs_GlassSub_MaxClimateHelp"), c.MaxClimateClass, (x, v) => x with { MaxClimateClass = v }),
+            (Loc.S("Jobs_GlassSub_MaxStain"), Loc.S("Jobs_GlassSub_MaxStainHelp"), c.MaxStainClass, (x, v) => x with { MaxStainClass = v }),
         ];
         for (var i = 0; i < rows.Length; i++)
         {
@@ -282,17 +287,26 @@ public sealed partial class GlassSubstitutionPanel : UserControl
             ToolTipService.SetToolTip(t, r.Help);
             Grid.SetRow(t, i);
             limits.Children.Add(t);
-            var f = new NumberField($"{key}-lim{i}", () => r.Value, v => set(r.With(get(), v)), 70, "none", name: r.Title);
+            var f = new NumberField($"{key}-lim{i}", () => r.Value, v => set(r.With(get(), v)), 70, Loc.S("Jobs_GlassSub_NoneValue"), name: r.Title);
             Grid.SetRow(f, i);
             Grid.SetColumn(f, 1);
             limits.Children.Add(f);
         }
-        var expander = new Expander { Header = "Limits", Content = limits, HorizontalAlignment = HorizontalAlignment.Stretch, HorizontalContentAlignment = HorizontalAlignment.Stretch, Padding = new Thickness(10, 6, 10, 6), MinHeight = 0 };
+        var expander = new Expander { Header = Loc.S("Jobs_GlassSub_Limits"), Content = limits, HorizontalAlignment = HorizontalAlignment.Stretch, HorizontalContentAlignment = HorizontalAlignment.Stretch, Padding = new Thickness(10, 6, 10, 6), MinHeight = 0 };
         p.Children.Add(expander);
         return p;
     }
 
-    static string Title(string status) => char.ToUpperInvariant(status[0]) + status[1..];
+    /// <summary>A catalogue status for the menu (<c>preferred</c> → Preferred).</summary>
+    static string Title(string status) => status switch
+    {
+        "preferred" => Loc.S("Jobs_GlassSub_Status_Preferred"),
+        "standard" => Loc.S("Jobs_GlassSub_Status_Standard"),
+        "melt" => Loc.S("Jobs_GlassSub_Status_Melt"),
+        "special" => Loc.S("Jobs_GlassSub_Status_Special"),
+        "obsolete" => Loc.S("Jobs_GlassSub_Status_Obsolete"),
+        _ => char.ToUpperInvariant(status[0]) + status[1..],
+    };
 
     static DropDownButton Menu(string title, MenuFlyout flyout) => new()
     {
@@ -316,8 +330,8 @@ public sealed partial class GlassSubstitutionPanel : UserControl
         var p = new StackPanel { Spacing = 14 };
         var live = _s.Live;
         p.Children.Add(JobUI.Row(28,
-            JobUI.BigNumber("Combinations", live is null ? "—" : $"{live.Combinations} / {_s.Settings.MaxCombinations}"),
-            JobUI.BigNumber("Best merit", live is null ? "—" : MeritFormat.Merit(live.BestMerit))));
+            JobUI.BigNumber(Loc.S("Jobs_GlassSub_Combinations"), live is null ? "—" : $"{live.Combinations} / {_s.Settings.MaxCombinations}"),
+            JobUI.BigNumber(Loc.S("Jobs_GlassSub_BestMerit"), live is null ? "—" : MeritFormat.Merit(live.BestMerit))));
         if (live is { Glasses.Count: > 0 })
         {
             var slots = _s.Slots.Where(x => _s.Settings.Selected.Contains(x.Id)).ToList();
@@ -329,10 +343,10 @@ public sealed partial class GlassSubstitutionPanel : UserControl
                 JobUI.Bind(chip, "SubtleFillColorSecondaryBrush", b => chip.Background = b);
                 chips.Children.Add(chip);
             }
-            p.Children.Add(JobUI.Column(4, JobUI.Text("Best glasses so far", "CaptionText"), chips));
+            p.Children.Add(JobUI.Column(4, JobUI.Text(Loc.S("Jobs_GlassSub_BestGlasses"), "CaptionText"), chips));
         }
         p.Children.Add(new Sparkline(110) { Values = _s.Trace.ToList() });
-        p.Children.Add(JobUI.Hint("Stop keeps the combinations ranked so far. Cancel discards the run. You can close this panel; the search continues."));
+        p.Children.Add(JobUI.Hint(Loc.S("Jobs_GlassSub_RunningHint")));
         return p;
     }
 
@@ -346,7 +360,7 @@ public sealed partial class GlassSubstitutionPanel : UserControl
         p.Children.Add(JobUI.Hint(r.StatusText(_s.Applied)));
         if (r.Ranked.Count == 0)
         {
-            p.Children.Add(JobUI.Empty("\uE9CE", "No Combinations", "No combination could be evaluated."));
+            p.Children.Add(JobUI.Empty("\uE9CE", Loc.S("Jobs_GlassSub_NoCombinations"), Loc.S("Jobs_GlassSub_NoCombinationsDetail")));
             return p;
         }
         var list = new StackPanel();
@@ -386,7 +400,7 @@ public sealed partial class GlassSubstitutionPanel : UserControl
         var right = JobUI.Column(1, merit);
         if (!c.Feasible)
         {
-            var t = JobUI.Text("constraints not met", "CaptionText");
+            var t = JobUI.Text(Loc.S("Jobs_GlassSub_ConstraintsNotMet"), "CaptionText");
             JobUI.Bind(t, "WarningBrush", b => t.Foreground = b);
             right.Children.Add(t);
         }
@@ -412,7 +426,7 @@ public sealed partial class GlassSubstitutionPanel : UserControl
         row.Loaded += (_, _) => Paint();
         row.ActualThemeChanged += (_, _) => Paint();
         row.Tapped += (_, _) => _s.Select(c.Rank);
-        AutomationProperties.SetName(row, $"Rank {c.Rank}, merit {MeritFormat.Merit(c.Merit)}, glasses {string.Join(", ", c.Glasses.Select(x => x.Name))}");
+        AutomationProperties.SetName(row, Loc.F("Jobs_GlassSub_RankName", c.Rank, MeritFormat.Merit(c.Merit), string.Join(", ", c.Glasses.Select(x => x.Name))));
         return row;
     }
 
@@ -422,10 +436,10 @@ public sealed partial class GlassSubstitutionPanel : UserControl
         var sys = _session.Document.System;
         var p = new StackPanel { Spacing = 8 };
         var head = new Grid();
-        head.Children.Add(JobUI.Text($"Candidate {c.Rank}", "PanelTitleText"));
+        head.Children.Add(JobUI.Text(Loc.F("Jobs_GlassSub_Candidate", c.Rank), "PanelTitleText"));
         if (!_s.Applied)
         {
-            var t = JobUI.Text(_session.Workspace.IsPreviewing ? "Previewed in the window" : "Not previewed", "CaptionText");
+            var t = JobUI.Text(Loc.S(_session.Workspace.IsPreviewing ? "Jobs_GlassSub_Previewed" : "Jobs_GlassSub_NotPreviewed"), "CaptionText");
             JobUI.Bind(t, "AccentTextFillColorPrimaryBrush", b => t.Foreground = b);
             t.HorizontalAlignment = HorizontalAlignment.Right;
             head.Children.Add(t);
@@ -473,18 +487,18 @@ public sealed partial class GlassSubstitutionPanel : UserControl
                 row.Children.Add(v);
                 moves.Children.Add(row);
             }
-            p.Children.Add(new Expander { Header = $"Shape changes ({c.Moved.Count})", Content = moves, HorizontalAlignment = HorizontalAlignment.Stretch, HorizontalContentAlignment = HorizontalAlignment.Stretch });
+            p.Children.Add(new Expander { Header = Loc.F("Jobs_GlassSub_ShapeChanges", c.Moved.Count), Content = moves, HorizontalAlignment = HorizontalAlignment.Stretch, HorizontalContentAlignment = HorizontalAlignment.Stretch });
         }
         // The design's layout and the candidate's (once applied, the design is the candidate's).
-        p.Children.Add(new LayoutComparison(_session.Workspace, _s.StartSystem, c.System, afterTitle: _s.Applied ? "Applied" : "Candidate"));
+        p.Children.Add(new LayoutComparison(_session.Workspace, _s.StartSystem, c.System, afterTitle: Loc.S(_s.Applied ? "Jobs_GlassSub_Applied" : "Jobs_Layout_Candidate")));
         var card = new Border { Child = p, Padding = new Thickness(10), CornerRadius = new CornerRadius(10) };
         JobUI.Bind(card, "SubtleFillColorSecondaryBrush", b => card.Background = b);
         return card;
     }
 
     void FillComparison(StackPanel card, GlassCombination c, GlassSubstitutionResult r) =>
-        PreviewComparison.Fill(card, _session.Workspace, _session.Workspace.DesignSystem ?? _session.Document.System, $"Candidate {c.Rank}",
-            [("Merit", MeritFormat.Merit(r.StartingMerit), MeritFormat.Merit(c.Merit))]);
+        PreviewComparison.Fill(card, _session.Workspace, _session.Workspace.DesignSystem ?? _session.Document.System, Loc.F("Jobs_GlassSub_Candidate", c.Rank),
+            [(Loc.S("Jobs_GlassSub_Merit"), MeritFormat.Merit(r.StartingMerit), MeritFormat.Merit(c.Merit))]);
 
     // ---- Actions ----
 
@@ -493,22 +507,22 @@ public sealed partial class GlassSubstitutionPanel : UserControl
         switch (_s.Phase)
         {
             case JobPhase.Setup:
-                _frame.SetActions(null, JobUI.Primary("Find Glasses", "\uE768", () => _s.Start(), "Start the search (Ctrl+Enter)", !_s.CannotRun));
+                _frame.SetActions(null, JobUI.Primary(Loc.S("Jobs_GlassSub_FindGlasses"), "\uE768", () => _s.Start(), Loc.S("Jobs_GlassSub_FindGlassesHelp"), !_s.CannotRun));
                 break;
             case JobPhase.Failed:
-                _frame.SetActions(null, JobUI.Secondary("Back", null, _s.Reset, "Back to the job's settings"),
-                    JobUI.Primary("Try Again", "\uE72C", () => _s.Start(fresh: true), "Run the job again with the same settings", !_s.CannotRun));
+                _frame.SetActions(null, JobUI.Secondary(Loc.S("Jobs_Controls_Back"), null, _s.Reset, Loc.S("Jobs_Controls_BackHelp")),
+                    JobUI.Primary(Loc.S("Jobs_Controls_TryAgain"), "\uE72C", () => _s.Start(fresh: true), Loc.S("Jobs_Controls_TryAgainHelp"), !_s.CannotRun));
                 break;
             case JobPhase.Running:
-                _frame.SetActions(JobUI.Progress(_s.Progress, _s.Live is { } l ? $"{l.Combinations} combinations" : "Preparing"),
-                    JobUI.Secondary("Cancel", null, _s.Cancel, "End the run and discard it", destructive: true),
-                    JobUI.Secondary("Stop", "\uE71A", _s.Stop, "End now and keep the combinations ranked so far", _s.CanStop));
+                _frame.SetActions(JobUI.Progress(_s.Progress, _s.Live is { } l ? Loc.F("Jobs_GlassSub_ProgressCombinations", l.Combinations) : Loc.S("Jobs_GlassSub_Preparing")),
+                    JobUI.Secondary(Loc.S("Common_Cancel"), null, _s.Cancel, Loc.S("Jobs_GlassSub_CancelHelp"), destructive: true),
+                    JobUI.Secondary(Loc.S("Jobs_Controls_Stop"), "\uE71A", _s.Stop, Loc.S("Jobs_GlassSub_StopHelp"), _s.CanStop));
                 break;
             default:
-                if (_s.Applied) _frame.SetActions(null, JobUI.Primary("Done", null, _s.Reset, "Back to the glasses and the search settings"));
+                if (_s.Applied) _frame.SetActions(null, JobUI.Primary(Loc.S("Jobs_Controls_Done"), null, _s.Reset, Loc.S("Jobs_GlassSub_DoneHelp")));
                 else
-                    _frame.SetActions(null, JobUI.Secondary("Discard", null, _s.Reset, "Drop this result; the design stays as it is"),
-                        JobUI.Primary("Apply to Design", null, _s.Apply, "Apply the previewed combination as one step you can undo", _s.Selected?.System is not null));
+                    _frame.SetActions(null, JobUI.Secondary(Loc.S("Jobs_Controls_Discard"), null, _s.Reset, Loc.S("Jobs_GlassSub_DiscardHelp")),
+                        JobUI.Primary(Loc.S("Jobs_Controls_ApplyToDesign"), null, _s.Apply, Loc.S("Jobs_GlassSub_ApplyHelp"), _s.Selected?.System is not null));
                 break;
         }
     }

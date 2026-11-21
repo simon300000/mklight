@@ -1,7 +1,9 @@
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
+using MKLight.App.Support;
 using MKLight.App.ViewModels;
 using MKLight.App.ViewModels.Jobs;
+using MKLight.Model;
 
 namespace MKLight.App.Views.Jobs;
 
@@ -13,7 +15,7 @@ public sealed partial class SolvesPanel : UserControl
 {
     readonly SolvesSession _s;
     readonly DesignSession _session;
-    readonly JobPanelFrame _frame = new("Apply Solves", "\uE943");
+    readonly JobPanelFrame _frame = new(Loc.S("Jobs_Solves_Title"), "\uE943");
     bool _queued;
     bool _dirty = true;
 
@@ -55,42 +57,41 @@ public sealed partial class SolvesPanel : UserControl
     {
         var sys = _session.Document.System;
         var n = sys.Solves.Count;
-        _frame.Subtitle = $"{n} solve{(n == 1 ? "" : "s")} in {(sys.Name.Length > 0 ? sys.Name : "the design")}";
+        _frame.Subtitle = Loc.F(n == 1 ? "Jobs_Solves_Subtitle_One" : "Jobs_Solves_Subtitle_Many", n, sys.Name.Length > 0 ? sys.Name : Loc.S("Jobs_Solves_TheDesign"));
         if (n == 0 && !_s.Committed)
         {
-            _frame.Body = JobUI.Empty("\uE943", "No Solves",
-                "Add solves in the surface inspector: marginal or chief ray height on a thickness, angle or F-number on a curvature, pickups.");
-            _frame.SetActions(null, JobUI.Primary("Apply to Design", null, () => { }, null, false));
+            _frame.Body = JobUI.Empty("\uE943", Loc.S("Jobs_Solves_EmptyTitle"), Loc.S("Jobs_Solves_EmptyDescription"));
+            _frame.SetActions(null, JobUI.Primary(Loc.S("Jobs_Controls_ApplyToDesign"), null, () => { }, null, false));
             return;
         }
         switch (_s.Phase)
         {
             case JobPhase.Failed:
-                _frame.Body = JobUI.Failure("Solving Failed", _s.Failure ?? "");
-                _frame.SetActions(null, JobUI.Primary("Try Again", "\uE72C", () => _ = _s.DryRunAsync(fresh: true), "Run the job again with the same settings"));
+                _frame.Body = JobUI.Failure(Loc.S("Jobs_Solves_FailedTitle"), EngineText.T(_s.Failure ?? ""));
+                _frame.SetActions(null, JobUI.Primary(Loc.S("Jobs_Controls_TryAgain"), "\uE72C", () => _ = _s.DryRunAsync(fresh: true), Loc.S("Jobs_Controls_TryAgainHelp")));
                 return;
             case JobPhase.Setup or JobPhase.Running:
-                var busy = JobUI.Column(10, new ProgressRing { IsActive = true, Width = 24, Height = 24 }, JobUI.Text("Solving…", "SecondaryText"));
+                var busy = JobUI.Column(10, new ProgressRing { IsActive = true, Width = 24, Height = 24 }, JobUI.Text(Loc.S("Jobs_Solves_Solving"), "SecondaryText"));
                 busy.HorizontalAlignment = HorizontalAlignment.Center;
                 busy.Margin = new Thickness(0, 40, 0, 0);
                 ((FrameworkElement)busy.Children[1]).HorizontalAlignment = HorizontalAlignment.Center;
                 _frame.Body = busy;
-                _frame.SetActions(null, JobUI.Primary("Apply to Design", null, () => { }, null, false));
+                _frame.SetActions(null, JobUI.Primary(Loc.S("Jobs_Controls_ApplyToDesign"), null, () => { }, null, false));
                 return;
         }
         _frame.Body = Report();
         if (_s.Committed)
-            _frame.SetActions(null, JobUI.Primary("Done", null, () => { _dirty = true; Run(); }, "Back to the design's solves"));
+            _frame.SetActions(null, JobUI.Primary(Loc.S("Jobs_Controls_Done"), null, () => { _dirty = true; Run(); }, Loc.S("Jobs_Solves_DoneHelp")));
         else
-            _frame.SetActions(null, JobUI.Primary("Apply to Design", null, () => _ = _s.CommitAsync(),
-                _s.Changes == 0 ? "The solves change nothing: the design already holds their values" : "Apply the result as one step you can undo (Ctrl+Enter)", _s.Changes > 0));
+            _frame.SetActions(null, JobUI.Primary(Loc.S("Jobs_Controls_ApplyToDesign"), null, () => _ = _s.CommitAsync(),
+                Loc.S(_s.Changes == 0 ? "Jobs_Solves_ApplyHelpNoChange" : "Jobs_Solves_ApplyHelp"), _s.Changes > 0));
     }
 
     UIElement Report()
     {
         var p = new StackPanel { Spacing = 10 };
         if (_s.Committed) p.Children.Add(JobUI.AppliedNotice());
-        p.Children.Add(JobUI.Hint(_s.Committed ? "The design now holds these solved values." : "Dry run: the values the solves would set. Nothing has changed yet."));
+        p.Children.Add(JobUI.Hint(Loc.S(_s.Committed ? "Jobs_Solves_CommittedHint" : "Jobs_Solves_DryRunHint")));
         var list = new StackPanel { Spacing = 0 };
         for (var k = 0; k < _s.Outcomes.Count; k++)
         {
@@ -111,16 +112,16 @@ public sealed partial class SolvesPanel : UserControl
             var after = JobUI.Text(MeritFormat.Short(o.Value), "NumberText");
             if (o.Changes) after.FontWeight = Microsoft.UI.Text.FontWeights.SemiBold;
             values.Children.Add(JobUI.Row(6, JobUI.Text(o.Previous is { } pv ? MeritFormat.Short(pv) : "—", "NumberText"), arrow, after));
-            var residual = JobUI.Text("residual " + MeritFormat.Short(o.Residual), "CaptionText");
+            var residual = JobUI.Text(Loc.F("Jobs_Solves_Residual", MeritFormat.Short(o.Residual)), "CaptionText");
             residual.HorizontalAlignment = HorizontalAlignment.Right;
             values.Children.Add(residual);
             var row = JobUI.Column(2, head, values);
             Microsoft.UI.Xaml.Automation.AutomationProperties.SetName(row,
-                $"{o.Target}, {o.Kind}: {(o.Previous is { } q ? MeritFormat.Short(q) : "none")} to {MeritFormat.Short(o.Value)}, residual {MeritFormat.Short(o.Residual)}");
+                Loc.F("Jobs_Solves_RowName", o.Target, o.Kind, o.Previous is { } q ? MeritFormat.Short(q) : Loc.S("Jobs_Solves_None"), MeritFormat.Short(o.Value), MeritFormat.Short(o.Residual)));
             list.Children.Add(row);
         }
         p.Children.Add(JobUI.Card(list));
-        foreach (var w in _s.Warnings) p.Children.Add(JobUI.Warning(w));
+        foreach (var w in _s.Warnings) p.Children.Add(JobUI.Warning(EngineText.T(w)));
         return p;
     }
 }
