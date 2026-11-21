@@ -131,7 +131,7 @@ internal sealed class PanelTreeView : UserControl
             PanelEdge.Top => new Rect(0, 0, w, h * 0.22),
             _ => new Rect(0, h * 0.78, w, h * 0.22),
         };
-        _edgeOverlay.Children.Add(DropZone(this, r, e.Edge.Axis() == SplitAxis.Horizontal ? "Full-Height Column" : "Full-Width Row", EdgeGlyph(e.Edge)));
+        _edgeOverlay.Children.Add(DropZone(this, r, Loc.S(e.Edge.Axis() == SplitAxis.Horizontal ? "Shell_Panels_FullHeightColumn" : "Shell_Panels_FullWidthRow"), EdgeGlyph(e.Edge)));
     }
 
     internal static string EdgeGlyph(PanelEdge e) => e switch
@@ -343,7 +343,7 @@ internal sealed class PanelGroupView : Grid
         switch (target)
         {
             case PanelDropTarget.Tab t when t.Group == Group.Id:
-                _overlay.Children.Add(PanelTreeView.DropZone(this, new Rect(0, 0, w, h), "Add as Tab", "\uE7C4"));
+                _overlay.Children.Add(PanelTreeView.DropZone(this, new Rect(0, 0, w, h), Loc.S("Shell_Panels_AddAsTab"), "\uE7C4"));
                 break;
             case PanelDropTarget.Split s when s.Group == Group.Id:
                 var r = s.Edge switch
@@ -353,7 +353,7 @@ internal sealed class PanelGroupView : Grid
                     PanelEdge.Top => new Rect(0, 0, w, h / 2),
                     _ => new Rect(0, h / 2, w, h / 2),
                 };
-                _overlay.Children.Add(PanelTreeView.DropZone(this, r, "Split", PanelTreeView.EdgeGlyph(s.Edge)));
+                _overlay.Children.Add(PanelTreeView.DropZone(this, r, Loc.S("Shell_Panels_Split"), PanelTreeView.EdgeGlyph(s.Edge)));
                 break;
         }
         if (Group.Current is { } c && _tree.Host.ViewOf(c) is { } v) v.Opacity = _tree.Host.Drag.Dragging == c ? 0.45 : 1;
@@ -440,8 +440,9 @@ internal sealed class PanelTab : Grid
         _title.Text = title;
         _glyph.Glyph = _host.Glyph(Panel);
         ToolTipService.SetToolTip(this, title);
-        ToolTipService.SetToolTip(_close, Panel.PaneId is null ? $"Hide {title}" : $"Close {title}");
-        AutomationProperties.SetName(_close, Panel.PaneId is null ? $"Hide {title}" : $"Close {title}");
+        var closeText = Loc.F(Panel.PaneId is null ? "Shell_Panels_HideTab" : "Shell_Panels_CloseTab", title);
+        ToolTipService.SetToolTip(_close, closeText);
+        AutomationProperties.SetName(_close, closeText);
         Paint();
     }
 
@@ -553,7 +554,7 @@ internal sealed class PanelSplitView : Grid
             if (owner.Horizontal) { Width = 7; Margin = new Thickness(-3, 0, -3, 0); }
             else { Height = 7; Margin = new Thickness(0, -3, 0, -3); }
             ProtectedCursor = InputSystemCursor.Create(owner.Horizontal ? InputSystemCursorShape.SizeWestEast : InputSystemCursorShape.SizeNorthSouth);
-            AutomationProperties.SetName(this, owner.Horizontal ? "Vertical divider" : "Horizontal divider");
+            AutomationProperties.SetName(this, Loc.S(owner.Horizontal ? "Shell_Panels_VerticalDivider" : "Shell_Panels_HorizontalDivider"));
             PointerPressed += OnPressed;
             PointerMoved += OnMoved;
             PointerReleased += OnReleased;
@@ -614,10 +615,10 @@ internal sealed class EmptyPanelsView : Grid
         Background = ThemeLookup.Brush(host, "ContentSurfaceBrush");
         var stack = new StackPanel { HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Center, Spacing = 8, MaxWidth = 420 };
         stack.Children.Add(new FontIcon { Glyph = "\uE737", FontSize = 28, Foreground = ThemeLookup.Brush(host, "TextFillColorTertiaryBrush") });
-        stack.Children.Add(new TextBlock { Text = "No Panels", FontSize = 15, FontWeight = Microsoft.UI.Text.FontWeights.SemiBold, HorizontalAlignment = HorizontalAlignment.Center });
+        stack.Children.Add(new TextBlock { Text = Loc.S("Shell_Panels_NoPanels"), FontSize = 15, FontWeight = Microsoft.UI.Text.FontWeights.SemiBold, HorizontalAlignment = HorizontalAlignment.Center });
         stack.Children.Add(new TextBlock
         {
-            Text = "Show the lens data or the layout, or add an analysis. Panels moved to other windows can come back here.",
+            Text = Loc.S("Shell_Panels_NoPanelsText"),
             TextWrapping = TextWrapping.Wrap, TextAlignment = TextAlignment.Center, FontSize = 13,
             Foreground = ThemeLookup.Brush(host, "TextFillColorSecondaryBrush"),
         });
@@ -628,9 +629,9 @@ internal sealed class EmptyPanelsView : Grid
             b.Click += (_, _) => click();
             return b;
         }
-        if (!host.Arrangement.Contains(PanelId.LensData)) buttons.Children.Add(Capsule("Show Lens Data", () => host.ShowPanel("lens_data")));
-        if (!host.Arrangement.Contains(PanelId.Layout)) buttons.Children.Add(Capsule("Show Layout", () => host.ShowPanel("layout")));
-        var add = new DropDownButton { Content = "Add Analysis", CornerRadius = new CornerRadius(14), MinHeight = 28 };
+        if (!host.Arrangement.Contains(PanelId.LensData)) buttons.Children.Add(Capsule(Loc.S("Shell_View_ShowLensData"), () => host.ShowPanel("lens_data")));
+        if (!host.Arrangement.Contains(PanelId.Layout)) buttons.Children.Add(Capsule(Loc.S("Shell_View_ShowLayout"), () => host.ShowPanel("layout")));
+        var add = new DropDownButton { Content = Loc.S("Shell_Panels_AddAnalysis"), CornerRadius = new CornerRadius(14), MinHeight = 28 };
         var menu = new MenuFlyout();
         PanelMenus.FillAnalyses(menu, host.Session.Workspace, a =>
         {
@@ -642,7 +643,7 @@ internal sealed class EmptyPanelsView : Grid
         stack.Children.Add(buttons);
         if (model == host.Arrangement.Main && host.Arrangement.Detached.Count > 0)
         {
-            var all = Capsule("Move All Panels Here", () => { foreach (var w in host.Arrangement.Detached.ToList()) host.Dock(w); });
+            var all = Capsule(Loc.S("Shell_Panels_MoveAllHere"), () => { foreach (var w in host.Arrangement.Detached.ToList()) host.Dock(w); });
             all.HorizontalAlignment = HorizontalAlignment.Center;
             stack.Children.Add(all);
         }

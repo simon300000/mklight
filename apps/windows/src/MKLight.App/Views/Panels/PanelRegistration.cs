@@ -27,7 +27,7 @@ static class PanelRegistration
     internal static void Register()
     {
         AppHooks.WindowCreated += w => w.Panels.Attach(w);
-        AppHooks.Commands.Add(new("Reset Panel Layout", "\uE72C", w => w.Panels.ResetLayout(), Order: 60, Menu: "View"));
+        AppHooks.Commands.Add(new(Loc.S("Shell_View_ResetPanelLayout"), "\uE72C", w => w.Panels.ResetLayout(), Order: 60, Menu: "View"));
 
         AppHooks.LaunchActions["panels-demo"] = (w, _) => { Demo(w.Panels); return Task.CompletedTask; };
         AppHooks.LaunchActions["panels-detach"] = (w, arg) =>

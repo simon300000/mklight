@@ -36,7 +36,7 @@ public sealed partial class DesignWindow
         var numbers = StatusCapsuleModel.KeyNumbers(firstOrder, anamorphic);
         var hasErrors = ws.ModelErrors.Count > 0 || ws.Issues.Any(i => i.Severity == "error");
         Status.SetNumbers(hasErrors && numbers.Count == 0 ? [] : numbers,
-            hasErrors ? "Design has errors" : string.IsNullOrEmpty(_session.Document.System.Name) ? "Untitled" : _session.Document.System.Name,
+            hasErrors ? Loc.S("Shell_Status_DesignHasErrors") : DesignName(_session.Document.System.Name),
             stale: ws.Summary.Output is not null && ws.Summary.IsStale);
         Status.SetIssues(ws.Issues);
 
@@ -51,6 +51,10 @@ public sealed partial class DesignWindow
         Status.SetBackends(options, ComputeBackendOptions.IndexOf(options, current), i => ChooseBackend(options[i].Execution));
         Status.SetPreview(ws.PreviewTitle, () => ws.Preview(null));
     }
+
+    /// <summary>The design's name in the capsule: a sample's name in the UI language; none, or the default name: Untitled.</summary>
+    static string DesignName(string? name) =>
+        string.IsNullOrEmpty(name) || name == "Untitled" ? Loc.S("Shell_Document_Untitled") : EngineText.T(name);
 
     /// <summary>What the design's analyses request: the workspace's preference and, for a GPU, the session's chosen one.</summary>
     static ExecutionSettings CurrentExecution(Workspace ws) => ws.Execution;

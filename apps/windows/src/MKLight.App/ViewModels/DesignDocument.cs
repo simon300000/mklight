@@ -1,4 +1,5 @@
 using System.Text.Json.Nodes;
+using MKLight.App.Support;
 using MKLight.Model;
 
 namespace MKLight.App.ViewModels;
@@ -50,7 +51,7 @@ public sealed class DesignDocument
     /// <summary>The file the design was opened from or last saved to; null while untitled.</summary>
     public string? Path { get; private set; }
 
-    public string DisplayName => Path is null ? "Untitled" : global::System.IO.Path.GetFileName(Path);
+    public string DisplayName => Path is null ? Loc.S("Shell_Document_Untitled") : global::System.IO.Path.GetFileName(Path);
     public bool IsDirty => _revision != _savedRevision;
 
     /// <summary>Marks the document as changed since it was last saved (a duplicate that was never written).</summary>

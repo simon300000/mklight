@@ -68,16 +68,16 @@ public sealed partial class DesignWindow
         {
             var dialog = new ContentDialog
             {
-                Title = $"Revert “{_session.Document.DisplayName}” to the saved version?",
-                Content = "Your changes since the last save are lost.",
-                PrimaryButtonText = "Revert", CloseButtonText = "Cancel", DefaultButton = ContentDialogButton.Close,
+                Title = Loc.F("Shell_Revert_Title", _session.Document.DisplayName),
+                Content = Loc.S("Shell_Revert_Message"),
+                PrimaryButtonText = Loc.S("Shell_Revert_Button"), CloseButtonText = Loc.S("Common_Cancel"), DefaultButton = ContentDialogButton.Close,
                 XamlRoot = Root.XamlRoot, RequestedTheme = Root.ActualTheme,
             };
             if (await ShowDialogAsync(dialog) != ContentDialogResult.Primary) return;
         }
         DesignDocument saved;
         try { saved = DesignDocument.Open(path); }
-        catch (Exception e) { _session.ShowToast($"Could not read {Path.GetFileName(path)}: {e.Message}"); return; }
+        catch (Exception e) { _session.ShowToast(Loc.F("Shell_Toast_ReadFailed", Path.GetFileName(path), e.Message)); return; }
         var window = OpenBeside(saved, offset: 0);
         ReplacedBy = window;
         DeleteAutosaves();
@@ -101,20 +101,20 @@ public sealed partial class DesignWindow
     {
         if (_session.Document.Path is not { } current) return;
         var dirty = _session.Document.IsDirty;
-        var box = new TextBox { Text = Path.GetFileNameWithoutExtension(current), Header = "Name", MinWidth = 340 };
+        var box = new TextBox { Text = Path.GetFileNameWithoutExtension(current), Header = Loc.S("Shell_Rename_NameHeader"), MinWidth = 340 };
         var problem = new TextBlock { Style = (Style)Application.Current.Resources["CaptionText"], TextWrapping = TextWrapping.Wrap, Visibility = Visibility.Collapsed };
         ThemeLookup.Follow(problem, () => problem.Foreground = ThemeLookup.Brush(problem, "ErrorBrush"));
         var content = new StackPanel { Spacing = 8, Children = { box, problem } };
         if (dirty)
             content.Children.Add(new TextBlock
             {
-                Text = "The design has unsaved changes: they are saved with the new name.",
+                Text = Loc.S("Shell_Rename_UnsavedNote"),
                 Style = (Style)Application.Current.Resources["SecondaryText"], TextWrapping = TextWrapping.Wrap,
             });
         var dialog = new ContentDialog
         {
-            Title = "Rename", Content = content,
-            PrimaryButtonText = dirty ? "Save and Rename" : "Rename", CloseButtonText = "Cancel", DefaultButton = ContentDialogButton.Primary,
+            Title = Loc.S("Shell_Rename_Title"), Content = content,
+            PrimaryButtonText = Loc.S(dirty ? "Shell_Rename_SaveAndRename" : "Shell_Rename_Button"), CloseButtonText = Loc.S("Common_Cancel"), DefaultButton = ContentDialogButton.Primary,
             XamlRoot = Root.XamlRoot, RequestedTheme = Root.ActualTheme,
         };
         void Check()
@@ -139,7 +139,7 @@ public sealed partial class DesignWindow
         var target = DocumentFiles.RenamedPath(current, name);
         if (string.Equals(target, current, StringComparison.Ordinal)) return true;
         try { File.Move(current, target); }
-        catch (Exception e) when (e is IOException or UnauthorizedAccessException) { _session.ShowToast($"Could not rename: {e.Message}"); return false; }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException) { _session.ShowToast(Loc.F("Shell_Toast_RenameFailed", e.Message)); return false; }
         // The design has no path of its own to change: saving to the new path moves it there (DesignDocument.Save).
         if (!await SaveAsync(false, target))
         {
@@ -147,7 +147,7 @@ public sealed partial class DesignWindow
             return false;
         }
         Autosaves.Delete(current + Autosaves.Suffix);
-        _session.ShowToast($"Renamed to {Path.GetFileName(target)}");
+        _session.ShowToast(Loc.F("Shell_Toast_Renamed", Path.GetFileName(target)));
         return true;
     }
 
@@ -174,8 +174,8 @@ public sealed partial class DesignWindow
     /// <summary>Lens ▸ Replace with Sample: the sample's system replaces the design's (undoable).</summary>
     public void ReplaceWithSample(string sampleId)
     {
-        if (SampleSystems.Get(sampleId) is not { } system) { _session.ShowToast($"No sample named “{sampleId}”."); return; }
-        _session.Document.Replace(system, "Replace with Sample");
+        if (SampleSystems.Get(sampleId) is not { } system) { _session.ShowToast(Loc.F("Shell_Toast_NoSample", sampleId)); return; }
+        _session.Document.Replace(system, Loc.S("Shell_Lens_ReplaceWithSample"));
     }
 
     // ---- Autosave ----
@@ -259,7 +259,7 @@ public sealed partial class DesignWindow
     public void PresentImportReport(ImportReport report, string? source)
     {
         _importSource = source;
-        if (report.Warnings.Count == 0) { _session.ShowToast($"Imported {report.FileName}: {report.Summary}."); return; }
+        if (report.Warnings.Count == 0) { _session.ShowToast(Loc.F("Shell_Toast_Imported", report.FileName, report.Summary)); return; }
         _ = ShowImportReportAsync(report);
     }
 
@@ -299,21 +299,21 @@ public sealed partial class DesignWindow
         {
             var info = await ws.Engine.LoadCatalogAsync(catalogPath);
             var format = Path.GetExtension(catalogPath).Equals(".json", StringComparison.OrdinalIgnoreCase) ? "json" : "agf";
-            if (!doc.EditProject("Add Glass Catalog", p => p.AddCatalog(new CatalogReference(info.Name, catalogPath, null, format))))
+            if (!doc.EditProject(Loc.S("Shell_Action_AddGlassCatalog"), p => p.AddCatalog(new CatalogReference(info.Name, catalogPath, null, format))))
                 await ws.CatalogsDidChangeAsync();
-            _session.ShowToast($"Loaded glass catalog {info.Name} ({info.GlassCount} glasses).");
+            _session.ShowToast(Loc.F("Shell_Toast_CatalogLoaded", info.Name, info.GlassCount));
         }
-        catch (EngineException e) { _session.ShowToast($"Glass catalog: {e.Message}"); return; }
+        catch (EngineException e) { _session.ShowToast(Loc.F("Shell_Toast_CatalogFailed", e.Message)); return; }
         if (_importSource is not { } source || doc.Path is not null) return;
         try
         {
             var imported = await ws.Engine.ImportPrescriptionAsync(source);
             var system = App.ImportedSystem(imported, source);
-            doc.Edit("Import Lens File Again", _ => system);
+            doc.Edit(Loc.S("Shell_Action_ImportAgain"), _ => system);
             ws.Resnapshot(); // the import set the session's system itself
             PresentImportReport(ImportReport.From(imported, Path.GetFileName(source), system.Surfaces.Count), source);
         }
-        catch (Exception e) when (e is EngineException or IOException) { _session.ShowToast($"Import: {e.Message}"); }
+        catch (Exception e) when (e is EngineException or IOException) { _session.ShowToast(Loc.F("Shell_Toast_ImportFailed", e.Message)); }
     }
 
     /// <summary>One dialog at a time per window: a second waits for none and is skipped.</summary>
@@ -341,7 +341,7 @@ static class FileDrop
                 var items = await e.DataView.GetStorageItemsAsync();
                 if (!items.Any(i => i is StorageFile && DocumentFiles.CanOpen(i.Path))) return;
                 e.AcceptedOperation = DataPackageOperation.Copy;
-                e.DragUIOverride.Caption = "Open";
+                e.DragUIOverride.Caption = Loc.S("Shell_Drop_Open");
                 e.DragUIOverride.IsCaptionVisible = true;
             }
             catch (Exception) { /* not a file list after all */ }

@@ -12,12 +12,326 @@
   <data name="Common_OK" xml:space="preserve"><value>确定</value></data>
   <!-- end area: Common -->
   <!-- area: Shell -->
+  <data name="Shell_About_Engine" xml:space="preserve"><value>引擎：{0} {1}</value></data>
+  <data name="Shell_About_Tagline" xml:space="preserve"><value>光学设计，由 MKLight 引擎计算。</value></data>
+  <data name="Shell_About_Version" xml:space="preserve"><value>版本 {0}</value></data>
+  <data name="Shell_Action_AddGlassCatalog" xml:space="preserve"><value>添加玻璃库</value></data>
+  <data name="Shell_Action_ImportAgain" xml:space="preserve"><value>重新导入镜头文件</value></data>
+  <data name="Shell_Action_RecoverUnsaved" xml:space="preserve"><value>恢复未保存的更改</value></data>
+  <data name="Shell_Analysis_BackendAuto" xml:space="preserve"><value>自动</value></data>
+  <data name="Shell_Analysis_BackendCpu" xml:space="preserve"><value>CPU 参考（f64）</value></data>
+  <data name="Shell_Analysis_CancelRunning" xml:space="preserve"><value>取消运行</value></data>
+  <data name="Shell_Analysis_ComputeOn" xml:space="preserve"><value>计算设备</value></data>
+  <data name="Shell_Analysis_NewPane" xml:space="preserve"><value>新建分析窗格</value></data>
+  <data name="Shell_Analysis_Run" xml:space="preserve"><value>运行分析</value></data>
+  <data name="Shell_Autosave_UntitledDesign" xml:space="preserve"><value>未命名设计</value></data>
+  <data name="Shell_Catalog_NoPath" xml:space="preserve"><value>无路径</value></data>
+  <data name="Shell_Catalog_NotFound" xml:space="preserve"><value>未找到玻璃库“{0}”（{1}）。</value></data>
+  <data name="Shell_Close_DontSave" xml:space="preserve"><value>不保存</value></data>
+  <data name="Shell_Close_Message" xml:space="preserve"><value>如果不保存，你的更改将会丢失。</value></data>
+  <data name="Shell_Close_Title" xml:space="preserve"><value>是否保存对“{0}”的更改？</value></data>
+  <data name="Shell_Design_ApplySolves" xml:space="preserve"><value>应用求解…</value></data>
+  <data name="Shell_Design_GlassSubstitution" xml:space="preserve"><value>玻璃替换…</value></data>
+  <data name="Shell_Design_Optimize" xml:space="preserve"><value>优化…</value></data>
+  <data name="Shell_Design_ShowIssues" xml:space="preserve"><value>显示问题</value></data>
+  <data name="Shell_Design_Tolerance" xml:space="preserve"><value>公差…</value></data>
+  <data name="Shell_Document_Untitled" xml:space="preserve"><value>未命名</value></data>
+  <data name="Shell_Drop_Open" xml:space="preserve"><value>打开</value></data>
+  <data name="Shell_Edit_Copy" xml:space="preserve"><value>复制</value></data>
+  <data name="Shell_Edit_Cut" xml:space="preserve"><value>剪切</value></data>
+  <data name="Shell_Edit_Paste" xml:space="preserve"><value>粘贴</value></data>
+  <data name="Shell_Edit_Redo" xml:space="preserve"><value>重做</value></data>
+  <data name="Shell_Edit_RedoAction" xml:space="preserve"><value>重做“{0}”</value></data>
+  <data name="Shell_Edit_SelectAll" xml:space="preserve"><value>全选</value></data>
+  <data name="Shell_Edit_Undo" xml:space="preserve"><value>撤销</value></data>
+  <data name="Shell_Edit_UndoAction" xml:space="preserve"><value>撤销“{0}”</value></data>
+  <data name="Shell_EngineMissing_Build" xml:space="preserve"><value>请用 scripts/build-windows.ps1 构建引擎，它会将 mklight_ffi.dll 放到应用旁边。</value></data>
+  <data name="Shell_EngineMissing_NotFound" xml:space="preserve"><value>未找到 mklight_ffi.dll。</value></data>
+  <data name="Shell_EngineMissing_Quit" xml:space="preserve"><value>退出</value></data>
+  <data name="Shell_EngineMissing_Title" xml:space="preserve"><value>光学引擎不可用</value></data>
+  <data name="Shell_File_Close" xml:space="preserve"><value>关闭</value></data>
+  <data name="Shell_File_Duplicate" xml:space="preserve"><value>创建副本</value></data>
+  <data name="Shell_File_Exit" xml:space="preserve"><value>退出</value></data>
+  <data name="Shell_File_NewFromSample" xml:space="preserve"><value>从示例新建</value></data>
+  <data name="Shell_File_Open" xml:space="preserve"><value>打开…</value></data>
+  <data name="Shell_File_OpenRecent" xml:space="preserve"><value>最近打开</value></data>
+  <data name="Shell_File_Rename" xml:space="preserve"><value>重命名…</value></data>
+  <data name="Shell_File_Revert" xml:space="preserve"><value>还原到已保存版本</value></data>
+  <data name="Shell_File_Save" xml:space="preserve"><value>保存</value></data>
+  <data name="Shell_File_SaveAs" xml:space="preserve"><value>另存为…</value></data>
+  <data name="Shell_File_ShowWelcome" xml:space="preserve"><value>显示欢迎窗口</value></data>
+  <data name="Shell_File_TypeDesign" xml:space="preserve"><value>MKLight 设计</value></data>
+  <data name="Shell_Gpu_BadgeHelp" xml:space="preserve"><value>正在编译 GPU 计算内核，仅在安装或更新 MKLight 或显卡驱动后进行一次。现在开始的 GPU 分析只需等待它所需的内核。</value></data>
+  <data name="Shell_Gpu_BadgePreparing" xml:space="preserve"><value>正在准备 GPU {0}%</value></data>
+  <data name="Shell_Gpu_BadgeReady" xml:space="preserve"><value>GPU 已就绪</value></data>
+  <data name="Shell_Gpu_CacheUnavailable" xml:space="preserve"><value>内核缓存不可用：下次启动时将重新编译（{0}）</value></data>
+  <data name="Shell_Gpu_CompiledOnFirstUse" xml:space="preserve"><value>首次使用时编译（{0}）</value></data>
+  <data name="Shell_Gpu_NoGpu" xml:space="preserve"><value>无 GPU：{0}</value></data>
+  <data name="Shell_Gpu_Preparing" xml:space="preserve"><value>正在准备</value></data>
+  <data name="Shell_Gpu_PreparingCount" xml:space="preserve"><value>正在准备（{0}/{1}）</value></data>
+  <data name="Shell_Gpu_ReadyFromCache" xml:space="preserve"><value>已就绪（{0} 个，从缓存载入）</value></data>
+  <data name="Shell_Gpu_ReadyPrepared" xml:space="preserve"><value>已就绪（{0} 个，用时 {1:0.0} s）</value></data>
+  <data name="Shell_Help_About" xml:space="preserve"><value>关于 MKLight</value></data>
+  <data name="Shell_Help_Shortcuts" xml:space="preserve"><value>键盘快捷键</value></data>
+  <data name="Shell_Import_Assumed" xml:space="preserve"><value>假定或近似</value></data>
+  <data name="Shell_Import_Copied" xml:space="preserve"><value>已复制</value></data>
+  <data name="Shell_Import_CopyReport" xml:space="preserve"><value>复制报告</value></data>
+  <data name="Shell_Import_Done" xml:space="preserve"><value>完成</value></data>
+  <data name="Shell_Import_Glasses" xml:space="preserve"><value>玻璃</value></data>
+  <data name="Shell_Import_HeadlineMany" xml:space="preserve"><value>有 {0} 项未能精确导入。请先逐项检查，再使用此设计。</value></data>
+  <data name="Shell_Import_HeadlineOne" xml:space="preserve"><value>有 1 项未能精确导入。请先检查，再使用此设计。</value></data>
+  <data name="Shell_Import_LineAt" xml:space="preserve"><value>第 {0} 行</value></data>
+  <data name="Shell_Import_LoadCatalog" xml:space="preserve"><value>载入玻璃库…</value></data>
+  <data name="Shell_Import_NotImported" xml:space="preserve"><value>未导入</value></data>
+  <data name="Shell_Import_PlainGroup" xml:space="preserve"><value>{0}：</value></data>
+  <data name="Shell_Import_PlainHeading" xml:space="preserve"><value>已导入 {0}（{1}）</value></data>
+  <data name="Shell_Import_Problems" xml:space="preserve"><value>问题</value></data>
+  <data name="Shell_Import_SurfaceAt" xml:space="preserve"><value>面 {0}</value></data>
+  <data name="Shell_Import_SurfaceCountMany" xml:space="preserve"><value>{0} 个面</value></data>
+  <data name="Shell_Import_SurfaceCountOne" xml:space="preserve"><value>{0} 个面</value></data>
+  <data name="Shell_Import_Surfaces" xml:space="preserve"><value>面</value></data>
+  <data name="Shell_Import_Title" xml:space="preserve"><value>已导入“{0}”</value></data>
+  <data name="Shell_Issue_SurfaceAt" xml:space="preserve"><value>面 {0}</value></data>
   <data name="Shell_Language_Chinese" xml:space="preserve"><value>简体中文</value></data>
   <data name="Shell_Language_English" xml:space="preserve"><value>English</value></data>
   <data name="Shell_Language_Menu" xml:space="preserve"><value>语言…</value></data>
   <data name="Shell_Language_Note" xml:space="preserve"><value>MKLight 下次启动时显示新的语言。</value></data>
   <data name="Shell_Language_System" xml:space="preserve"><value>跟随系统（{0}）</value></data>
   <data name="Shell_Language_Title" xml:space="preserve"><value>语言</value></data>
+  <data name="Shell_LayoutA11y_FieldsMany" xml:space="preserve"><value>{0} 个视场</value></data>
+  <data name="Shell_LayoutA11y_FieldsOne" xml:space="preserve"><value>{0} 个视场</value></data>
+  <data name="Shell_LayoutA11y_Length" xml:space="preserve"><value>长 {0} 毫米</value></data>
+  <data name="Shell_LayoutA11y_Name" xml:space="preserve"><value>布局图，{0}，{1}，{2}</value></data>
+  <data name="Shell_LayoutA11y_NotAvailable" xml:space="preserve"><value>布局图，不可用</value></data>
+  <data name="Shell_LayoutA11y_Previewing" xml:space="preserve"><value>正在预览 {0}，未应用</value></data>
+  <data name="Shell_LayoutA11y_RaysMany" xml:space="preserve"><value>{0} 条光线</value></data>
+  <data name="Shell_LayoutA11y_RaysOne" xml:space="preserve"><value>{0} 条光线</value></data>
+  <data name="Shell_LayoutA11y_Selected" xml:space="preserve"><value>已选中面 {0}</value></data>
+  <data name="Shell_LayoutA11y_Separator" xml:space="preserve"><value>，</value></data>
+  <data name="Shell_LayoutA11y_Stale" xml:space="preserve"><value>已过时</value></data>
+  <data name="Shell_LayoutA11y_Stretch" xml:space="preserve"><value>纵向拉伸 {0} 倍</value></data>
+  <data name="Shell_LayoutA11y_Text" xml:space="preserve"><value>布局图，{0}，{1} 个面，{2} 条光线，长 {3} 毫米</value></data>
+  <data name="Shell_LayoutA11y_View3D" xml:space="preserve"><value>三维视图</value></data>
+  <data name="Shell_LayoutA11y_ViewMeridional" xml:space="preserve"><value>子午截面</value></data>
+  <data name="Shell_LayoutA11y_ViewXZ" xml:space="preserve"><value>x–z 截面</value></data>
+  <data name="Shell_Layout_BeamFootprints" xml:space="preserve"><value>三维中的光束足迹</value></data>
+  <data name="Shell_Layout_DesignChanged" xml:space="preserve"><value>设计已更改</value></data>
+  <data name="Shell_Layout_DesignHasErrors" xml:space="preserve"><value>设计有错误</value></data>
+  <data name="Shell_Layout_DesignNotReady" xml:space="preserve"><value>设计尚未就绪</value></data>
+  <data name="Shell_Layout_DisplayOptions" xml:space="preserve"><value>显示选项</value></data>
+  <data name="Shell_Layout_DisplayTip" xml:space="preserve"><value>显示选项：光线颜色、采样、拉伸、网格、光斑足迹</value></data>
+  <data name="Shell_Layout_Fit" xml:space="preserve"><value>适应窗口</value></data>
+  <data name="Shell_Layout_FitAll" xml:space="preserve"><value>全部适应</value></data>
+  <data name="Shell_Layout_FitLens" xml:space="preserve"><value>适应镜头</value></data>
+  <data name="Shell_Layout_FitTip" xml:space="preserve"><value>布局图适应窗口 (Ctrl+0，或双击)</value></data>
+  <data name="Shell_Layout_FootprintsFailed" xml:space="preserve"><value>光束足迹：{0}</value></data>
+  <data name="Shell_Layout_HideFootprintsTip" xml:space="preserve"><value>隐藏各面上的光束足迹</value></data>
+  <data name="Shell_Layout_LegendField" xml:space="preserve"><value>光线按视场 · {0}</value></data>
+  <data name="Shell_Layout_LegendWavelength" xml:space="preserve"><value>光线按波长 · {0}</value></data>
+  <data name="Shell_Layout_Mode3DName" xml:space="preserve"><value>三维视图</value></data>
+  <data name="Shell_Layout_ModeSection" xml:space="preserve"><value>截面</value></data>
+  <data name="Shell_Layout_ModeXZName" xml:space="preserve"><value>X–Z 截面</value></data>
+  <data name="Shell_Layout_ModeYZName" xml:space="preserve"><value>Y–Z 截面</value></data>
+  <data name="Shell_Layout_ModesTip" xml:space="preserve"><value>子午截面或三维视图</value></data>
+  <data name="Shell_Layout_ModesTipAnamorphic" xml:space="preserve"><value>Y–Z 截面、X–Z 截面或三维视图</value></data>
+  <data name="Shell_Layout_MoreTip" xml:space="preserve"><value>更多</value></data>
+  <data name="Shell_Layout_NoLayout" xml:space="preserve"><value>无布局图</value></data>
+  <data name="Shell_Layout_NoOutlines" xml:space="preserve"><value>足迹结果中没有光束轮廓。</value></data>
+  <data name="Shell_Layout_NotAvailable" xml:space="preserve"><value>布局图不可用</value></data>
+  <data name="Shell_Layout_PreviewingName" xml:space="preserve"><value>正在预览 {0}。设计未更改。</value></data>
+  <data name="Shell_Layout_RaysByField" xml:space="preserve"><value>光线按视场着色</value></data>
+  <data name="Shell_Layout_RaysByWavelength" xml:space="preserve"><value>光线按波长着色</value></data>
+  <data name="Shell_Layout_RaysPerField" xml:space="preserve"><value>每视场光线数</value></data>
+  <data name="Shell_Layout_Retry.Content" xml:space="preserve"><value>重试</value></data>
+  <data name="Shell_Layout_ScaleBar" xml:space="preserve"><value>比例尺 {0}</value></data>
+  <data name="Shell_Layout_ScaleBarStretched" xml:space="preserve"><value>比例尺 {0}，纵向拉伸 {1} 倍</value></data>
+  <data name="Shell_Layout_ShowFootprintsTip" xml:space="preserve"><value>显示每个视场在每个面上的光束足迹</value></data>
+  <data name="Shell_Layout_SimulatedNotReady" xml:space="preserve"><value>设计在物面和像面之间至少需要一个面。</value></data>
+  <data name="Shell_Layout_StaleTip" xml:space="preserve"><value>布局图已过时。单击以更新。</value></data>
+  <data name="Shell_Layout_StateHelp" xml:space="preserve"><value>{0}。{1}</value></data>
+  <data name="Shell_Layout_StretchChip" xml:space="preserve"><value>拉伸 ×{0}</value></data>
+  <data name="Shell_Layout_StretchOff" xml:space="preserve"><value>关（真实比例）</value></data>
+  <data name="Shell_Layout_StretchTip" xml:space="preserve"><value>截面按真实比例的 {0} 倍高度绘制。单击以更改或关闭。</value></data>
+  <data name="Shell_Layout_SurfaceMesh" xml:space="preserve"><value>三维中的面网格</value></data>
+  <data name="Shell_Layout_Title.Text" xml:space="preserve"><value>布局图</value></data>
+  <data name="Shell_Layout_Updating" xml:space="preserve"><value>正在更新</value></data>
+  <data name="Shell_Layout_VerticalScale" xml:space="preserve"><value>纵向 ×{0}</value></data>
+  <data name="Shell_Layout_VerticalStretch" xml:space="preserve"><value>纵向拉伸</value></data>
+  <data name="Shell_Layout_ViewportUnavailable" xml:space="preserve"><value>视口不可用</value></data>
+  <data name="Shell_Layout_Wavelengths" xml:space="preserve"><value>波长</value></data>
+  <data name="Shell_Layout_WavelengthsAll" xml:space="preserve"><value>全部</value></data>
+  <data name="Shell_Layout_WavelengthsPrimary" xml:space="preserve"><value>主波长</value></data>
+  <data name="Shell_Lens_DeleteSurface" xml:space="preserve"><value>删除面</value></data>
+  <data name="Shell_Lens_InsertAfter" xml:space="preserve"><value>在后面插入面</value></data>
+  <data name="Shell_Lens_InsertBefore" xml:space="preserve"><value>在前面插入面</value></data>
+  <data name="Shell_Lens_MakeStop" xml:space="preserve"><value>设为孔径光阑</value></data>
+  <data name="Shell_Lens_ReplaceWithSample" xml:space="preserve"><value>替换为示例</value></data>
+  <data name="Shell_Lens_ToggleVariable" xml:space="preserve"><value>切换变量</value></data>
+  <data name="Shell_Menu_Analysis" xml:space="preserve"><value>分析</value></data>
+  <data name="Shell_Menu_Design" xml:space="preserve"><value>设计</value></data>
+  <data name="Shell_Menu_Edit" xml:space="preserve"><value>编辑</value></data>
+  <data name="Shell_Menu_File" xml:space="preserve"><value>文件</value></data>
+  <data name="Shell_Menu_Help" xml:space="preserve"><value>帮助</value></data>
+  <data name="Shell_Menu_Lens" xml:space="preserve"><value>镜头</value></data>
+  <data name="Shell_Menu_View" xml:space="preserve"><value>视图</value></data>
+  <data name="Shell_Pane_NoSuchAnalysis" xml:space="preserve"><value>此引擎没有名为“{0}”的分析。</value></data>
+  <data name="Shell_Pane_NotInBuild" xml:space="preserve"><value>当前引擎构建不提供此分析。</value></data>
+  <data name="Shell_PanelWindow_AddTip" xml:space="preserve"><value>向此窗口添加分析窗格</value></data>
+  <data name="Shell_PanelWindow_DockTip" xml:space="preserve"><value>移回主窗口：这些面板将回到设计窗口中</value></data>
+  <data name="Shell_PanelWindow_More" xml:space="preserve"><value>{0} +{1}</value></data>
+  <data name="Shell_PanelWindow_Panels" xml:space="preserve"><value>面板</value></data>
+  <data name="Shell_Panels_AddAnalysis" xml:space="preserve"><value>添加分析</value></data>
+  <data name="Shell_Panels_AddAsTab" xml:space="preserve"><value>添加为标签页</value></data>
+  <data name="Shell_Panels_Analysis" xml:space="preserve"><value>分析</value></data>
+  <data name="Shell_Panels_CloseTab" xml:space="preserve"><value>关闭{0}</value></data>
+  <data name="Shell_Panels_DragHint" xml:space="preserve"><value>拖动以移动，拖出窗口可在单独的窗口中打开。</value></data>
+  <data name="Shell_Panels_DragHintAfterTip" xml:space="preserve"><value>拖动以移动它，拖出窗口可在单独的窗口中打开。</value></data>
+  <data name="Shell_Panels_FullHeightColumn" xml:space="preserve"><value>全高列</value></data>
+  <data name="Shell_Panels_FullWidthRow" xml:space="preserve"><value>全宽行</value></data>
+  <data name="Shell_Panels_HideTab" xml:space="preserve"><value>隐藏{0}</value></data>
+  <data name="Shell_Panels_HorizontalDivider" xml:space="preserve"><value>水平分隔条</value></data>
+  <data name="Shell_Panels_MoveAllHere" xml:space="preserve"><value>将所有面板移到这里</value></data>
+  <data name="Shell_Panels_NewWindow" xml:space="preserve"><value>新窗口</value></data>
+  <data name="Shell_Panels_NoPanels" xml:space="preserve"><value>没有面板</value></data>
+  <data name="Shell_Panels_NoPanelsText" xml:space="preserve"><value>显示镜头数据或布局图，或添加分析。移到其他窗口的面板可以移回这里。</value></data>
+  <data name="Shell_Panels_Split" xml:space="preserve"><value>拆分</value></data>
+  <data name="Shell_Panels_VerticalDivider" xml:space="preserve"><value>垂直分隔条</value></data>
+  <data name="Shell_Recover_Body" xml:space="preserve"><value>“{0}”有 {1} 的更改未保存。</value></data>
+  <data name="Shell_Recover_CatalogMissingMany" xml:space="preserve"><value>已恢复。未找到玻璃库 {0}；设计仍保留对它们的引用。</value></data>
+  <data name="Shell_Recover_CatalogMissingOne" xml:space="preserve"><value>已恢复。未找到玻璃库 {0}；设计仍保留对它的引用。</value></data>
+  <data name="Shell_Recover_Discard" xml:space="preserve"><value>放弃</value></data>
+  <data name="Shell_Recover_Later" xml:space="preserve"><value>稍后</value></data>
+  <data name="Shell_Recover_Recover" xml:space="preserve"><value>恢复</value></data>
+  <data name="Shell_Recover_Title" xml:space="preserve"><value>是否恢复未保存的更改？</value></data>
+  <data name="Shell_Recover_UntitledBody" xml:space="preserve"><value>一个未命名设计有 {0} 的更改从未保存。</value></data>
+  <data name="Shell_Recover_UntitledNote" xml:space="preserve"><value>恢复后将作为新的未命名设计打开。</value></data>
+  <data name="Shell_Recover_WithWarnings" xml:space="preserve"><value>已恢复。{0}</value></data>
+  <data name="Shell_Rename_BadCharacters" xml:space="preserve"><value>名称不能包含 &lt; &gt; : " / \ | ? 或 *。</value></data>
+  <data name="Shell_Rename_Button" xml:space="preserve"><value>重命名</value></data>
+  <data name="Shell_Rename_EndsWithPeriod" xml:space="preserve"><value>名称不能以句点结尾。</value></data>
+  <data name="Shell_Rename_EnterName" xml:space="preserve"><value>请输入名称。</value></data>
+  <data name="Shell_Rename_Exists" xml:space="preserve"><value>此文件夹中已存在“{0}”。</value></data>
+  <data name="Shell_Rename_NameHeader" xml:space="preserve"><value>名称</value></data>
+  <data name="Shell_Rename_SaveAndRename" xml:space="preserve"><value>保存并重命名</value></data>
+  <data name="Shell_Rename_Title" xml:space="preserve"><value>重命名</value></data>
+  <data name="Shell_Rename_UnsavedNote" xml:space="preserve"><value>此设计有未保存的更改：它们将以新名称保存。</value></data>
+  <data name="Shell_Revert_Button" xml:space="preserve"><value>还原</value></data>
+  <data name="Shell_Revert_Message" xml:space="preserve"><value>上次保存后的更改将会丢失。</value></data>
+  <data name="Shell_Revert_Title" xml:space="preserve"><value>是否将“{0}”还原到已保存的版本？</value></data>
+  <data name="Shell_Shortcut_CancelAnalyses" xml:space="preserve"><value>取消正在运行的分析</value></data>
+  <data name="Shell_Shortcut_DeleteSurface" xml:space="preserve"><value>删除面</value></data>
+  <data name="Shell_Shortcut_FitLayout" xml:space="preserve"><value>布局图适应窗口</value></data>
+  <data name="Shell_Shortcut_InsertAfter" xml:space="preserve"><value>在后面插入面</value></data>
+  <data name="Shell_Shortcut_InsertBefore" xml:space="preserve"><value>在前面插入面</value></data>
+  <data name="Shell_Shortcut_Inspector" xml:space="preserve"><value>显示或隐藏检查器</value></data>
+  <data name="Shell_Shortcut_MakeStop" xml:space="preserve"><value>设为孔径光阑</value></data>
+  <data name="Shell_Shortcut_RunAnalyses" xml:space="preserve"><value>运行分析</value></data>
+  <data name="Shell_Shortcut_ToggleVariable" xml:space="preserve"><value>切换变量</value></data>
+  <data name="Shell_Sidebar_Design" xml:space="preserve"><value>设计</value></data>
+  <data name="Shell_Sidebar_Issues" xml:space="preserve"><value>问题</value></data>
+  <data name="Shell_Sidebar_IssuesTip" xml:space="preserve"><value>显示设计的校验问题</value></data>
+  <data name="Shell_Sidebar_Layout" xml:space="preserve"><value>布局图</value></data>
+  <data name="Shell_Sidebar_LayoutHiddenTip" xml:space="preserve"><value>布局图已隐藏：单击以显示</value></data>
+  <data name="Shell_Sidebar_LensData" xml:space="preserve"><value>镜头数据</value></data>
+  <data name="Shell_Sidebar_LensDataHiddenTip" xml:space="preserve"><value>镜头数据已隐藏：单击以显示</value></data>
+  <data name="Shell_Sidebar_NoMatch" xml:space="preserve"><value>没有与“{0}”匹配的分析</value></data>
+  <data name="Shell_Sidebar_NotAvailable" xml:space="preserve"><value>不可用。</value></data>
+  <data name="Shell_Sidebar_NotInBuild" xml:space="preserve"><value>当前引擎构建不提供此分析</value></data>
+  <data name="Shell_Sidebar_OpenInNewPane" xml:space="preserve"><value>在新窗格中打开</value></data>
+  <data name="Shell_Sidebar_Search" xml:space="preserve"><value>搜索分析</value></data>
+  <data name="Shell_Sidebar_ShowLayoutTip" xml:space="preserve"><value>显示布局图</value></data>
+  <data name="Shell_Sidebar_ShowLensDataTip" xml:space="preserve"><value>显示镜头数据</value></data>
+  <data name="Shell_Status_AtWavelength" xml:space="preserve"><value>λ = {0:0.0000} µm（主波长）</value></data>
+  <data name="Shell_Status_BackendNotAvailableName" xml:space="preserve"><value>{0}，不可用：{1}</value></data>
+  <data name="Shell_Status_BackendNote" xml:space="preserve"><value>不可用：{0}。分析将在 CPU 参考上运行。</value></data>
+  <data name="Shell_Status_BackendTip" xml:space="preserve"><value>分析的计算位置。“自动”会在引擎支持且有收益时使用 GPU。</value></data>
+  <data name="Shell_Status_Bfl" xml:space="preserve"><value>后焦距</value></data>
+  <data name="Shell_Status_ComputeOn.Text" xml:space="preserve"><value>计算设备</value></data>
+  <data name="Shell_Status_DesignHasErrors" xml:space="preserve"><value>设计有错误</value></data>
+  <data name="Shell_Status_DoePower" xml:space="preserve"><value>DOE 光焦度，面 {0}</value></data>
+  <data name="Shell_Status_DoePowerHelp" xml:space="preserve"><value>追迹衍射级的相位光焦度（不含基底折射光焦度）</value></data>
+  <data name="Shell_Status_Efl" xml:space="preserve"><value>有效焦距</value></data>
+  <data name="Shell_Status_EndPreview.Content" xml:space="preserve"><value>结束预览</value></data>
+  <data name="Shell_Status_Engine" xml:space="preserve"><value>引擎</value></data>
+  <data name="Shell_Status_EngineHeader" xml:space="preserve"><value>引擎</value></data>
+  <data name="Shell_Status_Epd" xml:space="preserve"><value>入瞳直径</value></data>
+  <data name="Shell_Status_FirstOrder" xml:space="preserve"><value>一阶特性</value></data>
+  <data name="Shell_Status_GlassLibrary" xml:space="preserve"><value>玻璃库</value></data>
+  <data name="Shell_Status_GlassLibraryHelp" xml:space="preserve"><value>计算此设计结果所用玻璃库的哈希值：{0}</value></data>
+  <data name="Shell_Status_GpuKernels" xml:space="preserve"><value>GPU 内核</value></data>
+  <data name="Shell_Status_ImageHeight" xml:space="preserve"><value>像高</value></data>
+  <data name="Shell_Status_IssuesTipMany" xml:space="preserve"><value>{0} 个问题：显示设计的校验问题</value></data>
+  <data name="Shell_Status_IssuesTipOne" xml:space="preserve"><value>{0} 个问题：显示设计的校验问题</value></data>
+  <data name="Shell_Status_NoFirstOrder" xml:space="preserve"><value>尚无一阶数据。</value></data>
+  <data name="Shell_Status_NoIssues" xml:space="preserve"><value>没有问题。引擎未在设计中发现问题。</value></data>
+  <data name="Shell_Status_NoProblemsTip" xml:space="preserve"><value>引擎未在设计中发现问题</value></data>
+  <data name="Shell_Status_NotRotational" xml:space="preserve"><value>此设计不是旋转对称的。引擎的一阶数据仅涵盖 y 截面。</value></data>
+  <data name="Shell_Status_NumbersTip" xml:space="preserve"><value>一阶数据、引擎和计算后端</value></data>
+  <data name="Shell_Status_Previewing" xml:space="preserve"><value>预览中</value></data>
+  <data name="Shell_Status_PreviewingTip" xml:space="preserve"><value>正在预览 {0} · 未应用</value></data>
+  <data name="Shell_Status_ShowRunningJob" xml:space="preserve"><value>显示正在运行的任务</value></data>
+  <data name="Shell_Status_Snapshot" xml:space="preserve"><value>快照</value></data>
+  <data name="Shell_Status_Squeeze" xml:space="preserve"><value>压缩比</value></data>
+  <data name="Shell_Status_SqueezeDefault" xml:space="preserve"><value>带符号的 EFL y / EFL x</value></data>
+  <data name="Shell_Status_SqueezeHelp" xml:space="preserve"><value>压缩比：{0}</value></data>
+  <data name="Shell_Status_Symmetry" xml:space="preserve"><value>对称性</value></data>
+  <data name="Shell_Status_TotalTrack" xml:space="preserve"><value>系统总长</value></data>
+  <data name="Shell_Status_WorkingFNumber" xml:space="preserve"><value>工作 F/#</value></data>
+  <data name="Shell_Status_XyName" xml:space="preserve"><value>{0}：x {1} mm，y {2} mm</value></data>
+  <data name="Shell_Status_YSection" xml:space="preserve"><value>{0}（y）</value></data>
+  <data name="Shell_Title_AddAnalysis" xml:space="preserve"><value>添加分析窗格</value></data>
+  <data name="Shell_Title_InspectorToggle" xml:space="preserve"><value>显示或隐藏检查器 (Ctrl+Alt+P)</value></data>
+  <data name="Shell_Title_Redo" xml:space="preserve"><value>重做 (Ctrl+Y)</value></data>
+  <data name="Shell_Title_RedoAction" xml:space="preserve"><value>重做“{0}” (Ctrl+Y)</value></data>
+  <data name="Shell_Title_Undo" xml:space="preserve"><value>撤销 (Ctrl+Z)</value></data>
+  <data name="Shell_Title_UndoAction" xml:space="preserve"><value>撤销“{0}” (Ctrl+Z)</value></data>
+  <data name="Shell_Toast_CatalogFailed" xml:space="preserve"><value>玻璃库：{0}</value></data>
+  <data name="Shell_Toast_CatalogLoaded" xml:space="preserve"><value>已载入玻璃库 {0}（{1} 种玻璃）。</value></data>
+  <data name="Shell_Toast_ImportFailed" xml:space="preserve"><value>导入：{0}</value></data>
+  <data name="Shell_Toast_Imported" xml:space="preserve"><value>已导入 {0}：{1}。</value></data>
+  <data name="Shell_Toast_NoSample" xml:space="preserve"><value>没有名为“{0}”的示例。</value></data>
+  <data name="Shell_Toast_OpenFailed" xml:space="preserve"><value>无法打开 {0}：{1}</value></data>
+  <data name="Shell_Toast_ReadFailed" xml:space="preserve"><value>无法读取 {0}：{1}</value></data>
+  <data name="Shell_Toast_RenameFailed" xml:space="preserve"><value>无法重命名：{0}</value></data>
+  <data name="Shell_Toast_Renamed" xml:space="preserve"><value>已重命名为 {0}</value></data>
+  <data name="Shell_Toast_SaveFailed" xml:space="preserve"><value>无法保存：{0}</value></data>
+  <data name="Shell_Toast_Saved" xml:space="preserve"><value>已保存 {0}</value></data>
+  <data name="Shell_View_Appearance" xml:space="preserve"><value>外观</value></data>
+  <data name="Shell_View_ByField" xml:space="preserve"><value>按视场</value></data>
+  <data name="Shell_View_ByWavelength" xml:space="preserve"><value>按波长</value></data>
+  <data name="Shell_View_ClosePane" xml:space="preserve"><value>关闭窗格</value></data>
+  <data name="Shell_View_FitLayout" xml:space="preserve"><value>布局图适应窗口</value></data>
+  <data name="Shell_View_HideLayout" xml:space="preserve"><value>隐藏布局图</value></data>
+  <data name="Shell_View_HideLensData" xml:space="preserve"><value>隐藏镜头数据</value></data>
+  <data name="Shell_View_Inspector" xml:space="preserve"><value>检查器</value></data>
+  <data name="Shell_View_MoveToMainWindow" xml:space="preserve"><value>移回主窗口</value></data>
+  <data name="Shell_View_MoveToNewWindow" xml:space="preserve"><value>移到新窗口</value></data>
+  <data name="Shell_View_Panel" xml:space="preserve"><value>面板</value></data>
+  <data name="Shell_View_RayColors" xml:space="preserve"><value>光线颜色</value></data>
+  <data name="Shell_View_ResetPanelLayout" xml:space="preserve"><value>重置面板布局</value></data>
+  <data name="Shell_View_SectionView" xml:space="preserve"><value>截面视图</value></data>
+  <data name="Shell_View_SectionXZ" xml:space="preserve"><value>X–Z 截面</value></data>
+  <data name="Shell_View_ShowLayout" xml:space="preserve"><value>显示布局图</value></data>
+  <data name="Shell_View_ShowLensData" xml:space="preserve"><value>显示镜头数据</value></data>
+  <data name="Shell_View_Sidebar" xml:space="preserve"><value>侧边栏</value></data>
+  <data name="Shell_View_ThemeDark" xml:space="preserve"><value>深色</value></data>
+  <data name="Shell_View_ThemeLight" xml:space="preserve"><value>浅色</value></data>
+  <data name="Shell_View_ThemeSystem" xml:space="preserve"><value>跟随系统</value></data>
+  <data name="Shell_View_View3D" xml:space="preserve"><value>三维视图</value></data>
+  <data name="Shell_Viewport_DeviceLost" xml:space="preserve"><value>图形设备停止响应。设备恢复后将重新绘制三维视图。</value></data>
+  <data name="Shell_Viewport_StartFailed" xml:space="preserve"><value>无法启动三维视图：{0}</value></data>
+  <data name="Shell_Welcome_Detail" xml:space="preserve"><value>{0} · {1}</value></data>
+  <data name="Shell_Welcome_DropHint.Text" xml:space="preserve"><value>将项目或 .zmx、.seq 镜头文件拖放到此处即可打开。</value></data>
+  <data name="Shell_Welcome_EngineUnavailable" xml:space="preserve"><value>引擎不可用</value></data>
+  <data name="Shell_Welcome_ListSeparator" xml:space="preserve"><value>、</value></data>
+  <data name="Shell_Welcome_New.Text" xml:space="preserve"><value>新建设计</value></data>
+  <data name="Shell_Welcome_NewFromTip" xml:space="preserve"><value>从“{0}”新建设计</value></data>
+  <data name="Shell_Welcome_Open.Text" xml:space="preserve"><value>打开…</value></data>
+  <data name="Shell_Welcome_Recent.Text" xml:space="preserve"><value>最近使用</value></data>
+  <data name="Shell_Welcome_SampleDesigns" xml:space="preserve"><value>示例设计</value></data>
+  <data name="Shell_Welcome_SurfaceTypes" xml:space="preserve"><value>面型</value></data>
+  <data name="Shell_Welcome_Tagline.Text" xml:space="preserve"><value>序列光学设计</value></data>
+  <data name="Shell_Welcome_Title" xml:space="preserve"><value>欢迎使用 MKLight</value></data>
   <!-- end area: Shell -->
   <!-- area: Lens -->
   <data name="Lens_Aperture_EntrancePupilDiameter" xml:space="preserve"><value>入瞳直径</value></data>
