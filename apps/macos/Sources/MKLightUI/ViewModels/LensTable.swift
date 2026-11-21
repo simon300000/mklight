@@ -260,7 +260,7 @@ public struct LensRow: Identifiable, Equatable, Sendable {
     /// Short type name for the table: a conic of k = 0 is a sphere.
     static func typeTitle(_ shape: SurfaceShape) -> String {
         switch shape {
-        case .conic(_, let k): return k == 0 ? String(localized: "Sphere") : String(localized: "Conic")
+        case .conic(_, let k): return k == 0 ? String(localized: "Sphere") : String(localized: "surface.type.conic", defaultValue: "Conic", comment: "surface type: a conic of revolution")
         case .qCon: return "Q-Con"
         case .qBfs: return "Q-BFS"
         case .biconic where shape.isCylinder: return String(localized: "Cylinder")

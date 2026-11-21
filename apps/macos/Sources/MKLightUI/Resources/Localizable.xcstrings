@@ -761,7 +761,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "百分之 %1$@ 的装调结果至少为 %2$@"
+            "value" : "百分之 %1$@ 的成品至少为 %2$@"
           }
         }
       }
@@ -777,7 +777,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "百分之 %1$@ 的装调结果至多为 %2$@"
+            "value" : "百分之 %1$@ 的成品至多为 %2$@"
           }
         }
       }
@@ -2432,7 +2432,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "带熔炼偏移的设计玻璃，以虚线连到其玻璃库位置"
+            "value" : "带熔炼偏差的设计玻璃，以虚线连到其玻璃库位置"
           }
         }
       }
@@ -2442,7 +2442,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "在平面、圆锥面或偶次非球面基底上的固定周期相位 Φ = Σ Aᵢ ρ²ⁱ（+1 级，弧度）。"
+            "value" : "在平面、二次曲面或偶次非球面基底上的固定周期相位 Φ = Σ Aᵢ ρ²ⁱ（+1 级，弧度）。"
           }
         }
       }
@@ -2708,7 +2708,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "添加熔炼偏移…"
+            "value" : "添加熔炼偏差…"
           }
         }
       }
@@ -3234,7 +3234,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "变形压缩比"
+            "value" : "压缩比"
           }
         }
       }
@@ -4651,7 +4651,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "更改元件支点"
+            "value" : "更改元件枢轴"
           }
         }
       }
@@ -7354,7 +7354,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "每个公差单独取其极限值，按变化从大到小排列；柱条表示其在预测变化中的占比。点按一行以选择其面；眼睛按钮可预览该装调结果。"
+            "value" : "每个公差单独取其极限值，按变化从大到小排列；柱条表示其在预测变化中的占比。点按一行以选择其面；眼睛按钮可预览该成品。"
           }
         }
       }
@@ -7500,7 +7500,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "从 %@ 开始的透镜公差移动同一组：请为它们设置相同的末面和支点。"
+            "value" : "从 %@ 开始的透镜公差移动同一组：请为它们设置相同的末面和枢轴。"
           }
         }
       }
@@ -7850,7 +7850,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "每个元件作为刚体绕其第一个顶点，绕 x 轴和 y 轴；支点可按元件更改。"
+            "value" : "每个元件作为刚体绕其第一个顶点，绕 x 轴和 y 轴；枢轴可按元件更改。"
           }
         }
       }
@@ -8378,7 +8378,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "适合布局图"
+            "value" : "布局图适应窗口"
           }
         }
       }
@@ -8812,7 +8812,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "在半径 %2$@ 毫米处从 0 到 %1$@ 个波长"
+            "value" : "在半径 %2$@ 毫米处从 0 到 %1$@ λ"
           }
         }
       }
@@ -9551,7 +9551,14 @@
       }
     },
     "Hide Inspector" : {
-
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "隐藏检查器"
+          }
+        }
+      }
     },
     "Hide Layout" : {
       "localizations" : {
@@ -9757,7 +9764,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "理想：所有光子都进入追迹级次。相息图：连续闪耀浮雕。多台阶：N 个刻蚀台阶构成的阶梯。"
+            "value" : "理想：所有光子都进入追迹级次。连续闪耀：连续闪耀浮雕。多台阶：N 个刻蚀台阶构成的阶梯。"
           }
         }
       }
@@ -10262,7 +10269,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "已达到其极限：部分装调结果需要超出允许范围的调整。"
+            "value" : "已达到其极限：部分成品需要超出允许范围的调整。"
           }
         }
       }
@@ -10365,7 +10372,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "相息图"
+            "value" : "连续闪耀"
           }
         }
       }
@@ -11044,7 +11051,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "余量"
+            "value" : "裕量"
           }
         }
       }
@@ -11430,7 +11437,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "熔炼偏移"
+            "value" : "熔炼偏差"
           }
         }
       }
@@ -11440,7 +11447,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "相对玻璃库玻璃的熔炼偏移 Δn_d / ΔV_d；可在检查器中编辑"
+            "value" : "相对玻璃库玻璃的熔炼偏差 Δn_d / ΔV_d；可在检查器中编辑"
           }
         }
       }
@@ -11450,7 +11457,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "熔炼偏移 Δn_d / ΔV_d：替换玻璃不带此偏差"
+            "value" : "熔炼偏差 Δn_d / ΔV_d：替换玻璃不带此偏差"
           }
         }
       }
@@ -11616,7 +11623,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "最小余量"
+            "value" : "最小裕量"
           }
         }
       }
@@ -12042,7 +12049,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "移动 %1$@，支点 %2$@"
+            "value" : "移动 %1$@，枢轴 %2$@"
           }
         }
       }
@@ -13815,7 +13822,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "位置"
+            "value" : "位姿"
           }
         }
       }
@@ -14171,7 +14178,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "在窗口中预览此装调结果：公差取较差的极限并经补偿；未应用"
+            "value" : "在窗口中预览此成品：公差取较差的极限并经补偿；未应用"
           }
         }
       }
@@ -14181,7 +14188,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "在窗口中预览此装调结果：公差取较差的极限；未应用"
+            "value" : "在窗口中预览此成品：公差取较差的极限；未应用"
           }
         }
       }
@@ -14251,7 +14258,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "在窗口中预览此装调结果"
+            "value" : "在窗口中预览此成品"
           }
         }
       }
@@ -14968,7 +14975,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "已针对此装调结果重新优化"
+            "value" : "已针对此成品重新优化"
           }
         }
       }
@@ -14978,7 +14985,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "已针对此装调结果重新优化；标称 %@"
+            "value" : "已针对此成品重新优化；标称 %@"
           }
         }
       }
@@ -15111,7 +15118,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "正在引擎中重建装调结果…"
+            "value" : "正在引擎中重建成品…"
           }
         }
       }
@@ -15381,7 +15388,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "移除熔炼偏移"
+            "value" : "移除熔炼偏差"
           }
         }
       }
@@ -16655,7 +16662,14 @@
       }
     },
     "Show Inspector" : {
-
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "显示检查器"
+          }
+        }
+      }
     },
     "Show Issues" : {
       "localizations" : {
@@ -17294,7 +17308,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "球面/圆锥面"
+            "value" : "球面 / 二次曲面"
           }
         }
       }
@@ -17304,7 +17318,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "球面或回转圆锥面。"
+            "value" : "球面或回转二次曲面。"
           }
         }
       }
@@ -18318,7 +18332,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "设计已将 S%1$lld–%2$@ 作为绕 S%3$@ 移动的透镜：请使用该范围和支点。"
+            "value" : "设计已将 S%1$lld–%2$@ 作为绕 S%3$@ 移动的透镜：请使用该范围和枢轴。"
           }
         }
       }
@@ -18538,7 +18552,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "随机装调结果的期望值：标称值加上每个公差在其分布上的期望变化（独立误差对均方判据的变化相加）"
+            "value" : "随机成品的期望值：标称值加上每个公差在其分布上的期望变化（独立误差对均方判据的变化相加）"
           }
         }
       }
@@ -18788,7 +18802,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "结果中报告的装调结果百分位，例如 50, 90, 97.7"
+            "value" : "结果中报告的成品百分位，例如 50, 90, 97.7"
           }
         }
       }
@@ -18798,7 +18812,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "支点面已不存在。"
+            "value" : "枢轴面已不存在。"
           }
         }
       }
@@ -19928,7 +19942,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "每种玻璃的 V_d：模型玻璃的 V_d，玻璃库玻璃的熔炼偏移 ΔV_d。"
+            "value" : "每种玻璃的 V_d：模型玻璃的 V_d，玻璃库玻璃的熔炼偏差 ΔV_d。"
           }
         }
       }
@@ -20286,7 +20300,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "波前图，RMS %1$.3f 个波长，峰谷值 %2$.3f 个波长"
+            "value" : "波前图，RMS %1$.3f λ，峰谷值 %2$.3f λ"
           }
         }
       }
@@ -20472,7 +20486,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "加上熔炼偏移 (%1$@) 后，%2$@ 将超出 ±%3$@，即引擎的限值。"
+            "value" : "加上熔炼偏差 (%1$@) 后，%2$@ 将超出 ±%3$@，即引擎的限值。"
           }
         }
       }
@@ -21378,7 +21392,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "每种玻璃的 n_d：模型玻璃的 n_d，玻璃库玻璃的熔炼偏移 Δn_d。"
+            "value" : "每种玻璃的 n_d：模型玻璃的 n_d，玻璃库玻璃的熔炼偏差 Δn_d。"
           }
         }
       }
@@ -21910,6 +21924,24 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "光阑"
+          }
+        }
+      }
+    },
+    "surface.type.conic" : {
+      "comment" : "surface type: a conic of revolution",
+      "extractionState" : "extracted_with_value",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "Conic"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "二次曲面"
           }
         }
       }
