@@ -115,7 +115,7 @@ static class JobsRegistration
         {
             var doc = w.Session.Document;
             var target = new Model.ParamPath.Thickness(doc.System.Surfaces[doc.System.ImageIndex - 1].Id);
-            doc.Edit("Add Solve", s => s with { Solves = s.Solves.Add(new Model.Solve(target, new Model.SolveKind.MarginalRayHeight(0))) });
+            doc.Edit(Loc.S("Jobs_Registration_AddSolve"), s => s with { Solves = s.Solves.Add(new Model.Solve(target, new Model.SolveKind.MarginalRayHeight(0))) });
             return Task.CompletedTask;
         };
         AppHooks.LaunchActions["solves-run"] = async (w, _) =>

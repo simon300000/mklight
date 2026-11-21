@@ -1,5 +1,6 @@
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
+using MKLight.App.Support;
 using MKLight.App.ViewModels;
 using MKLight.App.Views.Analysis;
 using MKLight.App.Views.Analysis.Results.Readers;
@@ -21,8 +22,8 @@ public static class PreviewComparison
         var pane = ws.Panes.FirstOrDefault(p => p.Analysis == "spot_diagram");
         var head = new Grid { ColumnSpacing = 8 };
         Columns(head);
-        head.Children.Add(JobUI.Text(pane is null ? "Design and candidate" : "Spot diagram", "PanelTitleText", 12));
-        Cell(head, JobUI.Text("Design", "CaptionText"), 1);
+        head.Children.Add(JobUI.Text(Loc.S(pane is null ? "Jobs_Preview_DesignAndCandidate" : "Jobs_Preview_SpotDiagram"), "PanelTitleText", 12));
+        Cell(head, JobUI.Text(Loc.S("Jobs_Preview_Design"), "CaptionText"), 1);
         var cand = JobUI.Text(candidateTitle, "CaptionText");
         JobUI.Bind(cand, "AccentTextFillColorPrimaryBrush", b => cand.Foreground = b);
         Cell(head, cand, 2);
@@ -37,9 +38,9 @@ public static class PreviewComparison
                 Row(card, label, before.FirstOrDefault(k => k.Label == label).Value ?? "—",
                     candidate.FirstOrDefault(k => k.Label == label).Value ?? (pane.IsRunning ? "…" : "—"));
             if (before.Count == 0 && candidate.Count == 0)
-                card.Children.Add(JobUI.Hint(pane.IsRunning ? "Computing the candidate's spot diagram…" : "The spot diagram has no result yet.", 11.5));
+                card.Children.Add(JobUI.Hint(Loc.S(pane.IsRunning ? "Jobs_Preview_Computing" : "Jobs_Preview_NoResult"), 11.5));
         }
-        else card.Children.Add(JobUI.Hint("Open a Spot Diagram to compare its numbers here.", 11.5));
+        else card.Children.Add(JobUI.Hint(Loc.S("Jobs_Preview_OpenSpot"), 11.5));
         foreach (var (label, d, c) in extra) Row(card, label, d, c);
     }
 
@@ -52,7 +53,7 @@ public static class PreviewComparison
         var c = JobUI.Text(candidate, "NumberText");
         c.FontWeight = Microsoft.UI.Text.FontWeights.SemiBold;
         Cell(row, c, 2);
-        Microsoft.UI.Xaml.Automation.AutomationProperties.SetName(row, $"{label}: design {design}, candidate {candidate}");
+        Microsoft.UI.Xaml.Automation.AutomationProperties.SetName(row, Loc.F("Jobs_Preview_RowName", label, design, candidate));
         card.Children.Add(row);
     }
 

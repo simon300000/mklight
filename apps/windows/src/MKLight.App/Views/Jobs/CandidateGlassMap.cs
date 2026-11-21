@@ -46,19 +46,19 @@ public sealed partial class CandidateGlassMap : UserControl
         _moves = _marks.SelectMany(m => m.Surfaces.Select(s => (s, m.Id))).OrderBy(x => x.s).ToList();
         IsTabStop = false;
         _canvas = new PlotCanvas(Draw) { Height = 230 };
-        var plane = new Choice("Plane", ["n_d", "P_g,F"], pgf() ? 1 : 0, menuBelow: 0);
-        ToolTipService.SetToolTip(plane, "Refractive index nd or partial dispersion Pg,F against Abbe number Vd");
+        var plane = new Choice(Loc.S("Jobs_GlassMap_Plane"), ["n_d", "P_g,F"], pgf() ? 1 : 0, menuBelow: 0);
+        ToolTipService.SetToolTip(plane, Loc.S("Jobs_GlassMap_PlaneHelp"));
         plane.Changed += k => { setPgf(k == 1); _canvas.Invalidate(); };
         plane.HorizontalAlignment = HorizontalAlignment.Right;
         var head = new Grid();
-        head.Children.Add(JobUI.Text("Glass Map", "PanelTitleText"));
+        head.Children.Add(JobUI.Text(Loc.S("Jobs_GlassMap_Title"), "PanelTitleText"));
         head.Children.Add(plane);
         var plot = new Grid();
         plot.Children.Add(_canvas);
         plot.Children.Add(_ring);
         Content = JobUI.Column(6, head, plot,
-            JobUI.Hint("Ringed: the candidate's glasses, labeled with their surfaces. Hollow: the design's glasses they replace.", 11.5));
-        AutomationProperties.SetName(_canvas, "Glass map, the candidate's glasses: " + string.Join("; ", _marks.Select(m => $"{m.Name} {m.Label}")));
+            JobUI.Hint(Loc.S("Jobs_GlassMap_Legend"), 11.5));
+        AutomationProperties.SetName(_canvas, Loc.F("Jobs_GlassMap_Name", string.Join("; ", _marks.Select(m => $"{m.Name} {m.Label}"))));
         Request();
         Loaded += (_, _) => Request();
         Unloaded += (_, _) => { _lease?.Dispose(); _lease = null; };
@@ -99,7 +99,7 @@ public sealed partial class CandidateGlassMap : UserControl
         var f = new Frame
         {
             XMin = vlo - vpad, XMax = vhi + vpad, YMin = ylo - ypad, YMax = yhi + ypad, ReverseX = true, XTickSpacing = 46, YTickSpacing = 40,
-            MinTicks = 3, XTitle = "Abbe number V_d", YTitle = pgf ? "Partial dispersion P_g,F" : "Refractive index n_d",
+            MinTicks = 3, XTitle = Loc.S("Jobs_GlassMap_AxisAbbe"), YTitle = Loc.S(pgf ? "Jobs_GlassMap_AxisPgf" : "Jobs_GlassMap_AxisIndex"),
         };
         var r = f.Draw(ds, f.Inside(ds, new Rect(0, 0, size.Width, size.Height), top: 8, right: 8), style);
         if (r.IsEmpty) return;

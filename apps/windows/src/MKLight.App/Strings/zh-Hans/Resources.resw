@@ -24,6 +24,158 @@
   <!-- area: Analysis -->
   <!-- end area: Analysis -->
   <!-- area: Jobs -->
+  <data name="Jobs_Controls_AppliedNotice" xml:space="preserve"><value>已应用到设计。按 Ctrl+Z 撤销。</value></data>
+  <data name="Jobs_Controls_ApplyToDesign" xml:space="preserve"><value>应用到设计</value></data>
+  <data name="Jobs_Controls_Back" xml:space="preserve"><value>返回</value></data>
+  <data name="Jobs_Controls_BackHelp" xml:space="preserve"><value>返回任务设置</value></data>
+  <data name="Jobs_Controls_BigNumberName" xml:space="preserve"><value>{0} {1}</value></data>
+  <data name="Jobs_Controls_Discard" xml:space="preserve"><value>放弃</value></data>
+  <data name="Jobs_Controls_Done" xml:space="preserve"><value>完成</value></data>
+  <data name="Jobs_Controls_MeritByIteration" xml:space="preserve"><value>各次迭代的评价函数</value></data>
+  <data name="Jobs_Controls_Running" xml:space="preserve"><value>运行中</value></data>
+  <data name="Jobs_Controls_StepperFewer" xml:space="preserve"><value>减少{0}</value></data>
+  <data name="Jobs_Controls_StepperMore" xml:space="preserve"><value>增加{0}</value></data>
+  <data name="Jobs_Controls_StepperValue" xml:space="preserve"><value>{0} {1}</value></data>
+  <data name="Jobs_Controls_Stop" xml:space="preserve"><value>停止</value></data>
+  <data name="Jobs_Controls_TryAgain" xml:space="preserve"><value>重试</value></data>
+  <data name="Jobs_Controls_TryAgainHelp" xml:space="preserve"><value>以相同设置再次运行任务</value></data>
+  <data name="Jobs_GlassMap_AxisAbbe" xml:space="preserve"><value>阿贝数 V_d</value></data>
+  <data name="Jobs_GlassMap_AxisIndex" xml:space="preserve"><value>折射率 n_d</value></data>
+  <data name="Jobs_GlassMap_AxisPgf" xml:space="preserve"><value>相对部分色散 P_g,F</value></data>
+  <data name="Jobs_GlassMap_Legend" xml:space="preserve"><value>圆环：候选设计的玻璃，标注所在的面。空心：被替换的设计玻璃。</value></data>
+  <data name="Jobs_GlassMap_Name" xml:space="preserve"><value>玻璃图，候选设计的玻璃：{0}</value></data>
+  <data name="Jobs_GlassMap_Plane" xml:space="preserve"><value>平面</value></data>
+  <data name="Jobs_GlassMap_PlaneHelp" xml:space="preserve"><value>折射率 nd 或相对部分色散 Pg,F 对阿贝数 Vd</value></data>
+  <data name="Jobs_GlassMap_Title" xml:space="preserve"><value>玻璃图</value></data>
+  <data name="Jobs_GlassSub_Activity" xml:space="preserve"><value>玻璃替换中</value></data>
+  <data name="Jobs_GlassSub_ActivityCount" xml:space="preserve"><value>玻璃替换中 · {0}</value></data>
+  <data name="Jobs_GlassSub_AllLoaded" xml:space="preserve"><value>所有已加载</value></data>
+  <data name="Jobs_GlassSub_AlwaysInclude" xml:space="preserve"><value>始终包含</value></data>
+  <data name="Jobs_GlassSub_Applied" xml:space="preserve"><value>已应用</value></data>
+  <data name="Jobs_GlassSub_ApplyHelp" xml:space="preserve"><value>将预览的组合作为一步可撤销的操作应用</value></data>
+  <data name="Jobs_GlassSub_AutoVariablesHint" xml:space="preserve"><value>每个组合都会重新优化所有曲率和后焦距。</value></data>
+  <data name="Jobs_GlassSub_BestGlasses" xml:space="preserve"><value>目前最佳玻璃</value></data>
+  <data name="Jobs_GlassSub_BestMerit" xml:space="preserve"><value>最佳评价函数</value></data>
+  <data name="Jobs_GlassSub_CancelHelp" xml:space="preserve"><value>结束运行并放弃结果</value></data>
+  <data name="Jobs_GlassSub_Candidate" xml:space="preserve"><value>候选设计 {0}</value></data>
+  <data name="Jobs_GlassSub_Catalogs" xml:space="preserve"><value>玻璃库</value></data>
+  <data name="Jobs_GlassSub_Choose" xml:space="preserve"><value>选择</value></data>
+  <data name="Jobs_GlassSub_Combinations" xml:space="preserve"><value>组合</value></data>
+  <data name="Jobs_GlassSub_CombinationsToTry" xml:space="preserve"><value>尝试的组合数</value></data>
+  <data name="Jobs_GlassSub_ConstraintsNotMet" xml:space="preserve"><value>未满足约束</value></data>
+  <data name="Jobs_GlassSub_CutShort" xml:space="preserve"><value>{0} · 提前中止</value></data>
+  <data name="Jobs_GlassSub_DiscardHelp" xml:space="preserve"><value>放弃此结果；设计保持不变</value></data>
+  <data name="Jobs_GlassSub_DoneHelp" xml:space="preserve"><value>返回玻璃和搜索设置</value></data>
+  <data name="Jobs_GlassSub_EditMerit" xml:space="preserve"><value>编辑评价函数和变量…</value></data>
+  <data name="Jobs_GlassSub_FailedTitle" xml:space="preserve"><value>玻璃替换失败</value></data>
+  <data name="Jobs_GlassSub_FindGlasses" xml:space="preserve"><value>查找玻璃</value></data>
+  <data name="Jobs_GlassSub_FindGlassesHelp" xml:space="preserve"><value>开始搜索（Ctrl+Enter）</value></data>
+  <data name="Jobs_GlassSub_FixErrors" xml:space="preserve"><value>请先修正设计中的错误。</value></data>
+  <data name="Jobs_GlassSub_GroupCandidates" xml:space="preserve"><value>所有透镜的候选玻璃</value></data>
+  <data name="Jobs_GlassSub_GroupGlasses" xml:space="preserve"><value>可更换的玻璃</value></data>
+  <data name="Jobs_GlassSub_GroupMerit" xml:space="preserve"><value>评价函数</value></data>
+  <data name="Jobs_GlassSub_KeepBest" xml:space="preserve"><value>保留最佳的</value></data>
+  <data name="Jobs_GlassSub_Limits" xml:space="preserve"><value>限制</value></data>
+  <data name="Jobs_GlassSub_ListAnd" xml:space="preserve"><value>{0} 和 {1}</value></data>
+  <data name="Jobs_GlassSub_ListSeparator" xml:space="preserve"><value>、</value></data>
+  <data name="Jobs_GlassSub_MaxClimate" xml:space="preserve"><value>最大气候等级</value></data>
+  <data name="Jobs_GlassSub_MaxClimateHelp" xml:space="preserve"><value>耐气候等级（CR）</value></data>
+  <data name="Jobs_GlassSub_MaxCost" xml:space="preserve"><value>最大相对成本</value></data>
+  <data name="Jobs_GlassSub_MaxCostHelp" xml:space="preserve"><value>玻璃库中的相对成本</value></data>
+  <data name="Jobs_GlassSub_MaxStain" xml:space="preserve"><value>最大污渍等级</value></data>
+  <data name="Jobs_GlassSub_MaxStainHelp" xml:space="preserve"><value>耐污渍等级（FR）</value></data>
+  <data name="Jobs_GlassSub_MeltOffsetHelp" xml:space="preserve"><value>熔炼偏差 Δn_d / ΔV_d：替换玻璃不带此偏差</value></data>
+  <data name="Jobs_GlassSub_Merit" xml:space="preserve"><value>评价函数</value></data>
+  <data name="Jobs_GlassSub_MeritCustom" xml:space="preserve"><value>自定义评价函数，{0} 个操作数。</value></data>
+  <data name="Jobs_GlassSub_MeritCustomHeld" xml:space="preserve"><value>自定义评价函数，{0} 个操作数，保持焦距。</value></data>
+  <data name="Jobs_GlassSub_MeritDefault" xml:space="preserve"><value>默认评价函数：{0}。</value></data>
+  <data name="Jobs_GlassSub_MeritDefaultHeld" xml:space="preserve"><value>默认评价函数：{0}，保持焦距。</value></data>
+  <data name="Jobs_GlassSub_MinTransmission" xml:space="preserve"><value>最小透过率</value></data>
+  <data name="Jobs_GlassSub_MinTransmissionHelp" xml:space="preserve"><value>最短波长下透镜中心厚度的内透过率（0…1）</value></data>
+  <data name="Jobs_GlassSub_ModelTag" xml:space="preserve"><value>模型</value></data>
+  <data name="Jobs_GlassSub_NamesPlaceholder" xml:space="preserve"><value>名称</value></data>
+  <data name="Jobs_GlassSub_Nearest" xml:space="preserve"><value>最近</value></data>
+  <data name="Jobs_GlassSub_NeverUse" xml:space="preserve"><value>从不使用</value></data>
+  <data name="Jobs_GlassSub_NoCombinations" xml:space="preserve"><value>没有组合</value></data>
+  <data name="Jobs_GlassSub_NoCombinationsDetail" xml:space="preserve"><value>没有可以评估的组合。</value></data>
+  <data name="Jobs_GlassSub_NoGlass" xml:space="preserve"><value>设计中没有可替换的玻璃。</value></data>
+  <data name="Jobs_GlassSub_NoResult" xml:space="preserve"><value>引擎未返回任何玻璃组合。</value></data>
+  <data name="Jobs_GlassSub_NoneTickedHint" xml:space="preserve"><value>未勾选任何玻璃时，每个模型玻璃（n_d, V_d）都替换为最接近的真实玻璃。</value></data>
+  <data name="Jobs_GlassSub_NoneValue" xml:space="preserve"><value>无</value></data>
+  <data name="Jobs_GlassSub_NotPreviewed" xml:space="preserve"><value>未预览</value></data>
+  <data name="Jobs_GlassSub_OffsetNote_Many" xml:space="preserve"><value>{0} 带有熔炼偏差。替换玻璃不带这些偏差，即使是同一种玻璃：偏差属于原来的熔炼批次。</value></data>
+  <data name="Jobs_GlassSub_OffsetNote_One" xml:space="preserve"><value>{0} 带有熔炼偏差。替换玻璃不带此偏差，即使是同一种玻璃：偏差属于原来的熔炼批次。</value></data>
+  <data name="Jobs_GlassSub_OverrideHelp" xml:space="preserve"><value>仅用于面 {0} 的候选玻璃</value></data>
+  <data name="Jobs_GlassSub_OverrideTitle" xml:space="preserve"><value>S{0} · {1} 的候选玻璃</value></data>
+  <data name="Jobs_GlassSub_OwnCandidates" xml:space="preserve"><value>此透镜使用单独的候选玻璃</value></data>
+  <data name="Jobs_GlassSub_Preparing" xml:space="preserve"><value>准备中</value></data>
+  <data name="Jobs_GlassSub_PreparingCandidates" xml:space="preserve"><value>正在准备候选玻璃</value></data>
+  <data name="Jobs_GlassSub_PreviewTitle" xml:space="preserve"><value>玻璃候选设计 {0} · 评价函数 {1}</value></data>
+  <data name="Jobs_GlassSub_PreviewTitleChange" xml:space="preserve"><value>玻璃候选设计 {0} · 评价函数 {1}（{2}{3}）</value></data>
+  <data name="Jobs_GlassSub_Previewed" xml:space="preserve"><value>已在窗口中预览</value></data>
+  <data name="Jobs_GlassSub_ProgressCombinations" xml:space="preserve"><value>{0} 个组合</value></data>
+  <data name="Jobs_GlassSub_RankName" xml:space="preserve"><value>第 {0} 名，评价函数 {1}，玻璃 {2}</value></data>
+  <data name="Jobs_GlassSub_RuleNearest" xml:space="preserve"><value>最接近的玻璃</value></data>
+  <data name="Jobs_GlassSub_RuleWindow" xml:space="preserve"><value>窗口内的玻璃</value></data>
+  <data name="Jobs_GlassSub_RunningHint" xml:space="preserve"><value>“停止”保留目前已排名的组合。“取消”放弃本次运行。可以关闭此面板，搜索会继续进行。</value></data>
+  <data name="Jobs_GlassSub_Search" xml:space="preserve"><value>搜索</value></data>
+  <data name="Jobs_GlassSub_SearchHammer" xml:space="preserve"><value>全面（全局搜索）</value></data>
+  <data name="Jobs_GlassSub_SearchHammerDetail" xml:space="preserve"><value>同时在玻璃和形状之间跳跃以跳出局部极小值；较慢。</value></data>
+  <data name="Jobs_GlassSub_SearchTabu" xml:space="preserve"><value>快速（禁忌搜索）</value></data>
+  <data name="Jobs_GlassSub_SearchTabuDetail" xml:space="preserve"><value>尝试各种玻璃组合，每个组合都从当前形状重新优化。</value></data>
+  <data name="Jobs_GlassSub_SelectAll" xml:space="preserve"><value>全选</value></data>
+  <data name="Jobs_GlassSub_SelectNone" xml:space="preserve"><value>全不选</value></data>
+  <data name="Jobs_GlassSub_ShapeChanges" xml:space="preserve"><value>形状变化（{0}）</value></data>
+  <data name="Jobs_GlassSub_ShapeIterations" xml:space="preserve"><value>每个组合的形状迭代</value></data>
+  <data name="Jobs_GlassSub_ShapeIterationsHelp" xml:space="preserve"><value>为每个玻璃组合重新优化形状的阻尼最小二乘迭代次数</value></data>
+  <data name="Jobs_GlassSub_ShapeUnchanged" xml:space="preserve"><value>形状未变</value></data>
+  <data name="Jobs_GlassSub_Status" xml:space="preserve"><value>状态</value></data>
+  <data name="Jobs_GlassSub_StatusDone_Many" xml:space="preserve"><value>已重新优化 {0} 个组合。</value></data>
+  <data name="Jobs_GlassSub_StatusDone_One" xml:space="preserve"><value>已重新优化 {0} 个组合。</value></data>
+  <data name="Jobs_GlassSub_StatusFailed_Many" xml:space="preserve"><value>已重新优化 {0} 个组合，{1} 个失败。</value></data>
+  <data name="Jobs_GlassSub_StatusFailed_One" xml:space="preserve"><value>已重新优化 {0} 个组合，{1} 个失败。</value></data>
+  <data name="Jobs_GlassSub_StatusJoin" xml:space="preserve"><value>{0}{1}</value></data>
+  <data name="Jobs_GlassSub_StatusName_Melt" xml:space="preserve"><value>熔炼</value></data>
+  <data name="Jobs_GlassSub_StatusName_Obsolete" xml:space="preserve"><value>停产</value></data>
+  <data name="Jobs_GlassSub_StatusName_Preferred" xml:space="preserve"><value>优选</value></data>
+  <data name="Jobs_GlassSub_StatusName_Special" xml:space="preserve"><value>特殊</value></data>
+  <data name="Jobs_GlassSub_StatusName_Standard" xml:space="preserve"><value>标准</value></data>
+  <data name="Jobs_GlassSub_StatusSelect" xml:space="preserve"><value>选择一个组合即可在窗口中预览。</value></data>
+  <data name="Jobs_GlassSub_StatusStopped" xml:space="preserve"><value>已提前停止：显示目前的排名。</value></data>
+  <data name="Jobs_GlassSub_StatusTimeLimit" xml:space="preserve"><value>搜索因达到时间限制而结束。</value></data>
+  <data name="Jobs_GlassSub_Status_Melt" xml:space="preserve"><value>熔炼</value></data>
+  <data name="Jobs_GlassSub_Status_Obsolete" xml:space="preserve"><value>停产</value></data>
+  <data name="Jobs_GlassSub_Status_Preferred" xml:space="preserve"><value>优选</value></data>
+  <data name="Jobs_GlassSub_Status_Special" xml:space="preserve"><value>特殊</value></data>
+  <data name="Jobs_GlassSub_Status_Standard" xml:space="preserve"><value>标准</value></data>
+  <data name="Jobs_GlassSub_StopHelp" xml:space="preserve"><value>立即结束并保留目前已排名的组合</value></data>
+  <data name="Jobs_GlassSub_SubtitleNone" xml:space="preserve"><value>将模型玻璃替换为真实玻璃</value></data>
+  <data name="Jobs_GlassSub_Subtitle_Many" xml:space="preserve"><value>{0} 种玻璃可以更换</value></data>
+  <data name="Jobs_GlassSub_Subtitle_One" xml:space="preserve"><value>{0} 种玻璃可以更换</value></data>
+  <data name="Jobs_GlassSub_SummaryAllCatalogs" xml:space="preserve"><value>所有玻璃库</value></data>
+  <data name="Jobs_GlassSub_SummaryLimits" xml:space="preserve"><value>限制</value></data>
+  <data name="Jobs_GlassSub_SummaryMtf" xml:space="preserve"><value>MTF ≥ {0}，于 {1} cyc/mm</value></data>
+  <data name="Jobs_GlassSub_SummaryMtfWeakest" xml:space="preserve"><value>MTF ≥ {0}，于 {1} cyc/mm，最弱视场</value></data>
+  <data name="Jobs_GlassSub_SummaryNearest" xml:space="preserve"><value>最接近的 {0} 种</value></data>
+  <data name="Jobs_GlassSub_SummaryRings" xml:space="preserve"><value>{0} 环 × {1} 臂</value></data>
+  <data name="Jobs_GlassSub_SummarySqueeze" xml:space="preserve"><value>压缩 {0}</value></data>
+  <data name="Jobs_GlassSub_SummaryThickness" xml:space="preserve"><value>厚度限制</value></data>
+  <data name="Jobs_GlassSub_TimeLimit" xml:space="preserve"><value>时间限制</value></data>
+  <data name="Jobs_GlassSub_TimeLimitName" xml:space="preserve"><value>时间限制（秒）</value></data>
+  <data name="Jobs_GlassSub_Title" xml:space="preserve"><value>玻璃替换</value></data>
+  <data name="Jobs_GlassSub_UndoApply" xml:space="preserve"><value>应用玻璃替换</value></data>
+  <data name="Jobs_GlassSub_UsesShared" xml:space="preserve"><value>使用所有透镜的候选玻璃。</value></data>
+  <data name="Jobs_GlassSub_VariablesPinned" xml:space="preserve"><value>所有变量都已固定。请取消固定一个变量，或改用自动变量集。</value></data>
+  <data name="Jobs_GlassSub_VariablesPinnedOrSolved" xml:space="preserve"><value>所有变量都已固定或由求解控制。请添加一个自由变量，或改用自动变量集。</value></data>
+  <data name="Jobs_GlassSub_VariablesReoptimized_Many" xml:space="preserve"><value>已重新优化 {0} 个变量</value></data>
+  <data name="Jobs_GlassSub_VariablesReoptimized_One" xml:space="preserve"><value>已重新优化 {0} 个变量</value></data>
+  <data name="Jobs_GlassSub_VaryAuto" xml:space="preserve"><value>重新优化所有曲率和后焦距</value></data>
+  <data name="Jobs_GlassSub_VaryDesign" xml:space="preserve"><value>重新优化设计变量（{0}）</value></data>
+  <data name="Jobs_GlassSub_WindowNdName" xml:space="preserve"><value>n_d 窗口</value></data>
+  <data name="Jobs_GlassSub_WindowVdName" xml:space="preserve"><value>V_d 窗口</value></data>
+  <data name="Jobs_Layout_Before" xml:space="preserve"><value>原设计</value></data>
+  <data name="Jobs_Layout_Candidate" xml:space="preserve"><value>候选设计</value></data>
+  <data name="Jobs_Layout_Name" xml:space="preserve"><value>{0}布局图</value></data>
   <data name="Jobs_Merit_AddOperand" xml:space="preserve"><value>添加操作数</value></data>
   <data name="Jobs_Merit_AddOperandHelp" xml:space="preserve"><value>在所选项之后添加操作数</value></data>
   <data name="Jobs_Merit_All" xml:space="preserve"><value>全部</value></data>
@@ -220,6 +372,14 @@
   <data name="Jobs_Optimize_UntitledDesign" xml:space="preserve"><value>未命名设计</value></data>
   <data name="Jobs_Optimize_VariableChangeName" xml:space="preserve"><value>{0}：{1} 变为 {2}</value></data>
   <data name="Jobs_Optimize_Variables" xml:space="preserve"><value>变量</value></data>
+  <data name="Jobs_Preview_Computing" xml:space="preserve"><value>正在计算候选设计的点列图…</value></data>
+  <data name="Jobs_Preview_Design" xml:space="preserve"><value>设计</value></data>
+  <data name="Jobs_Preview_DesignAndCandidate" xml:space="preserve"><value>设计与候选设计</value></data>
+  <data name="Jobs_Preview_NoResult" xml:space="preserve"><value>点列图尚无结果。</value></data>
+  <data name="Jobs_Preview_OpenSpot" xml:space="preserve"><value>打开点列图即可在此比较其数值。</value></data>
+  <data name="Jobs_Preview_RowName" xml:space="preserve"><value>{0}：设计 {1}，候选设计 {2}</value></data>
+  <data name="Jobs_Preview_SpotDiagram" xml:space="preserve"><value>点列图</value></data>
+  <data name="Jobs_Registration_AddSolve" xml:space="preserve"><value>添加求解</value></data>
   <data name="Jobs_Results_Counts" xml:space="preserve"><value>{0} 次迭代，{1} 次评估。</value></data>
   <data name="Jobs_Results_Infeasible" xml:space="preserve"><value>部分约束未满足。</value></data>
   <data name="Jobs_Results_NotImproved" xml:space="preserve"><value>未找到更好的设计；结果与起点相同。</value></data>
@@ -227,6 +387,23 @@
   <data name="Jobs_Results_PreviewTitleChange" xml:space="preserve"><value>{0}（{1}）</value></data>
   <data name="Jobs_Results_PreviewTitleStopped" xml:space="preserve"><value>优化结果（已停止）· 评价函数 {0}</value></data>
   <data name="Jobs_Results_StoppedEarly" xml:space="preserve"><value>已提前停止：这是目前找到的最佳设计。</value></data>
+  <data name="Jobs_Solves_ApplyHelp" xml:space="preserve"><value>将结果作为一步可撤销的操作应用（Ctrl+Enter）</value></data>
+  <data name="Jobs_Solves_ApplyHelpNoChange" xml:space="preserve"><value>求解不会改变任何值：设计已包含这些值</value></data>
+  <data name="Jobs_Solves_CommittedHint" xml:space="preserve"><value>设计现在包含这些求解值。</value></data>
+  <data name="Jobs_Solves_DoneHelp" xml:space="preserve"><value>返回设计的求解</value></data>
+  <data name="Jobs_Solves_DryRunHint" xml:space="preserve"><value>试运行：求解将设置的值。尚未做任何更改。</value></data>
+  <data name="Jobs_Solves_EmptyDescription" xml:space="preserve"><value>在面检查器中添加求解：厚度上的边缘光线或主光线高度，曲率上的角度或 F 数，以及拾取。</value></data>
+  <data name="Jobs_Solves_EmptyTitle" xml:space="preserve"><value>没有求解</value></data>
+  <data name="Jobs_Solves_FailedTitle" xml:space="preserve"><value>求解失败</value></data>
+  <data name="Jobs_Solves_None" xml:space="preserve"><value>无</value></data>
+  <data name="Jobs_Solves_NotReady" xml:space="preserve"><value>设计尚未就绪。</value></data>
+  <data name="Jobs_Solves_Residual" xml:space="preserve"><value>残差 {0}</value></data>
+  <data name="Jobs_Solves_RowName" xml:space="preserve"><value>{0}，{1}：{2} 到 {3}，残差 {4}</value></data>
+  <data name="Jobs_Solves_Solving" xml:space="preserve"><value>正在求解…</value></data>
+  <data name="Jobs_Solves_Subtitle_Many" xml:space="preserve"><value>{1}：{0} 个求解</value></data>
+  <data name="Jobs_Solves_Subtitle_One" xml:space="preserve"><value>{1}：{0} 个求解</value></data>
+  <data name="Jobs_Solves_TheDesign" xml:space="preserve"><value>设计</value></data>
+  <data name="Jobs_Solves_Title" xml:space="preserve"><value>应用求解</value></data>
   <data name="Jobs_Variables_BoundsAs" xml:space="preserve"><value>边界换算为 {0}。{1}</value></data>
   <data name="Jobs_Variables_BoundsIn" xml:space="preserve"><value>边界单位为 {0}</value></data>
   <data name="Jobs_Variables_BoundsInHelp" xml:space="preserve"><value>边界单位为 {0}。</value></data>
