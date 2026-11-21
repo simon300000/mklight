@@ -268,7 +268,7 @@ public sealed class Workspace
                 catch (EngineException e) { error = e.Message; }
             }
             if (!loaded)
-                warnings.Add(error is null ? Loc.F("Shell_Catalog_NotFound", c.Name, c.Path ?? c.RelativePath ?? Loc.S("Shell_Catalog_NoPath")) : $"{c.Name}: {error}");
+                warnings.Add(error is null ? Loc.F("Shell_Catalog_NotFound", c.Name, c.Path ?? c.RelativePath ?? Loc.S("Shell_Catalog_NoPath")) : $"{c.Name}: {EngineText.T(error)}");
         }
         CatalogWarnings = warnings;
         await CatalogsDidChangeAsync();

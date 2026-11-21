@@ -170,7 +170,9 @@ public sealed partial class StatusCapsule : UserControl
 
     public void SetIssues(IReadOnlyList<IssueItem> issues)
     {
+        var changed = !issues.SequenceEqual(_issues);
         _issues = issues;
+        if (changed && FlyoutBase.GetAttachedFlyout(IssuesButton) is { IsOpen: true }) FillIssues();
         var errors = issues.Count(i => i.Severity == "error");
         if (issues.Count == 0)
         {
@@ -253,6 +255,13 @@ public sealed partial class StatusCapsule : UserControl
 
     void OnIssuesClick(object sender, RoutedEventArgs e)
     {
+        FillIssues();
+        FlyoutBase.ShowAttachedFlyout(IssuesButton);
+    }
+
+    /// <summary>The issues list (again while it is open, when the issues change: <c>--show-issues</c> opens it before validation).</summary>
+    void FillIssues()
+    {
         IssuesList.Children.Clear();
         if (_issues.Count == 0)
             IssuesList.Children.Add(new TextBlock { Text = Loc.S("Shell_Status_NoIssues"), Style = (Style)Application.Current.Resources["SecondaryText"] });
@@ -278,6 +287,5 @@ public sealed partial class StatusCapsule : UserControl
             button.Click += (_, _) => IssueInvoked?.Invoke(issue);
             IssuesList.Children.Add(button);
         }
-        FlyoutBase.ShowAttachedFlyout(IssuesButton);
     }
 }
