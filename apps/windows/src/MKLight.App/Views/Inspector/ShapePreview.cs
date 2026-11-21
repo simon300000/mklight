@@ -103,11 +103,11 @@ sealed class ShapePreview : StackPanel
                 AddProfiles([CylinderAxis.Y], null);
                 break;
             case ShapePreviewKind.Anamorphic:
-                AddProfiles([CylinderAxis.X, CylinderAxis.Y], "Sag");
+                AddProfiles([CylinderAxis.X, CylinderAxis.Y], Loc.S("Lens_Preview_Sag"));
                 break;
             case ShapePreviewKind.Freeform:
-                AddProfiles([CylinderAxis.X, CylinderAxis.Y], "Sag");
-                var header = Header("Departure from base");
+                AddProfiles([CylinderAxis.X, CylinderAxis.Y], Loc.S("Lens_Preview_Sag"));
+                var header = Header(Loc.S("Lens_Preview_Departure"));
                 _pv.Style = InspectorStyles.Get("InspectorCaption");
                 _pv.HorizontalAlignment = HorizontalAlignment.Right;
                 Grid.SetColumn(_pv, 1);
@@ -116,10 +116,10 @@ sealed class ShapePreview : StackPanel
                 AddCanvas(DrawMap, 132);
                 break;
             case ShapePreviewKind.Diffractive:
-                Children.Add(Header("Phase (order +1)"));
+                Children.Add(Header(Loc.S("Lens_Preview_Phase")));
                 AddCanvas(DrawPhase, 116);
                 Children.Add(_figures);
-                if (curvedBase) AddProfiles([CylinderAxis.Y], "Base sag");
+                if (curvedBase) AddProfiles([CylinderAxis.Y], Loc.S("Lens_Preview_BaseSag"));
                 break;
         }
     }
@@ -141,8 +141,8 @@ sealed class ShapePreview : StackPanel
             if (axes.Length > 1)
             {
                 var legend = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 10, HorizontalAlignment = HorizontalAlignment.Right };
-                legend.Children.Add(new LegendSwatch(1, dashed: true, "x section"));
-                legend.Children.Add(new LegendSwatch(0, dashed: false, "y section"));
+                legend.Children.Add(new LegendSwatch(1, dashed: true, Loc.S("Lens_Preview_XSection")));
+                legend.Children.Add(new LegendSwatch(0, dashed: false, Loc.S("Lens_Preview_YSection")));
                 Grid.SetColumn(legend, 1);
                 header.Children.Add(legend);
             }
@@ -162,7 +162,7 @@ sealed class ShapePreview : StackPanel
     {
         if (_shape is null) return;
         var shape = _kind == ShapePreviewKind.Diffractive && _shape is DiffractiveShape d ? d.Base : _shape;
-        var plot = new LinePlot { XTitle = "Position (mm)", YTitle = "Sag (mm)", XTickSpacing = 56, YTickSpacing = 28 };
+        var plot = new LinePlot { XTitle = Loc.S("Lens_Preview_PositionAxis"), YTitle = Loc.S("Lens_Preview_SagAxis"), XTickSpacing = 56, YTickSpacing = 28 };
         foreach (var axis in axes)
         {
             if (SurfaceTypes.Profile(shape, _h, axis, 96) is not { } pts) continue;
@@ -171,7 +171,7 @@ sealed class ShapePreview : StackPanel
         }
         if (plot.Series.Count == 0)
         {
-            PlotText.Draw(ds, $"No real sag over ±{InspectorFormat.Short(_h)} mm", size.Width / 2, size.Height / 2, style.Label, 11);
+            PlotText.Draw(ds, Loc.F("Lens_Preview_NoSag", InspectorFormat.Short(_h)), size.Width / 2, size.Height / 2, style.Label, 11);
             return;
         }
         plot.FitData(includeZeroY: true, pad: 0.08);
@@ -188,7 +188,7 @@ sealed class ShapePreview : StackPanel
             var r = _h * k / 96;
             return new Vector2((float)r, (float)(ShapeSag.Phase(d.Phase, r) / (2 * Math.PI)));
         }).ToList();
-        var plot = new LinePlot { XTitle = "Radius (mm)", YTitle = "Φ (waves)", XTickSpacing = 56, YTickSpacing = 28 };
+        var plot = new LinePlot { XTitle = Loc.S("Lens_Preview_RadiusAxis"), YTitle = "Φ (waves)", XTickSpacing = 56, YTickSpacing = 28 };
         plot.Series.Add(new PlotSeries(pts, Palette.Slot(6, style.Dark)));
         plot.FitData(includeZeroY: true, pad: 0.08);
         plot.XMin = 0;
@@ -263,16 +263,16 @@ sealed class ShapePreview : StackPanel
         var period = ShapeSag.MinimumPeriod(phase, _h);
         var zones = Math.Abs(ShapeSag.Phase(phase, _h)) / (2 * Math.PI);
         var sameAsDesign = phase.TraceOrder == phase.DesignOrder && Math.Abs(_primaryUm - phase.DesignWavelengthUm) < 1e-9;
-        string Order(int m, double um) => $"order {m}, {InspectorFormat.Short(um)} µm";
-        Figure("Paraxial power", Order(phase.TraceOrder, _primaryUm), trace == 0 ? "0" : InspectorFormat.Short(trace) + " mm⁻¹",
+        string Order(int m, double um) => Loc.F("Lens_Preview_Order", m, InspectorFormat.Short(um));
+        Figure(Loc.S("Lens_Preview_ParaxialPower"), Order(phase.TraceOrder, _primaryUm), trace == 0 ? "0" : InspectorFormat.Short(trace) + " mm⁻¹",
             trace == 0 ? null : "f " + InspectorFormat.Short(1 / trace) + " mm");
         if (!sameAsDesign)
-            Figure("At design", Order(phase.DesignOrder, phase.DesignWavelengthUm), design == 0 ? "0" : InspectorFormat.Short(design) + " mm⁻¹",
+            Figure(Loc.S("Lens_Preview_AtDesign"), Order(phase.DesignOrder, phase.DesignWavelengthUm), design == 0 ? "0" : InspectorFormat.Short(design) + " mm⁻¹",
                 design == 0 ? null : "f " + InspectorFormat.Short(1 / design) + " mm");
-        Figure("Smallest zone period", period is { } p ? $"at r = {InspectorFormat.Short(p.Radius)} mm" : "",
+        Figure(Loc.S("Lens_Preview_SmallestPeriod"), period is { } p ? Loc.F("Lens_Preview_AtRadius", InspectorFormat.Short(p.Radius)) : "",
             period is { } q ? InspectorFormat.Length(q.Period) : "—", null);
-        Figure("Zones", $"over ±{InspectorFormat.Short(_h)} mm", InspectorFormat.Fixed(zones, 1), null);
-        ToolTipService.SetToolTip(_figures, "Paraxial power φ = −m λ A₁ / (π r_norm²), added to the base's refractive power. A DOE's Abbe number is about −3.45.");
+        Figure(Loc.S("Lens_Preview_Zones"), Loc.F("Lens_Preview_Over", InspectorFormat.Short(_h)), InspectorFormat.Fixed(zones, 1), null);
+        ToolTipService.SetToolTip(_figures, Loc.S("Lens_Preview_PowerHelp"));
     }
 
     void Figure(string title, string detail, string value, string? extra)
