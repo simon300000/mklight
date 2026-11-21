@@ -256,7 +256,7 @@
   <data name="Shell_Status_EngineHeader" xml:space="preserve"><value>引擎</value></data>
   <data name="Shell_Status_Epd" xml:space="preserve"><value>入瞳直径</value></data>
   <data name="Shell_Status_FirstOrder" xml:space="preserve"><value>一阶特性</value></data>
-  <data name="Shell_Status_GlassLibrary" xml:space="preserve"><value>玻璃资料库</value></data>
+  <data name="Shell_Status_GlassLibrary" xml:space="preserve"><value>玻璃库</value></data>
   <data name="Shell_Status_GlassLibraryHelp" xml:space="preserve"><value>计算此设计结果所用玻璃库的哈希值：{0}</value></data>
   <data name="Shell_Status_GpuKernels" xml:space="preserve"><value>GPU 内核</value></data>
   <data name="Shell_Status_ImageHeight" xml:space="preserve"><value>像高</value></data>
@@ -563,7 +563,7 @@
   <data name="Lens_Row_VariableIgnored" xml:space="preserve"><value>求解值上的变量：优化器会忽略它。请移除变量或求解。</value></data>
   <data name="Lens_Row_VariablePinned" xml:space="preserve"><value>变量，已固定（上下界相等）</value></data>
   <data name="Lens_Section_Aperture" xml:space="preserve"><value>孔径</value></data>
-  <data name="Lens_Section_BaseConic" xml:space="preserve"><value>基底圆锥曲面</value></data>
+  <data name="Lens_Section_BaseConic" xml:space="preserve"><value>基底二次曲面</value></data>
   <data name="Lens_Section_BasePolynomial" xml:space="preserve"><value>基底多项式</value></data>
   <data name="Lens_Section_BaseShape" xml:space="preserve"><value>基底面形</value></data>
   <data name="Lens_Section_BestFitSphere" xml:space="preserve"><value>最佳拟合球面</value></data>
@@ -601,19 +601,19 @@
   <data name="Lens_Solve_Position" xml:space="preserve"><value>位置</value></data>
   <data name="Lens_Solves_Add" xml:space="preserve"><value>添加求解</value></data>
   <data name="Lens_Solves_Remove" xml:space="preserve"><value>移除</value></data>
-  <data name="Lens_Summary_Biconic" xml:space="preserve"><value>x 和 y 方向各自独立的圆锥曲面，带偶次轴向多项式。柱面是一个方向为平面的双锥面。</value></data>
-  <data name="Lens_Summary_Conic" xml:space="preserve"><value>球面或旋转圆锥曲面。</value></data>
+  <data name="Lens_Summary_Biconic" xml:space="preserve"><value>x 和 y 方向各自独立的二次曲面，带偶次轴向多项式。柱面是一个方向为平面的双锥面。</value></data>
+  <data name="Lens_Summary_Conic" xml:space="preserve"><value>球面或旋转二次曲面。</value></data>
   <data name="Lens_Summary_CoordinateBreak" xml:space="preserve"><value>只改变坐标系：先偏心后倾斜（或相反）。</value></data>
-  <data name="Lens_Summary_Diffractive" xml:space="preserve"><value>位于平面、圆锥曲面或偶次非球面基底上的固定周期相位 Φ = Σ Aᵢ ρ²ⁱ（+1 级，弧度）。</value></data>
-  <data name="Lens_Summary_EvenAsphere" xml:space="preserve"><value>圆锥曲面加偶次多项式项 A₄r⁴ + A₆r⁶ + …</value></data>
+  <data name="Lens_Summary_Diffractive" xml:space="preserve"><value>位于平面、二次曲面或偶次非球面基底上的固定周期相位 Φ = Σ Aᵢ ρ²ⁱ（+1 级，弧度）。</value></data>
+  <data name="Lens_Summary_EvenAsphere" xml:space="preserve"><value>二次曲面加偶次多项式项 A₄r⁴ + A₆r⁶ + …</value></data>
   <data name="Lens_Summary_IdealLens" xml:space="preserve"><value>给定焦距的无像差薄透镜。</value></data>
-  <data name="Lens_Summary_OddAsphere" xml:space="preserve"><value>圆锥曲面加 r 的各次幂：β₁r + β₂r² + β₃r³ + …。非零的 β₁ 使顶点成为锥尖。</value></data>
+  <data name="Lens_Summary_OddAsphere" xml:space="preserve"><value>二次曲面加 r 的各次幂：β₁r + β₂r² + β₃r³ + …。非零的 β₁ 使顶点成为锥尖。</value></data>
   <data name="Lens_Summary_Plane" xml:space="preserve"><value>平坦的表面。</value></data>
   <data name="Lens_Summary_QBfs" xml:space="preserve"><value>相对最佳拟合球面的 Forbes 斜率正交偏离：u²(1−u²) Σ aₘ Qₘᵇᶠˢ(u²) / √(1−c²r²)。</value></data>
-  <data name="Lens_Summary_QCon" xml:space="preserve"><value>Forbes 圆锥基非球面：圆锥曲面加 u⁴ Σ aₘ Qₘᶜᵒⁿ(u²)，u = r/r_norm。保持顶点曲率。</value></data>
-  <data name="Lens_Summary_Toroid" xml:space="preserve"><value>y 轮廓（圆锥曲面加偶次项）绕一条平行于 y、距离为 R_x 的轴旋转而成。</value></data>
-  <data name="Lens_Summary_XyPolynomial" xml:space="preserve"><value>自由曲面：圆锥曲面加 Σ C(xᵐyⁿ) Xᵐ Yⁿ，其中 X = x/r_norm，Y = y/r_norm；1 至 10 阶。</value></data>
-  <data name="Lens_Summary_ZernikeSag" xml:space="preserve"><value>自由曲面：圆锥曲面加 Σ cⱼ Zⱼ(ρ, θ)，ρ = r/r_norm，θ 从 +x 起算。矢高系数单位为 mm，保留平移和倾斜项。</value></data>
+  <data name="Lens_Summary_QCon" xml:space="preserve"><value>Forbes 圆锥基非球面：二次曲面加 u⁴ Σ aₘ Qₘᶜᵒⁿ(u²)，u = r/r_norm。保持顶点曲率。</value></data>
+  <data name="Lens_Summary_Toroid" xml:space="preserve"><value>y 轮廓（二次曲面加偶次项）绕一条平行于 y、距离为 R_x 的轴旋转而成。</value></data>
+  <data name="Lens_Summary_XyPolynomial" xml:space="preserve"><value>自由曲面：二次曲面加 Σ C(xᵐyⁿ) Xᵐ Yⁿ，其中 X = x/r_norm，Y = y/r_norm；1 至 10 阶。</value></data>
+  <data name="Lens_Summary_ZernikeSag" xml:space="preserve"><value>自由曲面：二次曲面加 Σ cⱼ Zⱼ(ρ, θ)，ρ = r/r_norm，θ 从 +x 起算。矢高系数单位为 mm，保留平移和倾斜项。</value></data>
   <data name="Lens_Symmetry_Meridional" xml:space="preserve"><value>子午面对称</value></data>
   <data name="Lens_Symmetry_None" xml:space="preserve"><value>无</value></data>
   <data name="Lens_Symmetry_Rotational" xml:space="preserve"><value>旋转对称</value></data>
@@ -673,12 +673,12 @@
   <data name="Lens_TypeGroup_Freeform" xml:space="preserve"><value>自由曲面</value></data>
   <data name="Lens_TypeGroup_Special" xml:space="preserve"><value>特殊</value></data>
   <data name="Lens_TypeGroup_Spherical" xml:space="preserve"><value>球面</value></data>
-  <data name="Lens_TypeShort_Conic" xml:space="preserve"><value>圆锥曲面</value></data>
+  <data name="Lens_TypeShort_Conic" xml:space="preserve"><value>二次曲面</value></data>
   <data name="Lens_TypeShort_Cylinder" xml:space="preserve"><value>柱面</value></data>
   <data name="Lens_TypeShort_Diffractive" xml:space="preserve"><value>衍射面</value></data>
   <data name="Lens_TypeShort_Sphere" xml:space="preserve"><value>球面</value></data>
   <data name="Lens_Type_Biconic" xml:space="preserve"><value>双锥面</value></data>
-  <data name="Lens_Type_Conic" xml:space="preserve"><value>球面 / 圆锥曲面</value></data>
+  <data name="Lens_Type_Conic" xml:space="preserve"><value>球面 / 二次曲面</value></data>
   <data name="Lens_Type_CoordinateBreak" xml:space="preserve"><value>坐标断点</value></data>
   <data name="Lens_Type_CylinderX" xml:space="preserve"><value>柱面（x 向有光焦度）</value></data>
   <data name="Lens_Type_CylinderY" xml:space="preserve"><value>柱面（y 向有光焦度）</value></data>
@@ -688,7 +688,7 @@
   <data name="Lens_Type_OddAsphere" xml:space="preserve"><value>奇次非球面</value></data>
   <data name="Lens_Type_Plane" xml:space="preserve"><value>平面</value></data>
   <data name="Lens_Type_QBfs" xml:space="preserve"><value>Q 型（最佳拟合球面）</value></data>
-  <data name="Lens_Type_QCon" xml:space="preserve"><value>Q 型（圆锥曲面）</value></data>
+  <data name="Lens_Type_QCon" xml:space="preserve"><value>Q 型（二次曲面）</value></data>
   <data name="Lens_Type_Toroid" xml:space="preserve"><value>环曲面</value></data>
   <data name="Lens_Type_XyPolynomial" xml:space="preserve"><value>XY 多项式</value></data>
   <data name="Lens_Type_ZernikeSag" xml:space="preserve"><value>泽尼克矢高</value></data>
@@ -2403,7 +2403,7 @@
   <data name="Glass_Library_NoUserCatalog" xml:space="preserve"><value>没有名为“{0}”的用户玻璃库。</value></data>
   <data name="Glass_Library_NotCatalog" xml:space="preserve"><value>{0} 不是玻璃库。</value></data>
   <data name="Glass_Library_ReadFailed" xml:space="preserve"><value>无法读取 {0}。</value></data>
-  <data name="Glass_Library_SaveFailed" xml:space="preserve"><value>无法保存玻璃资料库（{0}）。</value></data>
+  <data name="Glass_Library_SaveFailed" xml:space="preserve"><value>无法保存玻璃库（{0}）。</value></data>
   <data name="Glass_List_Comma" xml:space="preserve"><value>、</value></data>
   <data name="Glass_List_Separator" xml:space="preserve"><value>；</value></data>
   <data name="Glass_Menu_AllowSubstitution" xml:space="preserve"><value>允许用于玻璃替换</value></data>
@@ -2469,7 +2469,7 @@
   <data name="Glass_Status_Special" xml:space="preserve"><value>特殊</value></data>
   <data name="Glass_Status_Standard" xml:space="preserve"><value>标准</value></data>
   <data name="Glass_Sync_Error" xml:space="preserve"><value>{0}：{1}</value></data>
-  <data name="Glass_Sync_Library" xml:space="preserve"><value>玻璃资料库</value></data>
+  <data name="Glass_Sync_Library" xml:space="preserve"><value>玻璃库</value></data>
   <data name="Glass_Sync_StatusSettings" xml:space="preserve"><value>玻璃状态设置：{0}</value></data>
   <data name="Glass_Table_AddHint" xml:space="preserve"><value>使用“新建玻璃”添加玻璃。</value></data>
   <data name="Glass_Table_CatalogTip" xml:space="preserve"><value>玻璃所属的玻璃库</value></data>
