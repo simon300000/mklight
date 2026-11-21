@@ -21,7 +21,7 @@
   <data name="Shell_Analysis_BackendAuto" xml:space="preserve"><value>自动</value></data>
   <data name="Shell_Analysis_BackendCpu" xml:space="preserve"><value>CPU 参考（f64）</value></data>
   <data name="Shell_Analysis_CancelRunning" xml:space="preserve"><value>取消运行</value></data>
-  <data name="Shell_Analysis_ComputeOn" xml:space="preserve"><value>计算设备</value></data>
+  <data name="Shell_Analysis_ComputeOn" xml:space="preserve"><value>计算后端</value></data>
   <data name="Shell_Analysis_NewPane" xml:space="preserve"><value>新建分析窗格</value></data>
   <data name="Shell_Analysis_Run" xml:space="preserve"><value>运行分析</value></data>
   <data name="Shell_Autosave_UntitledDesign" xml:space="preserve"><value>未命名设计</value></data>
@@ -69,7 +69,7 @@
   <data name="Shell_Gpu_NoGpu" xml:space="preserve"><value>无 GPU：{0}</value></data>
   <data name="Shell_Gpu_Preparing" xml:space="preserve"><value>正在准备</value></data>
   <data name="Shell_Gpu_PreparingCount" xml:space="preserve"><value>正在准备（{0}/{1}）</value></data>
-  <data name="Shell_Gpu_ReadyFromCache" xml:space="preserve"><value>已就绪（{0} 个，从缓存载入）</value></data>
+  <data name="Shell_Gpu_ReadyFromCache" xml:space="preserve"><value>已就绪（{0} 个，从缓存加载）</value></data>
   <data name="Shell_Gpu_ReadyPrepared" xml:space="preserve"><value>已就绪（{0} 个，用时 {1:0.0} s）</value></data>
   <data name="Shell_Help_About" xml:space="preserve"><value>关于 MKLight</value></data>
   <data name="Shell_Help_Shortcuts" xml:space="preserve"><value>键盘快捷键</value></data>
@@ -81,17 +81,17 @@
   <data name="Shell_Import_HeadlineMany" xml:space="preserve"><value>有 {0} 项未能精确导入。请先逐项检查，再使用此设计。</value></data>
   <data name="Shell_Import_HeadlineOne" xml:space="preserve"><value>有 1 项未能精确导入。请先检查，再使用此设计。</value></data>
   <data name="Shell_Import_LineAt" xml:space="preserve"><value>第 {0} 行</value></data>
-  <data name="Shell_Import_LoadCatalog" xml:space="preserve"><value>载入玻璃库…</value></data>
+  <data name="Shell_Import_LoadCatalog" xml:space="preserve"><value>加载玻璃库…</value></data>
   <data name="Shell_Import_NotImported" xml:space="preserve"><value>未导入</value></data>
   <data name="Shell_Import_PlainGroup" xml:space="preserve"><value>{0}：</value></data>
   <data name="Shell_Import_PlainHeading" xml:space="preserve"><value>已导入 {0}（{1}）</value></data>
   <data name="Shell_Import_Problems" xml:space="preserve"><value>问题</value></data>
-  <data name="Shell_Import_SurfaceAt" xml:space="preserve"><value>面 {0}</value></data>
+  <data name="Shell_Import_SurfaceAt" xml:space="preserve"><value>第 {0} 面</value></data>
   <data name="Shell_Import_SurfaceCountMany" xml:space="preserve"><value>{0} 个面</value></data>
   <data name="Shell_Import_SurfaceCountOne" xml:space="preserve"><value>{0} 个面</value></data>
   <data name="Shell_Import_Surfaces" xml:space="preserve"><value>面</value></data>
   <data name="Shell_Import_Title" xml:space="preserve"><value>已导入“{0}”</value></data>
-  <data name="Shell_Issue_SurfaceAt" xml:space="preserve"><value>面 {0}</value></data>
+  <data name="Shell_Issue_SurfaceAt" xml:space="preserve"><value>第 {0} 面</value></data>
   <data name="Shell_Language_Chinese" xml:space="preserve"><value>简体中文</value></data>
   <data name="Shell_Language_English" xml:space="preserve"><value>English</value></data>
   <data name="Shell_Language_Menu" xml:space="preserve"><value>语言…</value></data>
@@ -106,7 +106,7 @@
   <data name="Shell_LayoutA11y_Previewing" xml:space="preserve"><value>正在预览 {0}，未应用</value></data>
   <data name="Shell_LayoutA11y_RaysMany" xml:space="preserve"><value>{0} 条光线</value></data>
   <data name="Shell_LayoutA11y_RaysOne" xml:space="preserve"><value>{0} 条光线</value></data>
-  <data name="Shell_LayoutA11y_Selected" xml:space="preserve"><value>已选中面 {0}</value></data>
+  <data name="Shell_LayoutA11y_Selected" xml:space="preserve"><value>已选中第 {0} 面</value></data>
   <data name="Shell_LayoutA11y_Separator" xml:space="preserve"><value>，</value></data>
   <data name="Shell_LayoutA11y_Stale" xml:space="preserve"><value>已过时</value></data>
   <data name="Shell_LayoutA11y_Stretch" xml:space="preserve"><value>纵向拉伸 {0} 倍</value></data>
@@ -119,11 +119,11 @@
   <data name="Shell_Layout_DesignHasErrors" xml:space="preserve"><value>设计有错误</value></data>
   <data name="Shell_Layout_DesignNotReady" xml:space="preserve"><value>设计尚未就绪</value></data>
   <data name="Shell_Layout_DisplayOptions" xml:space="preserve"><value>显示选项</value></data>
-  <data name="Shell_Layout_DisplayTip" xml:space="preserve"><value>显示选项：光线颜色、采样、拉伸、网格、光斑足迹</value></data>
+  <data name="Shell_Layout_DisplayTip" xml:space="preserve"><value>显示选项：光线颜色、采样、拉伸、网格、光束足迹</value></data>
   <data name="Shell_Layout_Fit" xml:space="preserve"><value>适应窗口</value></data>
   <data name="Shell_Layout_FitAll" xml:space="preserve"><value>全部适应</value></data>
   <data name="Shell_Layout_FitLens" xml:space="preserve"><value>适应镜头</value></data>
-  <data name="Shell_Layout_FitTip" xml:space="preserve"><value>布局图适应窗口 (Ctrl+0，或双击)</value></data>
+  <data name="Shell_Layout_FitTip" xml:space="preserve"><value>布局图适应窗口（Ctrl+0，或双击）</value></data>
   <data name="Shell_Layout_FootprintsFailed" xml:space="preserve"><value>光束足迹：{0}</value></data>
   <data name="Shell_Layout_HideFootprintsTip" xml:space="preserve"><value>隐藏各面上的光束足迹</value></data>
   <data name="Shell_Layout_LegendField" xml:space="preserve"><value>光线按视场 · {0}</value></data>
@@ -136,7 +136,7 @@
   <data name="Shell_Layout_ModesTipAnamorphic" xml:space="preserve"><value>Y–Z 截面、X–Z 截面或三维视图</value></data>
   <data name="Shell_Layout_MoreTip" xml:space="preserve"><value>更多</value></data>
   <data name="Shell_Layout_NoLayout" xml:space="preserve"><value>无布局图</value></data>
-  <data name="Shell_Layout_NoOutlines" xml:space="preserve"><value>足迹结果中没有光束轮廓。</value></data>
+  <data name="Shell_Layout_NoOutlines" xml:space="preserve"><value>光束足迹结果中没有光束轮廓。</value></data>
   <data name="Shell_Layout_NotAvailable" xml:space="preserve"><value>布局图不可用</value></data>
   <data name="Shell_Layout_PreviewingName" xml:space="preserve"><value>正在预览 {0}。设计未更改。</value></data>
   <data name="Shell_Layout_RaysByField" xml:space="preserve"><value>光线按视场着色</value></data>
@@ -175,7 +175,7 @@
   <data name="Shell_Menu_Lens" xml:space="preserve"><value>镜头</value></data>
   <data name="Shell_Menu_View" xml:space="preserve"><value>视图</value></data>
   <data name="Shell_Pane_NoSuchAnalysis" xml:space="preserve"><value>此引擎没有名为“{0}”的分析。</value></data>
-  <data name="Shell_Pane_NotInBuild" xml:space="preserve"><value>当前引擎构建不提供此分析。</value></data>
+  <data name="Shell_Pane_NotInBuild" xml:space="preserve"><value>此引擎版本不提供此分析。</value></data>
   <data name="Shell_PanelWindow_AddTip" xml:space="preserve"><value>向此窗口添加分析窗格</value></data>
   <data name="Shell_PanelWindow_DockTip" xml:space="preserve"><value>移回主窗口：这些面板将回到设计窗口中</value></data>
   <data name="Shell_PanelWindow_More" xml:space="preserve"><value>{0} +{1}</value></data>
@@ -236,7 +236,7 @@
   <data name="Shell_Sidebar_LensDataHiddenTip" xml:space="preserve"><value>镜头数据已隐藏：单击以显示</value></data>
   <data name="Shell_Sidebar_NoMatch" xml:space="preserve"><value>没有与“{0}”匹配的分析</value></data>
   <data name="Shell_Sidebar_NotAvailable" xml:space="preserve"><value>不可用。</value></data>
-  <data name="Shell_Sidebar_NotInBuild" xml:space="preserve"><value>当前引擎构建不提供此分析</value></data>
+  <data name="Shell_Sidebar_NotInBuild" xml:space="preserve"><value>此引擎版本不提供此分析</value></data>
   <data name="Shell_Sidebar_OpenInNewPane" xml:space="preserve"><value>在新窗格中打开</value></data>
   <data name="Shell_Sidebar_Search" xml:space="preserve"><value>搜索分析</value></data>
   <data name="Shell_Sidebar_ShowLayoutTip" xml:space="preserve"><value>显示布局图</value></data>
@@ -246,17 +246,17 @@
   <data name="Shell_Status_BackendNote" xml:space="preserve"><value>不可用：{0}。分析将在 CPU 参考上运行。</value></data>
   <data name="Shell_Status_BackendTip" xml:space="preserve"><value>分析的计算位置。“自动”会在引擎支持且有收益时使用 GPU。</value></data>
   <data name="Shell_Status_Bfl" xml:space="preserve"><value>后焦距</value></data>
-  <data name="Shell_Status_ComputeOn.Text" xml:space="preserve"><value>计算设备</value></data>
+  <data name="Shell_Status_ComputeOn.Text" xml:space="preserve"><value>计算后端</value></data>
   <data name="Shell_Status_DesignHasErrors" xml:space="preserve"><value>设计有错误</value></data>
-  <data name="Shell_Status_DoePower" xml:space="preserve"><value>DOE 光焦度，面 {0}</value></data>
-  <data name="Shell_Status_DoePowerHelp" xml:space="preserve"><value>追迹衍射级的相位光焦度（不含基底折射光焦度）</value></data>
+  <data name="Shell_Status_DoePower" xml:space="preserve"><value>DOE 光焦度，第 {0} 面</value></data>
+  <data name="Shell_Status_DoePowerHelp" xml:space="preserve"><value>追迹级次的相位光焦度（不含基底的折射光焦度）</value></data>
   <data name="Shell_Status_Efl" xml:space="preserve"><value>有效焦距</value></data>
   <data name="Shell_Status_EndPreview.Content" xml:space="preserve"><value>结束预览</value></data>
   <data name="Shell_Status_Engine" xml:space="preserve"><value>引擎</value></data>
   <data name="Shell_Status_EngineHeader" xml:space="preserve"><value>引擎</value></data>
   <data name="Shell_Status_Epd" xml:space="preserve"><value>入瞳直径</value></data>
   <data name="Shell_Status_FirstOrder" xml:space="preserve"><value>一阶特性</value></data>
-  <data name="Shell_Status_GlassLibrary" xml:space="preserve"><value>玻璃库</value></data>
+  <data name="Shell_Status_GlassLibrary" xml:space="preserve"><value>玻璃资料库</value></data>
   <data name="Shell_Status_GlassLibraryHelp" xml:space="preserve"><value>计算此设计结果所用玻璃库的哈希值：{0}</value></data>
   <data name="Shell_Status_GpuKernels" xml:space="preserve"><value>GPU 内核</value></data>
   <data name="Shell_Status_ImageHeight" xml:space="preserve"><value>像高</value></data>
@@ -275,18 +275,18 @@
   <data name="Shell_Status_SqueezeDefault" xml:space="preserve"><value>带符号的 EFL y / EFL x</value></data>
   <data name="Shell_Status_SqueezeHelp" xml:space="preserve"><value>压缩比：{0}</value></data>
   <data name="Shell_Status_Symmetry" xml:space="preserve"><value>对称性</value></data>
-  <data name="Shell_Status_TotalTrack" xml:space="preserve"><value>系统总长</value></data>
-  <data name="Shell_Status_WorkingFNumber" xml:space="preserve"><value>工作 F/#</value></data>
+  <data name="Shell_Status_TotalTrack" xml:space="preserve"><value>总长</value></data>
+  <data name="Shell_Status_WorkingFNumber" xml:space="preserve"><value>工作 F 数</value></data>
   <data name="Shell_Status_XyName" xml:space="preserve"><value>{0}：x {1} mm，y {2} mm</value></data>
   <data name="Shell_Status_YSection" xml:space="preserve"><value>{0}（y）</value></data>
   <data name="Shell_Title_AddAnalysis" xml:space="preserve"><value>添加分析窗格</value></data>
-  <data name="Shell_Title_InspectorToggle" xml:space="preserve"><value>显示或隐藏检查器 (Ctrl+Alt+P)</value></data>
-  <data name="Shell_Title_Redo" xml:space="preserve"><value>重做 (Ctrl+Y)</value></data>
-  <data name="Shell_Title_RedoAction" xml:space="preserve"><value>重做“{0}” (Ctrl+Y)</value></data>
-  <data name="Shell_Title_Undo" xml:space="preserve"><value>撤销 (Ctrl+Z)</value></data>
-  <data name="Shell_Title_UndoAction" xml:space="preserve"><value>撤销“{0}” (Ctrl+Z)</value></data>
+  <data name="Shell_Title_InspectorToggle" xml:space="preserve"><value>显示或隐藏检查器（Ctrl+Alt+P）</value></data>
+  <data name="Shell_Title_Redo" xml:space="preserve"><value>重做（Ctrl+Y）</value></data>
+  <data name="Shell_Title_RedoAction" xml:space="preserve"><value>重做“{0}”（Ctrl+Y）</value></data>
+  <data name="Shell_Title_Undo" xml:space="preserve"><value>撤销（Ctrl+Z）</value></data>
+  <data name="Shell_Title_UndoAction" xml:space="preserve"><value>撤销“{0}”（Ctrl+Z）</value></data>
   <data name="Shell_Toast_CatalogFailed" xml:space="preserve"><value>玻璃库：{0}</value></data>
-  <data name="Shell_Toast_CatalogLoaded" xml:space="preserve"><value>已载入玻璃库 {0}（{1} 种玻璃）。</value></data>
+  <data name="Shell_Toast_CatalogLoaded" xml:space="preserve"><value>已加载玻璃库 {0}（{1} 种玻璃）。</value></data>
   <data name="Shell_Toast_ImportFailed" xml:space="preserve"><value>导入：{0}</value></data>
   <data name="Shell_Toast_Imported" xml:space="preserve"><value>已导入 {0}：{1}。</value></data>
   <data name="Shell_Toast_NoSample" xml:space="preserve"><value>没有名为“{0}”的示例。</value></data>
@@ -313,7 +313,7 @@
   <data name="Shell_View_SectionXZ" xml:space="preserve"><value>X–Z 截面</value></data>
   <data name="Shell_View_ShowLayout" xml:space="preserve"><value>显示布局图</value></data>
   <data name="Shell_View_ShowLensData" xml:space="preserve"><value>显示镜头数据</value></data>
-  <data name="Shell_View_Sidebar" xml:space="preserve"><value>侧边栏</value></data>
+  <data name="Shell_View_Sidebar" xml:space="preserve"><value>边栏</value></data>
   <data name="Shell_View_ThemeDark" xml:space="preserve"><value>深色</value></data>
   <data name="Shell_View_ThemeLight" xml:space="preserve"><value>浅色</value></data>
   <data name="Shell_View_ThemeSystem" xml:space="preserve"><value>跟随系统</value></data>
@@ -336,16 +336,16 @@
   <!-- area: Lens -->
   <data name="Lens_Aperture_EntrancePupilDiameter" xml:space="preserve"><value>入瞳直径</value></data>
   <data name="Lens_Aperture_FloatByStopSize" xml:space="preserve"><value>由光阑尺寸决定</value></data>
-  <data name="Lens_Aperture_ImageSpaceFNumber" xml:space="preserve"><value>像方 F/#</value></data>
+  <data name="Lens_Aperture_ImageSpaceFNumber" xml:space="preserve"><value>像方 F 数</value></data>
   <data name="Lens_Aperture_ObjectSpaceNA" xml:space="preserve"><value>物方 NA</value></data>
-  <data name="Lens_Aperture_ParaxialWorkingFNumber" xml:space="preserve"><value>近轴工作 F/#</value></data>
-  <data name="Lens_Caption_Many" xml:space="preserve"><value>{0} 个面 · 光阑在面 {1} · mm</value></data>
-  <data name="Lens_Caption_One" xml:space="preserve"><value>{0} 个面 · 光阑在面 {1} · mm</value></data>
+  <data name="Lens_Aperture_ParaxialWorkingFNumber" xml:space="preserve"><value>近轴工作 F 数</value></data>
+  <data name="Lens_Caption_Many" xml:space="preserve"><value>{0} 个面 · 光阑在第 {1} 面 · mm</value></data>
+  <data name="Lens_Caption_One" xml:space="preserve"><value>{0} 个面 · 光阑在第 {1} 面 · mm</value></data>
   <data name="Lens_Caption_Variables_Many" xml:space="preserve"><value>{0} · {1} 个变量</value></data>
   <data name="Lens_Caption_Variables_One" xml:space="preserve"><value>{0} · {1} 个变量</value></data>
   <data name="Lens_Catalog_Builtin" xml:space="preserve"><value>MKLight 内置</value></data>
-  <data name="Lens_Catalog_Library" xml:space="preserve"><value>库</value></data>
-  <data name="Lens_Catalog_LibraryRecorded" xml:space="preserve"><value>库，已记录在设计中</value></data>
+  <data name="Lens_Catalog_Library" xml:space="preserve"><value>资料库</value></data>
+  <data name="Lens_Catalog_LibraryRecorded" xml:space="preserve"><value>资料库，已记录在设计中</value></data>
   <data name="Lens_Catalog_ThisDesign" xml:space="preserve"><value>本设计</value></data>
   <data name="Lens_Cell_Automatic" xml:space="preserve"><value>自动</value></data>
   <data name="Lens_Cell_ControlType" xml:space="preserve"><value>单元格</value></data>
@@ -446,7 +446,7 @@
   <data name="Lens_Help_Ordering" xml:space="preserve"><value>Fringe 项未归一化；Standard（Noll）项已归一化。</value></data>
   <data name="Lens_Help_Radius" xml:space="preserve"><value>曲率半径；平面为 ∞。以曲率 c = 1/R 存储。</value></data>
   <data name="Lens_Help_TraceOrder" xml:space="preserve"><value>光线追迹所沿的级次；0 为普通折射或反射。</value></data>
-  <data name="Lens_Inspector_HelpGlassSubstitution" xml:space="preserve"><value>用目录玻璃替换玻璃，并对每种组合重新优化</value></data>
+  <data name="Lens_Inspector_HelpGlassSubstitution" xml:space="preserve"><value>用玻璃库玻璃替换玻璃，并对每种组合重新优化</value></data>
   <data name="Lens_Inspector_HelpOptimize" xml:space="preserve"><value>优化设计</value></data>
   <data name="Lens_Inspector_HelpSolves" xml:space="preserve"><value>预览并应用设计的求解</value></data>
   <data name="Lens_Inspector_HelpSurface" xml:space="preserve"><value>所选的面</value></data>
@@ -465,12 +465,12 @@
   <data name="Lens_Interaction_Mirror" xml:space="preserve"><value>反射镜</value></data>
   <data name="Lens_Interaction_Refract" xml:space="preserve"><value>折射</value></data>
   <data name="Lens_Melt_Add" xml:space="preserve"><value>添加熔炼偏差…</value></data>
-  <data name="Lens_Melt_AddHelp" xml:space="preserve"><value>为目录玻璃设定实测熔炼的 Δn_d 和 ΔV_d</value></data>
+  <data name="Lens_Melt_AddHelp" xml:space="preserve"><value>为玻璃库玻璃设定实测熔炼批次的 Δn_d 和 ΔV_d</value></data>
   <data name="Lens_Melt_Detail" xml:space="preserve"><value>熔炼</value></data>
-  <data name="Lens_Melt_DnHelp" xml:space="preserve"><value>熔炼批次相对目录 n_d 的折射率偏差（±{0} 以内）；色散曲线形状不变。</value></data>
-  <data name="Lens_Melt_DvHelp" xml:space="preserve"><value>熔炼批次相对目录 V_d 的阿贝数偏差（±{0} 以内）。</value></data>
+  <data name="Lens_Melt_DnHelp" xml:space="preserve"><value>熔炼批次相对玻璃库 n_d 的折射率偏差（±{0} 以内）；色散曲线形状不变。</value></data>
+  <data name="Lens_Melt_DvHelp" xml:space="preserve"><value>熔炼批次相对玻璃库 V_d 的阿贝数偏差（±{0} 以内）。</value></data>
   <data name="Lens_Melt_Remove" xml:space="preserve"><value>移除熔炼偏差</value></data>
-  <data name="Lens_Melt_RemoveHelp" xml:space="preserve"><value>恢复为目录玻璃</value></data>
+  <data name="Lens_Melt_RemoveHelp" xml:space="preserve"><value>恢复为玻璃库玻璃</value></data>
   <data name="Lens_Menu_DeleteSurface" xml:space="preserve"><value>删除面</value></data>
   <data name="Lens_Menu_InsertAfter" xml:space="preserve"><value>在后面插入面</value></data>
   <data name="Lens_Menu_InsertBefore" xml:space="preserve"><value>在前面插入面</value></data>
@@ -482,7 +482,7 @@
   <data name="Lens_More_AutomaticWidths" xml:space="preserve"><value>自动列宽</value></data>
   <data name="Lens_More_FitColumns" xml:space="preserve"><value>列宽适应内容</value></data>
   <data name="Lens_More_Hide" xml:space="preserve"><value>隐藏镜头数据</value></data>
-  <data name="Lens_More_MoveToMainWindow" xml:space="preserve"><value>移到主窗口</value></data>
+  <data name="Lens_More_MoveToMainWindow" xml:space="preserve"><value>移回主窗口</value></data>
   <data name="Lens_More_MoveToNewWindow" xml:space="preserve"><value>移到新窗口</value></data>
   <data name="Lens_Ordering_Fringe" xml:space="preserve"><value>Fringe（37 项）</value></data>
   <data name="Lens_Ordering_Standard" xml:space="preserve"><value>Standard / Noll（45 项）</value></data>
@@ -524,8 +524,8 @@
   <data name="Lens_Placement_TiltZ" xml:space="preserve"><value>倾斜 Z</value></data>
   <data name="Lens_Preset_DOnly" xml:space="preserve"><value>仅 d</value></data>
   <data name="Lens_Preset_EOnly" xml:space="preserve"><value>仅 e</value></data>
-  <data name="Lens_Preset_FdC" xml:space="preserve"><value>F, d, C（可见光）</value></data>
-  <data name="Lens_Preset_FeC" xml:space="preserve"><value>F′, e, C′（可见光）</value></data>
+  <data name="Lens_Preset_FdC" xml:space="preserve"><value>F、d、C（可见光）</value></data>
+  <data name="Lens_Preset_FeC" xml:space="preserve"><value>F′、e、C′（可见光）</value></data>
   <data name="Lens_Preset_NearInfrared" xml:space="preserve"><value>近红外</value></data>
   <data name="Lens_Preset_Photopic" xml:space="preserve"><value>明视觉（5）</value></data>
   <data name="Lens_Preview_AtDesign" xml:space="preserve"><value>设计条件下</value></data>
@@ -537,11 +537,11 @@
   <data name="Lens_Preview_Over" xml:space="preserve"><value>±{0} mm 范围内</value></data>
   <data name="Lens_Preview_ParaxialPower" xml:space="preserve"><value>近轴光焦度</value></data>
   <data name="Lens_Preview_Phase" xml:space="preserve"><value>相位（+1 级）</value></data>
-  <data name="Lens_Preview_PositionAxis" xml:space="preserve"><value>位置 (mm)</value></data>
+  <data name="Lens_Preview_PositionAxis" xml:space="preserve"><value>位置（mm）</value></data>
   <data name="Lens_Preview_PowerHelp" xml:space="preserve"><value>近轴光焦度 φ = −m λ A₁ / (π r_norm²)，叠加在基底的折射光焦度上。DOE 的阿贝数约为 −3.45。</value></data>
-  <data name="Lens_Preview_RadiusAxis" xml:space="preserve"><value>半径 (mm)</value></data>
+  <data name="Lens_Preview_RadiusAxis" xml:space="preserve"><value>半径（mm）</value></data>
   <data name="Lens_Preview_Sag" xml:space="preserve"><value>矢高</value></data>
-  <data name="Lens_Preview_SagAxis" xml:space="preserve"><value>矢高 (mm)</value></data>
+  <data name="Lens_Preview_SagAxis" xml:space="preserve"><value>矢高（mm）</value></data>
   <data name="Lens_Preview_SmallestPeriod" xml:space="preserve"><value>最小环带周期</value></data>
   <data name="Lens_Preview_XSection" xml:space="preserve"><value>x 截面</value></data>
   <data name="Lens_Preview_YSection" xml:space="preserve"><value>y 截面</value></data>
@@ -551,19 +551,19 @@
   <data name="Lens_Row_HintFlat" xml:space="preserve"><value>{0} 截面的{1}：平面（此柱面的光焦度在另一截面）</value></data>
   <data name="Lens_Row_HintRadius" xml:space="preserve"><value>曲率半径</value></data>
   <data name="Lens_Row_Image" xml:space="preserve"><value>像面</value></data>
-  <data name="Lens_Row_MeltTip" xml:space="preserve"><value>目录玻璃的熔炼偏差 Δn_d / ΔV_d；在检查器中编辑</value></data>
+  <data name="Lens_Row_MeltTip" xml:space="preserve"><value>玻璃库玻璃的熔炼偏差 Δn_d / ΔV_d；在检查器中编辑</value></data>
   <data name="Lens_Row_Object" xml:space="preserve"><value>物面</value></data>
   <data name="Lens_Row_SolveName" xml:space="preserve"><value>由{0}求解控制</value></data>
   <data name="Lens_Row_SolveTip" xml:space="preserve"><value>求解：{0}</value></data>
   <data name="Lens_Row_StopTip" xml:space="preserve"><value>孔径光阑</value></data>
-  <data name="Lens_Row_Surface" xml:space="preserve"><value>面 {0}</value></data>
-  <data name="Lens_Row_SurfaceStop" xml:space="preserve"><value>面 {0}，孔径光阑</value></data>
+  <data name="Lens_Row_Surface" xml:space="preserve"><value>第 {0} 面</value></data>
+  <data name="Lens_Row_SurfaceStop" xml:space="preserve"><value>第 {0} 面，孔径光阑</value></data>
   <data name="Lens_Row_Variable" xml:space="preserve"><value>变量</value></data>
   <data name="Lens_Row_VariableBounded" xml:space="preserve"><value>带边界的变量</value></data>
   <data name="Lens_Row_VariableIgnored" xml:space="preserve"><value>求解值上的变量：优化器会忽略它。请移除变量或求解。</value></data>
   <data name="Lens_Row_VariablePinned" xml:space="preserve"><value>变量，已固定（上下界相等）</value></data>
   <data name="Lens_Section_Aperture" xml:space="preserve"><value>孔径</value></data>
-  <data name="Lens_Section_BaseConic" xml:space="preserve"><value>基础圆锥面</value></data>
+  <data name="Lens_Section_BaseConic" xml:space="preserve"><value>基底圆锥曲面</value></data>
   <data name="Lens_Section_BasePolynomial" xml:space="preserve"><value>基底多项式</value></data>
   <data name="Lens_Section_BaseShape" xml:space="preserve"><value>基底面形</value></data>
   <data name="Lens_Section_BestFitSphere" xml:space="preserve"><value>最佳拟合球面</value></data>
@@ -597,23 +597,23 @@
   <data name="Lens_Solve_FNumber" xml:space="preserve"><value>F 数</value></data>
   <data name="Lens_Solve_MarginalRayAngle" xml:space="preserve"><value>边缘光线角度</value></data>
   <data name="Lens_Solve_MarginalRayHeight" xml:space="preserve"><value>边缘光线高度</value></data>
-  <data name="Lens_Solve_Pickup" xml:space="preserve"><value>拾取</value></data>
+  <data name="Lens_Solve_Pickup" xml:space="preserve"><value>跟随</value></data>
   <data name="Lens_Solve_Position" xml:space="preserve"><value>位置</value></data>
   <data name="Lens_Solves_Add" xml:space="preserve"><value>添加求解</value></data>
   <data name="Lens_Solves_Remove" xml:space="preserve"><value>移除</value></data>
-  <data name="Lens_Summary_Biconic" xml:space="preserve"><value>x 和 y 方向各自独立的圆锥面，带偶次轴向多项式。柱面是一个方向为平面的双锥面。</value></data>
+  <data name="Lens_Summary_Biconic" xml:space="preserve"><value>x 和 y 方向各自独立的圆锥曲面，带偶次轴向多项式。柱面是一个方向为平面的双锥面。</value></data>
   <data name="Lens_Summary_Conic" xml:space="preserve"><value>球面或旋转圆锥曲面。</value></data>
   <data name="Lens_Summary_CoordinateBreak" xml:space="preserve"><value>只改变坐标系：先偏心后倾斜（或相反）。</value></data>
-  <data name="Lens_Summary_Diffractive" xml:space="preserve"><value>位于平面、圆锥面或偶次非球面基底上的固定周期相位 Φ = Σ Aᵢ ρ²ⁱ（+1 级，弧度）。</value></data>
-  <data name="Lens_Summary_EvenAsphere" xml:space="preserve"><value>圆锥面加偶次多项式项 A₄r⁴ + A₆r⁶ + …</value></data>
+  <data name="Lens_Summary_Diffractive" xml:space="preserve"><value>位于平面、圆锥曲面或偶次非球面基底上的固定周期相位 Φ = Σ Aᵢ ρ²ⁱ（+1 级，弧度）。</value></data>
+  <data name="Lens_Summary_EvenAsphere" xml:space="preserve"><value>圆锥曲面加偶次多项式项 A₄r⁴ + A₆r⁶ + …</value></data>
   <data name="Lens_Summary_IdealLens" xml:space="preserve"><value>给定焦距的无像差薄透镜。</value></data>
-  <data name="Lens_Summary_OddAsphere" xml:space="preserve"><value>圆锥面加 r 的各次幂：β₁r + β₂r² + β₃r³ + …。非零的 β₁ 使顶点成为锥尖。</value></data>
+  <data name="Lens_Summary_OddAsphere" xml:space="preserve"><value>圆锥曲面加 r 的各次幂：β₁r + β₂r² + β₃r³ + …。非零的 β₁ 使顶点成为锥尖。</value></data>
   <data name="Lens_Summary_Plane" xml:space="preserve"><value>平坦的表面。</value></data>
   <data name="Lens_Summary_QBfs" xml:space="preserve"><value>相对最佳拟合球面的 Forbes 斜率正交偏离：u²(1−u²) Σ aₘ Qₘᵇᶠˢ(u²) / √(1−c²r²)。</value></data>
-  <data name="Lens_Summary_QCon" xml:space="preserve"><value>Forbes 圆锥基非球面：圆锥面加 u⁴ Σ aₘ Qₘᶜᵒⁿ(u²)，u = r/r_norm。保持顶点曲率。</value></data>
-  <data name="Lens_Summary_Toroid" xml:space="preserve"><value>y 轮廓（圆锥面加偶次项）绕一条平行于 y、距离为 R_x 的轴旋转而成。</value></data>
-  <data name="Lens_Summary_XyPolynomial" xml:space="preserve"><value>自由曲面：圆锥面加 Σ C(xᵐyⁿ) Xᵐ Yⁿ，其中 X = x/r_norm，Y = y/r_norm；1 至 10 阶。</value></data>
-  <data name="Lens_Summary_ZernikeSag" xml:space="preserve"><value>自由曲面：圆锥面加 Σ cⱼ Zⱼ(ρ, θ)，ρ = r/r_norm，θ 从 +x 起算。矢高系数单位为 mm，保留平移和倾斜项。</value></data>
+  <data name="Lens_Summary_QCon" xml:space="preserve"><value>Forbes 圆锥基非球面：圆锥曲面加 u⁴ Σ aₘ Qₘᶜᵒⁿ(u²)，u = r/r_norm。保持顶点曲率。</value></data>
+  <data name="Lens_Summary_Toroid" xml:space="preserve"><value>y 轮廓（圆锥曲面加偶次项）绕一条平行于 y、距离为 R_x 的轴旋转而成。</value></data>
+  <data name="Lens_Summary_XyPolynomial" xml:space="preserve"><value>自由曲面：圆锥曲面加 Σ C(xᵐyⁿ) Xᵐ Yⁿ，其中 X = x/r_norm，Y = y/r_norm；1 至 10 阶。</value></data>
+  <data name="Lens_Summary_ZernikeSag" xml:space="preserve"><value>自由曲面：圆锥曲面加 Σ cⱼ Zⱼ(ρ, θ)，ρ = r/r_norm，θ 从 +x 起算。矢高系数单位为 mm，保留平移和倾斜项。</value></data>
   <data name="Lens_Symmetry_Meridional" xml:space="preserve"><value>子午面对称</value></data>
   <data name="Lens_Symmetry_None" xml:space="preserve"><value>无</value></data>
   <data name="Lens_Symmetry_Rotational" xml:space="preserve"><value>旋转对称</value></data>
@@ -621,7 +621,7 @@
   <data name="Lens_System_AddWavelength" xml:space="preserve"><value>添加波长</value></data>
   <data name="Lens_System_CatalogBuiltin" xml:space="preserve"><value>内置</value></data>
   <data name="Lens_System_Catalogs" xml:space="preserve"><value>玻璃库</value></data>
-  <data name="Lens_System_CatalogsFooter" xml:space="preserve"><value>库中的玻璃库会载入每个设计；设计在保存时记录所用的玻璃库。可在“玻璃库”窗口中管理。</value></data>
+  <data name="Lens_System_CatalogsFooter" xml:space="preserve"><value>资料库中的玻璃库会加载到每个设计中；设计在保存时记录所用的玻璃库。可在“玻璃库”窗口中管理。</value></data>
   <data name="Lens_System_ConfigurationN" xml:space="preserve"><value>结构 {0}</value></data>
   <data name="Lens_System_Configurations" xml:space="preserve"><value>多重结构</value></data>
   <data name="Lens_System_Environment" xml:space="preserve"><value>环境</value></data>
@@ -673,12 +673,12 @@
   <data name="Lens_TypeGroup_Freeform" xml:space="preserve"><value>自由曲面</value></data>
   <data name="Lens_TypeGroup_Special" xml:space="preserve"><value>特殊</value></data>
   <data name="Lens_TypeGroup_Spherical" xml:space="preserve"><value>球面</value></data>
-  <data name="Lens_TypeShort_Conic" xml:space="preserve"><value>圆锥面</value></data>
+  <data name="Lens_TypeShort_Conic" xml:space="preserve"><value>圆锥曲面</value></data>
   <data name="Lens_TypeShort_Cylinder" xml:space="preserve"><value>柱面</value></data>
   <data name="Lens_TypeShort_Diffractive" xml:space="preserve"><value>衍射面</value></data>
   <data name="Lens_TypeShort_Sphere" xml:space="preserve"><value>球面</value></data>
   <data name="Lens_Type_Biconic" xml:space="preserve"><value>双锥面</value></data>
-  <data name="Lens_Type_Conic" xml:space="preserve"><value>球面 / 圆锥面</value></data>
+  <data name="Lens_Type_Conic" xml:space="preserve"><value>球面 / 圆锥曲面</value></data>
   <data name="Lens_Type_CoordinateBreak" xml:space="preserve"><value>坐标断点</value></data>
   <data name="Lens_Type_CylinderX" xml:space="preserve"><value>柱面（x 向有光焦度）</value></data>
   <data name="Lens_Type_CylinderY" xml:space="preserve"><value>柱面（y 向有光焦度）</value></data>
@@ -688,8 +688,8 @@
   <data name="Lens_Type_OddAsphere" xml:space="preserve"><value>奇次非球面</value></data>
   <data name="Lens_Type_Plane" xml:space="preserve"><value>平面</value></data>
   <data name="Lens_Type_QBfs" xml:space="preserve"><value>Q 型（最佳拟合球面）</value></data>
-  <data name="Lens_Type_QCon" xml:space="preserve"><value>Q 型（圆锥）</value></data>
-  <data name="Lens_Type_Toroid" xml:space="preserve"><value>环面</value></data>
+  <data name="Lens_Type_QCon" xml:space="preserve"><value>Q 型（圆锥曲面）</value></data>
+  <data name="Lens_Type_Toroid" xml:space="preserve"><value>环曲面</value></data>
   <data name="Lens_Type_XyPolynomial" xml:space="preserve"><value>XY 多项式</value></data>
   <data name="Lens_Type_ZernikeSag" xml:space="preserve"><value>泽尼克矢高</value></data>
   <data name="Lens_Undo_AddNamed" xml:space="preserve"><value>添加 {0}</value></data>
@@ -777,7 +777,7 @@
   <data name="Analysis_More_Close" xml:space="preserve"><value>关闭窗格</value></data>
   <data name="Analysis_More_CopyJson" xml:space="preserve"><value>将结果复制为 JSON</value></data>
   <data name="Analysis_More_Duplicate" xml:space="preserve"><value>复制窗格</value></data>
-  <data name="Analysis_More_MoveToMain" xml:space="preserve"><value>移到主窗口</value></data>
+  <data name="Analysis_More_MoveToMain" xml:space="preserve"><value>移回主窗口</value></data>
   <data name="Analysis_More_MoveToNewWindow" xml:space="preserve"><value>移到新窗口</value></data>
   <data name="Analysis_More_ShowSettings" xml:space="preserve"><value>显示设置</value></data>
   <data name="Analysis_Pane_AccessibleName" xml:space="preserve"><value>{0} 窗格</value></data>
@@ -800,14 +800,14 @@
   <data name="Analysis_Pane_HeaderName" xml:space="preserve"><value>{0} 标题栏</value></data>
   <data name="Analysis_Pane_HideSettingsTip" xml:space="preserve"><value>隐藏设置</value></data>
   <data name="Analysis_Pane_More" xml:space="preserve"><value>更多</value></data>
-  <data name="Analysis_Pane_OutOfDate" xml:space="preserve"><value>已过期</value></data>
-  <data name="Analysis_Pane_OutOfDateSummary" xml:space="preserve"><value>已过期 · {0}</value></data>
+  <data name="Analysis_Pane_OutOfDate" xml:space="preserve"><value>已过时</value></data>
+  <data name="Analysis_Pane_OutOfDateSummary" xml:space="preserve"><value>已过时 · {0}</value></data>
   <data name="Analysis_Pane_PreviewLabel" xml:space="preserve"><value>正在预览 {0} · 未应用</value></data>
   <data name="Analysis_Pane_PreviewNote" xml:space="preserve"><value> · 未应用</value></data>
-  <data name="Analysis_Pane_PreviewTip" xml:space="preserve"><value>此窗格显示 {0}，这是尚未应用到设计的候选设计。请在设计作业中应用它或结束预览。</value></data>
+  <data name="Analysis_Pane_PreviewTip" xml:space="preserve"><value>此窗格显示 {0}，这是尚未应用到设计的候选设计。请在设计任务中应用它或结束预览。</value></data>
   <data name="Analysis_Pane_PreviewTitle" xml:space="preserve"><value>正在预览 {0}</value></data>
   <data name="Analysis_Pane_RunDetailsTip" xml:space="preserve"><value>运行详情</value></data>
-  <data name="Analysis_Pane_RunTip" xml:space="preserve"><value>重新运行 (F5)</value></data>
+  <data name="Analysis_Pane_RunTip" xml:space="preserve"><value>重新运行（F5）</value></data>
   <data name="Analysis_Pane_Settings" xml:space="preserve"><value>设置</value></data>
   <data name="Analysis_Pane_ShowSettingsTip" xml:space="preserve"><value>显示该分析的设置</value></data>
   <data name="Analysis_Pane_StageProgress" xml:space="preserve"><value>{0} · {1}%</value></data>
@@ -872,7 +872,7 @@
   <data name="Analysis_RunDetails_AllMessages" xml:space="preserve"><value>引擎的全部 {0} 条消息</value></data>
   <data name="Analysis_RunDetails_AttemptsNotUsed_Many" xml:space="preserve"><value>{0} 次未采用的尝试</value></data>
   <data name="Analysis_RunDetails_AttemptsNotUsed_One" xml:space="preserve"><value>未采用的尝试</value></data>
-  <data name="Analysis_RunDetails_ComputedOn" xml:space="preserve"><value>计算设备</value></data>
+  <data name="Analysis_RunDetails_ComputedOn" xml:space="preserve"><value>计算后端</value></data>
   <data name="Analysis_RunDetails_Engine" xml:space="preserve"><value>引擎</value></data>
   <data name="Analysis_RunDetails_Field" xml:space="preserve"><value>视场 {0}</value></data>
   <data name="Analysis_RunDetails_FieldPoint" xml:space="preserve"><value>视场 {0}</value></data>
@@ -886,9 +886,9 @@
   <data name="Analysis_RunDetails_Requested" xml:space="preserve"><value>请求</value></data>
   <data name="Analysis_RunDetails_Route" xml:space="preserve"><value>路由</value></data>
   <data name="Analysis_RunDetails_ScopedWarning" xml:space="preserve"><value>{0}：{1}</value></data>
-  <data name="Analysis_RunDetails_Seed" xml:space="preserve"><value>种子</value></data>
+  <data name="Analysis_RunDetails_Seed" xml:space="preserve"><value>随机种子</value></data>
   <data name="Analysis_RunDetails_Snapshot" xml:space="preserve"><value>快照</value></data>
-  <data name="Analysis_RunDetails_Surface" xml:space="preserve"><value>面 {0}</value></data>
+  <data name="Analysis_RunDetails_Surface" xml:space="preserve"><value>第 {0} 面</value></data>
   <data name="Analysis_RunDetails_Tier" xml:space="preserve"><value>级别</value></data>
   <data name="Analysis_RunDetails_Time" xml:space="preserve"><value>用时</value></data>
   <data name="Analysis_RunDetails_WarningSummary" xml:space="preserve"><value>{0}（另有 {1} 条）</value></data>
@@ -1061,12 +1061,12 @@
   <data name="Analysis_Settings_SelectedCount" xml:space="preserve"><value>已选 {0} 个</value></data>
   <data name="Analysis_Settings_SelectionHelp" xml:space="preserve"><value>{0}：{1}</value></data>
   <data name="Analysis_Settings_SensorAngle" xml:space="preserve"><value>最大角度</value></data>
-  <data name="Analysis_Settings_SensorAngleHeader" xml:space="preserve"><value>最大角度 (°)</value></data>
+  <data name="Analysis_Settings_SensorAngleHeader" xml:space="preserve"><value>最大角度（°）</value></data>
   <data name="Analysis_Settings_SensorHeading" xml:space="preserve"><value>传感器 CRA 限制</value></data>
   <data name="Analysis_Settings_SensorHint" xml:space="preserve"><value>主光线最大入射角随像高半径变化；点之间线性插值，两端之外保持不变。</value></data>
   <data name="Analysis_Settings_SensorLimitTitle" xml:space="preserve"><value>传感器限制：{0}</value></data>
   <data name="Analysis_Settings_SensorRadius" xml:space="preserve"><value>半径</value></data>
-  <data name="Analysis_Settings_SensorRadiusHeader" xml:space="preserve"><value>半径 (mm)</value></data>
+  <data name="Analysis_Settings_SensorRadiusHeader" xml:space="preserve"><value>半径（mm）</value></data>
   <data name="Analysis_Settings_SurfaceImage" xml:space="preserve"><value>像面</value></data>
   <data name="Analysis_Settings_SurfaceObject" xml:space="preserve"><value>物面</value></data>
   <data name="Analysis_Settings_SurfaceStop" xml:space="preserve"><value>{0}（光阑）</value></data>
@@ -1184,11 +1184,11 @@
   <data name="Jobs_Controls_TryAgainHelp" xml:space="preserve"><value>以相同设置再次运行任务</value></data>
   <data name="Jobs_GlassMap_AxisAbbe" xml:space="preserve"><value>阿贝数 V_d</value></data>
   <data name="Jobs_GlassMap_AxisIndex" xml:space="preserve"><value>折射率 n_d</value></data>
-  <data name="Jobs_GlassMap_AxisPgf" xml:space="preserve"><value>相对部分色散 P_g,F</value></data>
+  <data name="Jobs_GlassMap_AxisPgf" xml:space="preserve"><value>部分色散 P_g,F</value></data>
   <data name="Jobs_GlassMap_Legend" xml:space="preserve"><value>圆环：候选设计的玻璃，标注所在的面。空心：被替换的设计玻璃。</value></data>
   <data name="Jobs_GlassMap_Name" xml:space="preserve"><value>玻璃图，候选设计的玻璃：{0}</value></data>
   <data name="Jobs_GlassMap_Plane" xml:space="preserve"><value>平面</value></data>
-  <data name="Jobs_GlassMap_PlaneHelp" xml:space="preserve"><value>折射率 nd 或相对部分色散 Pg,F 对阿贝数 Vd</value></data>
+  <data name="Jobs_GlassMap_PlaneHelp" xml:space="preserve"><value>折射率 nd 或部分色散 Pg,F 对阿贝数 Vd</value></data>
   <data name="Jobs_GlassMap_Title" xml:space="preserve"><value>玻璃图</value></data>
   <data name="Jobs_GlassSub_Activity" xml:space="preserve"><value>玻璃替换中</value></data>
   <data name="Jobs_GlassSub_ActivityCount" xml:space="preserve"><value>玻璃替换中 · {0}</value></data>
@@ -1221,12 +1221,12 @@
   <data name="Jobs_GlassSub_Limits" xml:space="preserve"><value>限制</value></data>
   <data name="Jobs_GlassSub_ListAnd" xml:space="preserve"><value>{0} 和 {1}</value></data>
   <data name="Jobs_GlassSub_ListSeparator" xml:space="preserve"><value>、</value></data>
-  <data name="Jobs_GlassSub_MaxClimate" xml:space="preserve"><value>最大气候等级</value></data>
-  <data name="Jobs_GlassSub_MaxClimateHelp" xml:space="preserve"><value>耐气候等级（CR）</value></data>
+  <data name="Jobs_GlassSub_MaxClimate" xml:space="preserve"><value>最大耐气候性等级</value></data>
+  <data name="Jobs_GlassSub_MaxClimateHelp" xml:space="preserve"><value>耐气候性等级（CR）</value></data>
   <data name="Jobs_GlassSub_MaxCost" xml:space="preserve"><value>最大相对成本</value></data>
   <data name="Jobs_GlassSub_MaxCostHelp" xml:space="preserve"><value>玻璃库中的相对成本</value></data>
-  <data name="Jobs_GlassSub_MaxStain" xml:space="preserve"><value>最大污渍等级</value></data>
-  <data name="Jobs_GlassSub_MaxStainHelp" xml:space="preserve"><value>耐污渍等级（FR）</value></data>
+  <data name="Jobs_GlassSub_MaxStain" xml:space="preserve"><value>最大耐污染性等级</value></data>
+  <data name="Jobs_GlassSub_MaxStainHelp" xml:space="preserve"><value>耐污染性等级（FR）</value></data>
   <data name="Jobs_GlassSub_MeltOffsetHelp" xml:space="preserve"><value>熔炼偏差 Δn_d / ΔV_d：替换玻璃不带此偏差</value></data>
   <data name="Jobs_GlassSub_Merit" xml:space="preserve"><value>评价函数</value></data>
   <data name="Jobs_GlassSub_MeritCustom" xml:space="preserve"><value>自定义评价函数，{0} 个操作数。</value></data>
@@ -1243,12 +1243,12 @@
   <data name="Jobs_GlassSub_NoCombinationsDetail" xml:space="preserve"><value>没有可以评估的组合。</value></data>
   <data name="Jobs_GlassSub_NoGlass" xml:space="preserve"><value>设计中没有可替换的玻璃。</value></data>
   <data name="Jobs_GlassSub_NoResult" xml:space="preserve"><value>引擎未返回任何玻璃组合。</value></data>
-  <data name="Jobs_GlassSub_NoneTickedHint" xml:space="preserve"><value>未勾选任何玻璃时，每个模型玻璃（n_d, V_d）都替换为最接近的真实玻璃。</value></data>
+  <data name="Jobs_GlassSub_NoneTickedHint" xml:space="preserve"><value>未勾选任何玻璃时，每个模型玻璃（n_d、V_d）都替换为最接近的真实玻璃。</value></data>
   <data name="Jobs_GlassSub_NoneValue" xml:space="preserve"><value>无</value></data>
   <data name="Jobs_GlassSub_NotPreviewed" xml:space="preserve"><value>未预览</value></data>
   <data name="Jobs_GlassSub_OffsetNote_Many" xml:space="preserve"><value>{0} 带有熔炼偏差。替换玻璃不带这些偏差，即使是同一种玻璃：偏差属于原来的熔炼批次。</value></data>
   <data name="Jobs_GlassSub_OffsetNote_One" xml:space="preserve"><value>{0} 带有熔炼偏差。替换玻璃不带此偏差，即使是同一种玻璃：偏差属于原来的熔炼批次。</value></data>
-  <data name="Jobs_GlassSub_OverrideHelp" xml:space="preserve"><value>仅用于面 {0} 的候选玻璃</value></data>
+  <data name="Jobs_GlassSub_OverrideHelp" xml:space="preserve"><value>仅用于第 {0} 面的候选玻璃</value></data>
   <data name="Jobs_GlassSub_OverrideTitle" xml:space="preserve"><value>S{0} · {1} 的候选玻璃</value></data>
   <data name="Jobs_GlassSub_OwnCandidates" xml:space="preserve"><value>此透镜使用单独的候选玻璃</value></data>
   <data name="Jobs_GlassSub_Preparing" xml:space="preserve"><value>准备中</value></data>
@@ -1278,17 +1278,17 @@
   <data name="Jobs_GlassSub_StatusFailed_Many" xml:space="preserve"><value>已重新优化 {0} 个组合，{1} 个失败。</value></data>
   <data name="Jobs_GlassSub_StatusFailed_One" xml:space="preserve"><value>已重新优化 {0} 个组合，{1} 个失败。</value></data>
   <data name="Jobs_GlassSub_StatusJoin" xml:space="preserve"><value>{0}{1}</value></data>
-  <data name="Jobs_GlassSub_StatusName_Melt" xml:space="preserve"><value>熔炼</value></data>
+  <data name="Jobs_GlassSub_StatusName_Melt" xml:space="preserve"><value>按需熔炼</value></data>
   <data name="Jobs_GlassSub_StatusName_Obsolete" xml:space="preserve"><value>停产</value></data>
-  <data name="Jobs_GlassSub_StatusName_Preferred" xml:space="preserve"><value>优选</value></data>
+  <data name="Jobs_GlassSub_StatusName_Preferred" xml:space="preserve"><value>推荐</value></data>
   <data name="Jobs_GlassSub_StatusName_Special" xml:space="preserve"><value>特殊</value></data>
   <data name="Jobs_GlassSub_StatusName_Standard" xml:space="preserve"><value>标准</value></data>
   <data name="Jobs_GlassSub_StatusSelect" xml:space="preserve"><value>选择一个组合即可在窗口中预览。</value></data>
   <data name="Jobs_GlassSub_StatusStopped" xml:space="preserve"><value>已提前停止：显示目前的排名。</value></data>
   <data name="Jobs_GlassSub_StatusTimeLimit" xml:space="preserve"><value>搜索因达到时间限制而结束。</value></data>
-  <data name="Jobs_GlassSub_Status_Melt" xml:space="preserve"><value>熔炼</value></data>
+  <data name="Jobs_GlassSub_Status_Melt" xml:space="preserve"><value>按需熔炼</value></data>
   <data name="Jobs_GlassSub_Status_Obsolete" xml:space="preserve"><value>停产</value></data>
-  <data name="Jobs_GlassSub_Status_Preferred" xml:space="preserve"><value>优选</value></data>
+  <data name="Jobs_GlassSub_Status_Preferred" xml:space="preserve"><value>推荐</value></data>
   <data name="Jobs_GlassSub_Status_Special" xml:space="preserve"><value>特殊</value></data>
   <data name="Jobs_GlassSub_Status_Standard" xml:space="preserve"><value>标准</value></data>
   <data name="Jobs_GlassSub_StopHelp" xml:space="preserve"><value>立即结束并保留目前已排名的组合</value></data>
@@ -1298,7 +1298,7 @@
   <data name="Jobs_GlassSub_SummaryAllCatalogs" xml:space="preserve"><value>所有玻璃库</value></data>
   <data name="Jobs_GlassSub_SummaryLimits" xml:space="preserve"><value>限制</value></data>
   <data name="Jobs_GlassSub_SummaryMtf" xml:space="preserve"><value>MTF ≥ {0}，于 {1} cyc/mm</value></data>
-  <data name="Jobs_GlassSub_SummaryMtfWeakest" xml:space="preserve"><value>MTF ≥ {0}，于 {1} cyc/mm，最弱视场</value></data>
+  <data name="Jobs_GlassSub_SummaryMtfWeakest" xml:space="preserve"><value>MTF ≥ {0}，于 {1} cyc/mm，最差视场</value></data>
   <data name="Jobs_GlassSub_SummaryNearest" xml:space="preserve"><value>最接近的 {0} 种</value></data>
   <data name="Jobs_GlassSub_SummaryRings" xml:space="preserve"><value>{0} 环 × {1} 臂</value></data>
   <data name="Jobs_GlassSub_SummarySqueeze" xml:space="preserve"><value>压缩比 {0}</value></data>
@@ -1336,7 +1336,7 @@
   <data name="Jobs_Merit_ConstraintTag" xml:space="preserve"><value>约束</value></data>
   <data name="Jobs_Merit_ConvertToCustom" xml:space="preserve"><value>转换为自定义</value></data>
   <data name="Jobs_Merit_ConvertToCustomHelp" xml:space="preserve"><value>以默认评价函数为此设计生成的操作数为起点，创建自定义评价函数</value></data>
-  <data name="Jobs_Merit_Criterion" xml:space="preserve"><value>准则</value></data>
+  <data name="Jobs_Merit_Criterion" xml:space="preserve"><value>判据</value></data>
   <data name="Jobs_Merit_Criterion_RmsSpot" xml:space="preserve"><value>RMS 弥散斑半径</value></data>
   <data name="Jobs_Merit_Criterion_Wavefront" xml:space="preserve"><value>RMS 波前</value></data>
   <data name="Jobs_Merit_DeleteSelected" xml:space="preserve"><value>删除所选操作数（Delete）</value></data>
@@ -1348,7 +1348,7 @@
   <data name="Jobs_Merit_Fields" xml:space="preserve"><value>视场</value></data>
   <data name="Jobs_Merit_Frequencies" xml:space="preserve"><value>频率</value></data>
   <data name="Jobs_Merit_FrequenciesName" xml:space="preserve"><value>MTF 频率（周期/mm）</value></data>
-  <data name="Jobs_Merit_Help_CpuReference" xml:space="preserve"><value>CPU f64 基准</value></data>
+  <data name="Jobs_Merit_Help_CpuReference" xml:space="preserve"><value>CPU f64 参考</value></data>
   <data name="Jobs_Merit_Help_Degraded_Many" xml:space="preserve"><value>{0} 个残差为惩罚值（光线或操作数计算失败）。</value></data>
   <data name="Jobs_Merit_Help_Degraded_One" xml:space="preserve"><value>{0} 个残差为惩罚值（光线或操作数计算失败）。</value></data>
   <data name="Jobs_Merit_Help_Failed" xml:space="preserve"><value>评估失败：评价函数值无意义。</value></data>
@@ -1374,7 +1374,7 @@
   <data name="Jobs_Merit_Mode_Default" xml:space="preserve"><value>默认</value></data>
   <data name="Jobs_Merit_MoveDown" xml:space="preserve"><value>下移</value></data>
   <data name="Jobs_Merit_MoveUp" xml:space="preserve"><value>上移</value></data>
-  <data name="Jobs_Merit_MtfTargetName" xml:space="preserve"><value>MTF 目标</value></data>
+  <data name="Jobs_Merit_MtfTargetName" xml:space="preserve"><value>MTF 目标值</value></data>
   <data name="Jobs_Merit_NoOperands" xml:space="preserve"><value>没有操作数。请用 + 添加，或转换默认评价函数。</value></data>
   <data name="Jobs_Merit_None" xml:space="preserve"><value>无</value></data>
   <data name="Jobs_Merit_NotEvaluated" xml:space="preserve"><value>未评估</value></data>
@@ -1400,16 +1400,16 @@
   <data name="Jobs_Merit_SearchOperands" xml:space="preserve"><value>搜索操作数</value></data>
   <data name="Jobs_Merit_ShowThickness" xml:space="preserve"><value>显示厚度限制</value></data>
   <data name="Jobs_Merit_SomeOf" xml:space="preserve"><value>{0}/{1}</value></data>
-  <data name="Jobs_Merit_SqueezeTarget" xml:space="preserve"><value>压缩比目标</value></data>
+  <data name="Jobs_Merit_SqueezeTarget" xml:space="preserve"><value>压缩比目标值</value></data>
   <data name="Jobs_Merit_SqueezeTargetHelp" xml:space="preserve"><value>将带符号的 EFL_y / EFL_x 保持在此值（变形设计）。</value></data>
   <data name="Jobs_Merit_Summary_Of" xml:space="preserve"><value>取自 {0}</value></data>
   <data name="Jobs_Merit_Summary_Polychromatic" xml:space="preserve"><value>复色</value></data>
-  <data name="Jobs_Merit_Surface" xml:space="preserve"><value>面 {0}</value></data>
-  <data name="Jobs_Merit_SurfaceLabeled" xml:space="preserve"><value>面 {0} · {1}</value></data>
+  <data name="Jobs_Merit_Surface" xml:space="preserve"><value>第 {0} 面</value></data>
+  <data name="Jobs_Merit_SurfaceLabeled" xml:space="preserve"><value>第 {0} 面 · {1}</value></data>
   <data name="Jobs_Merit_Surface_First" xml:space="preserve"><value>第一面</value></data>
   <data name="Jobs_Merit_Surface_Image" xml:space="preserve"><value>像面</value></data>
   <data name="Jobs_Merit_Surface_Next" xml:space="preserve"><value>下一面</value></data>
-  <data name="Jobs_Merit_Target" xml:space="preserve"><value>目标</value></data>
+  <data name="Jobs_Merit_Target" xml:space="preserve"><value>目标值</value></data>
   <data name="Jobs_Merit_ThicknessLimits" xml:space="preserve"><value>厚度限制（mm）</value></data>
   <data name="Jobs_Merit_Thickness_Air" xml:space="preserve"><value>空气</value></data>
   <data name="Jobs_Merit_Thickness_AirName" xml:space="preserve"><value>空气{0}</value></data>
@@ -1423,7 +1423,7 @@
   <data name="Jobs_Merit_Undo_Centroid" xml:space="preserve"><value>更改质心</value></data>
   <data name="Jobs_Merit_Undo_Comparison" xml:space="preserve"><value>更改比较方式</value></data>
   <data name="Jobs_Merit_Undo_ConvertToCustom" xml:space="preserve"><value>将评价函数转换为自定义</value></data>
-  <data name="Jobs_Merit_Undo_Criterion" xml:space="preserve"><value>更改准则</value></data>
+  <data name="Jobs_Merit_Undo_Criterion" xml:space="preserve"><value>更改判据</value></data>
   <data name="Jobs_Merit_Undo_DeleteOperand" xml:space="preserve"><value>删除操作数</value></data>
   <data name="Jobs_Merit_Undo_DeleteOperands" xml:space="preserve"><value>删除操作数</value></data>
   <data name="Jobs_Merit_Undo_DisableOperand" xml:space="preserve"><value>停用操作数</value></data>
@@ -1437,15 +1437,15 @@
   <data name="Jobs_Merit_Undo_MtfFieldRule" xml:space="preserve"><value>更改 MTF 视场规则</value></data>
   <data name="Jobs_Merit_Undo_MtfFrequencies" xml:space="preserve"><value>更改 MTF 频率</value></data>
   <data name="Jobs_Merit_Undo_MtfMethod" xml:space="preserve"><value>更改 MTF 方法</value></data>
-  <data name="Jobs_Merit_Undo_MtfTarget" xml:space="preserve"><value>更改 MTF 目标</value></data>
+  <data name="Jobs_Merit_Undo_MtfTarget" xml:space="preserve"><value>更改 MTF 目标值</value></data>
   <data name="Jobs_Merit_Undo_OperandField" xml:space="preserve"><value>更改操作数视场</value></data>
   <data name="Jobs_Merit_Undo_OperandWavelength" xml:space="preserve"><value>更改操作数波长</value></data>
   <data name="Jobs_Merit_Undo_Param" xml:space="preserve"><value>更改{0}</value></data>
   <data name="Jobs_Merit_Undo_PupilArms" xml:space="preserve"><value>更改光瞳臂数</value></data>
   <data name="Jobs_Merit_Undo_PupilRings" xml:space="preserve"><value>更改光瞳环数</value></data>
   <data name="Jobs_Merit_Undo_Reference" xml:space="preserve"><value>更改参考</value></data>
-  <data name="Jobs_Merit_Undo_SqueezeTarget" xml:space="preserve"><value>更改压缩比目标</value></data>
-  <data name="Jobs_Merit_Undo_Target" xml:space="preserve"><value>更改目标</value></data>
+  <data name="Jobs_Merit_Undo_SqueezeTarget" xml:space="preserve"><value>更改压缩比目标值</value></data>
+  <data name="Jobs_Merit_Undo_Target" xml:space="preserve"><value>更改目标值</value></data>
   <data name="Jobs_Merit_Undo_ThicknessLimits" xml:space="preserve"><value>更改厚度限制</value></data>
   <data name="Jobs_Merit_Undo_UseCustom" xml:space="preserve"><value>使用自定义评价函数</value></data>
   <data name="Jobs_Merit_Undo_UseDefault" xml:space="preserve"><value>使用默认评价函数</value></data>
@@ -1476,10 +1476,10 @@
   <data name="Jobs_Optimize_Candidate" xml:space="preserve"><value>候选设计</value></data>
   <data name="Jobs_Optimize_DesignVariables" xml:space="preserve"><value>设计变量（{0}）</value></data>
   <data name="Jobs_Optimize_Discard" xml:space="preserve"><value>放弃</value></data>
-  <data name="Jobs_Optimize_DiscardHelp" xml:space="preserve"><value>丢弃此结果；设计保持不变</value></data>
+  <data name="Jobs_Optimize_DiscardHelp" xml:space="preserve"><value>放弃此结果；设计保持不变</value></data>
   <data name="Jobs_Optimize_Done" xml:space="preserve"><value>完成</value></data>
   <data name="Jobs_Optimize_DoneHelp" xml:space="preserve"><value>返回评价函数和变量</value></data>
-  <data name="Jobs_Optimize_EvaluatedOnCpu" xml:space="preserve"><value>在 CPU f64 基准上评估。</value></data>
+  <data name="Jobs_Optimize_EvaluatedOnCpu" xml:space="preserve"><value>在 CPU f64 参考上评估。</value></data>
   <data name="Jobs_Optimize_Failed" xml:space="preserve"><value>优化失败</value></data>
   <data name="Jobs_Optimize_FixErrorsFirst" xml:space="preserve"><value>请先修正设计中的错误。</value></data>
   <data name="Jobs_Optimize_Improvement" xml:space="preserve"><value>改善</value></data>
@@ -1504,7 +1504,7 @@
   <data name="Jobs_Optimize_SearchMerit" xml:space="preserve"><value>搜索评价函数</value></data>
   <data name="Jobs_Optimize_SearchMeritHelp" xml:space="preserve"><value>目前为止搜索评估得到的最佳评价函数值。</value></data>
   <data name="Jobs_Optimize_SearchMeritPopulationHelp" xml:space="preserve"><value>搜索使用的评价函数，含保持焦距的惩罚项；结果报告的是评价函数本身。</value></data>
-  <data name="Jobs_Optimize_SearchedOn" xml:space="preserve"><value>在 {0} 上搜索；评价函数值在 CPU f64 基准上报告。</value></data>
+  <data name="Jobs_Optimize_SearchedOn" xml:space="preserve"><value>在 {0} 上搜索；评价函数值在 CPU f64 参考上报告。</value></data>
   <data name="Jobs_Optimize_Seed" xml:space="preserve"><value>随机种子</value></data>
   <data name="Jobs_Optimize_Stop" xml:space="preserve"><value>停止</value></data>
   <data name="Jobs_Optimize_StopHelp" xml:space="preserve"><value>立即结束并保留目前的最佳设计</value></data>
@@ -1539,7 +1539,7 @@
   <data name="Jobs_Solves_CommittedHint" xml:space="preserve"><value>设计现在包含这些求解值。</value></data>
   <data name="Jobs_Solves_DoneHelp" xml:space="preserve"><value>返回设计的求解</value></data>
   <data name="Jobs_Solves_DryRunHint" xml:space="preserve"><value>试运行：求解将设置的值。尚未做任何更改。</value></data>
-  <data name="Jobs_Solves_EmptyDescription" xml:space="preserve"><value>在面检查器中添加求解：厚度上的边缘光线或主光线高度，曲率上的角度或 F 数，以及拾取。</value></data>
+  <data name="Jobs_Solves_EmptyDescription" xml:space="preserve"><value>在面检查器中添加求解：厚度上的边缘光线或主光线高度，曲率上的角度或 F 数，以及跟随。</value></data>
   <data name="Jobs_Solves_EmptyTitle" xml:space="preserve"><value>没有求解</value></data>
   <data name="Jobs_Solves_FailedTitle" xml:space="preserve"><value>求解失败</value></data>
   <data name="Jobs_Solves_None" xml:space="preserve"><value>无</value></data>
@@ -1571,7 +1571,7 @@
   <data name="Jobs_Tolerance_Model_Group_Stop" xml:space="preserve"><value>光阑 S{0}</value></data>
   <data name="Jobs_Tolerance_Model_Issue_AbbeUnknown" xml:space="preserve"><value>{0} 的阿贝数尚未知：请以 ΔV_d 给出限值，或等待玻璃数据。</value></data>
   <data name="Jobs_Tolerance_Model_Issue_Air" xml:space="preserve"><value>空气</value></data>
-  <data name="Jobs_Tolerance_Model_Issue_ApertureWiderThanSphere" xml:space="preserve"><value>面 {0} 的通光口径超出其球面。</value></data>
+  <data name="Jobs_Tolerance_Model_Issue_ApertureWiderThanSphere" xml:space="preserve"><value>第 {0} 面的通光孔径超出其球面。</value></data>
   <data name="Jobs_Tolerance_Model_Issue_BothZero" xml:space="preserve"><value>两个限值均为零。</value></data>
   <data name="Jobs_Tolerance_Model_Issue_DecenterRange" xml:space="preserve"><value>只能对物面与像面之间的面设置偏心。</value></data>
   <data name="Jobs_Tolerance_Model_Issue_DeltaRTooLarge" xml:space="preserve"><value>ΔR 必须小于 |R| = {0} mm。</value></data>
@@ -1579,14 +1579,14 @@
   <data name="Jobs_Tolerance_Model_Issue_ElementInDesign" xml:space="preserve"><value>设计已将 S{0}–{1} 作为绕 S{2} 移动的元件：请使用该范围和枢轴点。</value></data>
   <data name="Jobs_Tolerance_Model_Issue_ElementLastGone" xml:space="preserve"><value>元件的末面已不存在。</value></data>
   <data name="Jobs_Tolerance_Model_Issue_ElementRange" xml:space="preserve"><value>元件移动的是物面与像面之间、从首面到末面的各面。</value></data>
-  <data name="Jobs_Tolerance_Model_Issue_FlatSurface" xml:space="preserve"><value>面 {0} 为平面：请以光圈数给出其光焦度公差。</value></data>
-  <data name="Jobs_Tolerance_Model_Issue_FringesNeedAperture" xml:space="preserve"><value>光圈数需要面 {0} 的通光口径；请运行布局或设置半口径。</value></data>
+  <data name="Jobs_Tolerance_Model_Issue_FlatSurface" xml:space="preserve"><value>第 {0} 面为平面：请以光圈数给出其光焦度公差。</value></data>
+  <data name="Jobs_Tolerance_Model_Issue_FringesNeedAperture" xml:space="preserve"><value>光圈数需要第 {0} 面的通光孔径；请运行布局图或设置半口径。</value></data>
   <data name="Jobs_Tolerance_Model_Issue_ImageThickness" xml:space="preserve"><value>像面没有厚度。</value></data>
   <data name="Jobs_Tolerance_Model_Issue_LimitsNotPositive" xml:space="preserve"><value>限值必须为零或正数。</value></data>
   <data name="Jobs_Tolerance_Model_Issue_MeltOffsetLimit" xml:space="preserve"><value>加上熔炼偏差（{0}）后，{1} 将超出引擎的限值 ±{2}。</value></data>
-  <data name="Jobs_Tolerance_Model_Issue_NoFormForIrregularity" xml:space="preserve"><value>面 {0} 没有可施加不规则度的面形。</value></data>
-  <data name="Jobs_Tolerance_Model_Issue_NoRadius" xml:space="preserve"><value>面 {0} 没有曲率半径。</value></data>
-  <data name="Jobs_Tolerance_Model_Issue_NotAGlass" xml:space="preserve"><value>面 {0} 之后是{1}，不是具有 n_d 和 V_d 的玻璃。</value></data>
+  <data name="Jobs_Tolerance_Model_Issue_NoFormForIrregularity" xml:space="preserve"><value>第 {0} 面没有可施加不规则度的面形。</value></data>
+  <data name="Jobs_Tolerance_Model_Issue_NoRadius" xml:space="preserve"><value>第 {0} 面没有曲率半径。</value></data>
+  <data name="Jobs_Tolerance_Model_Issue_NotAGlass" xml:space="preserve"><value>第 {0} 面之后是{1}，不是具有 n_d 和 V_d 的玻璃。</value></data>
   <data name="Jobs_Tolerance_Model_Issue_OneSurface" xml:space="preserve"><value>同一面</value></data>
   <data name="Jobs_Tolerance_Model_Issue_ParameterGone" xml:space="preserve"><value>该参数已不存在。</value></data>
   <data name="Jobs_Tolerance_Model_Issue_PivotGone" xml:space="preserve"><value>枢轴面已不存在。</value></data>
@@ -1616,7 +1616,7 @@
   <data name="Jobs_Tolerance_Model_Kind_TiltY" xml:space="preserve"><value>面倾斜 y</value></data>
   <data name="Jobs_Tolerance_Model_Mode_Both" xml:space="preserve"><value>两者</value></data>
   <data name="Jobs_Tolerance_Model_Mode_MonteCarlo" xml:space="preserve"><value>蒙特卡罗</value></data>
-  <data name="Jobs_Tolerance_Model_Mode_Sensitivity" xml:space="preserve"><value>敏感度</value></data>
+  <data name="Jobs_Tolerance_Model_Mode_Sensitivity" xml:space="preserve"><value>灵敏度</value></data>
   <data name="Jobs_Tolerance_Model_Preset_Commercial" xml:space="preserve"><value>商用级</value></data>
   <data name="Jobs_Tolerance_Model_Preset_HighPrecision" xml:space="preserve"><value>高精密级</value></data>
   <data name="Jobs_Tolerance_Model_Preset_Precision" xml:space="preserve"><value>精密级</value></data>
@@ -1624,10 +1624,10 @@
   <data name="Jobs_Tolerance_Model_Unit_Degrees" xml:space="preserve"><value>度</value></data>
   <data name="Jobs_Tolerance_Model_Unit_ParameterUnits" xml:space="preserve"><value>参数单位</value></data>
   <data name="Jobs_Tolerance_Model_Unit_Percent" xml:space="preserve"><value>百分比</value></data>
-  <data name="Jobs_Tolerance_Model_Unit_TestFringes" xml:space="preserve"><value>检测光圈</value></data>
+  <data name="Jobs_Tolerance_Model_Unit_TestFringes" xml:space="preserve"><value>检验光圈</value></data>
   <data name="Jobs_Tolerance_Panel_AddCompensator" xml:space="preserve"><value>添加补偿器</value></data>
-  <data name="Jobs_Tolerance_Panel_AddSurface" xml:space="preserve"><value>面 {0}</value></data>
-  <data name="Jobs_Tolerance_Panel_AddSurfaceLabeled" xml:space="preserve"><value>面 {0} · {1}</value></data>
+  <data name="Jobs_Tolerance_Panel_AddSurface" xml:space="preserve"><value>第 {0} 面</value></data>
+  <data name="Jobs_Tolerance_Panel_AddSurfaceLabeled" xml:space="preserve"><value>第 {0} 面 · {1}</value></data>
   <data name="Jobs_Tolerance_Panel_AddTolerance" xml:space="preserve"><value>添加公差</value></data>
   <data name="Jobs_Tolerance_Panel_AnalysisGroup" xml:space="preserve"><value>分析</value></data>
   <data name="Jobs_Tolerance_Panel_Back" xml:space="preserve"><value>返回</value></data>
@@ -1641,9 +1641,9 @@
   <data name="Jobs_Tolerance_Panel_Comp_MeanHelp" xml:space="preserve"><value>各次试验的均值，及其相对标称值的偏移</value></data>
   <data name="Jobs_Tolerance_Panel_Comp_MeanWithShift" xml:space="preserve"><value>{0} {1}（{2}）</value></data>
   <data name="Jobs_Tolerance_Panel_Comp_NominalHelp" xml:space="preserve"><value>在原设计上重新优化后的补偿器值</value></data>
-  <data name="Jobs_Tolerance_Panel_Comp_RangeBarHelp" xml:space="preserve"><value>敏感度评估使其从 {0} 移动到 +{1} {2}（允许 ±{3}）</value></data>
+  <data name="Jobs_Tolerance_Panel_Comp_RangeBarHelp" xml:space="preserve"><value>灵敏度评估使其从 {0} 移动到 +{1} {2}（允许 ±{3}）</value></data>
   <data name="Jobs_Tolerance_Panel_Comp_RangeUsed" xml:space="preserve"><value>已用范围</value></data>
-  <data name="Jobs_Tolerance_Panel_Comp_RangeUsedHelp" xml:space="preserve"><value>敏感度评估所需的移动量（相对标称值）</value></data>
+  <data name="Jobs_Tolerance_Panel_Comp_RangeUsedHelp" xml:space="preserve"><value>灵敏度评估所需的移动量（相对标称值）</value></data>
   <data name="Jobs_Tolerance_Panel_Comp_RangeUsedValue" xml:space="preserve"><value>{0} 至 {1} {2}</value></data>
   <data name="Jobs_Tolerance_Panel_Comp_Sigma" xml:space="preserve"><value>蒙特卡罗 σ</value></data>
   <data name="Jobs_Tolerance_Panel_Comp_SigmaHelp" xml:space="preserve"><value>各次试验的标准差，及其三倍</value></data>
@@ -1654,7 +1654,7 @@
   <data name="Jobs_Tolerance_Panel_Criterion" xml:space="preserve"><value>判据</value></data>
   <data name="Jobs_Tolerance_Panel_CriterionHintFields" xml:space="preserve"><value>在设计的各视场和波长上，按其权重计算。</value></data>
   <data name="Jobs_Tolerance_Panel_CriterionHintMerit" xml:space="preserve"><value>每个样件按优化页的评价函数评判。</value></data>
-  <data name="Jobs_Tolerance_Panel_CriterionHintMtf" xml:space="preserve"><value>评价设置中各频率处的 MTF，以与 1 的差值表示。</value></data>
+  <data name="Jobs_Tolerance_Panel_CriterionHintMtf" xml:space="preserve"><value>评价函数设置中各频率处的 MTF，以与 1 的差值表示。</value></data>
   <data name="Jobs_Tolerance_Panel_CsvFileType" xml:space="preserve"><value>CSV（逗号分隔值）</value></data>
   <data name="Jobs_Tolerance_Panel_DefaultTolerancesButton" xml:space="preserve"><value>默认公差…</value></data>
   <data name="Jobs_Tolerance_Panel_DefaultTolerancesHelp" xml:space="preserve"><value>按制造等级生成一组公差</value></data>
@@ -1667,7 +1667,7 @@
   <data name="Jobs_Tolerance_Panel_EditTolerancesHelp" xml:space="preserve"><value>返回公差集（结果会保留）</value></data>
   <data name="Jobs_Tolerance_Panel_Elapsed" xml:space="preserve"><value>已用时间</value></data>
   <data name="Jobs_Tolerance_Panel_ElementLineName" xml:space="preserve"><value>移动 {0}，枢轴点 {1}</value></data>
-  <data name="Jobs_Tolerance_Panel_ElementLineSurface" xml:space="preserve"><value>面 {0}</value></data>
+  <data name="Jobs_Tolerance_Panel_ElementLineSurface" xml:space="preserve"><value>第 {0} 面</value></data>
   <data name="Jobs_Tolerance_Panel_EndPreview" xml:space="preserve"><value>结束预览</value></data>
   <data name="Jobs_Tolerance_Panel_EndThePreview" xml:space="preserve"><value>结束预览</value></data>
   <data name="Jobs_Tolerance_Panel_Export" xml:space="preserve"><value>导出</value></data>
@@ -1681,8 +1681,8 @@
   <data name="Jobs_Tolerance_Panel_Generator_Generate" xml:space="preserve"><value>生成</value></data>
   <data name="Jobs_Tolerance_Panel_Generator_Hint" xml:space="preserve"><value>0 表示不含该类公差。生成会替换现有公差；补偿器保持不变。</value></data>
   <data name="Jobs_Tolerance_Panel_Generator_Index" xml:space="preserve"><value>折射率</value></data>
-  <data name="Jobs_Tolerance_Panel_Generator_Irregularity" xml:space="preserve"><value>局部光圈</value></data>
-  <data name="Jobs_Tolerance_Panel_Generator_Power" xml:space="preserve"><value>光圈</value></data>
+  <data name="Jobs_Tolerance_Panel_Generator_Irregularity" xml:space="preserve"><value>不规则度</value></data>
+  <data name="Jobs_Tolerance_Panel_Generator_Power" xml:space="preserve"><value>光圈数</value></data>
   <data name="Jobs_Tolerance_Panel_Generator_SurfaceDecenter" xml:space="preserve"><value>面偏心</value></data>
   <data name="Jobs_Tolerance_Panel_Generator_SurfaceTilt" xml:space="preserve"><value>面倾斜</value></data>
   <data name="Jobs_Tolerance_Panel_Generator_Thickness" xml:space="preserve"><value>厚度</value></data>
@@ -1693,8 +1693,8 @@
   <data name="Jobs_Tolerance_Panel_Group_Hide" xml:space="preserve"><value>隐藏 {0} 的公差</value></data>
   <data name="Jobs_Tolerance_Panel_Group_Show" xml:space="preserve"><value>显示 {1} 的 {0} 项公差</value></data>
   <data name="Jobs_Tolerance_Panel_HistogramDashed" xml:space="preserve"><value>虚线：{0} % 的样件。</value></data>
-  <data name="Jobs_Tolerance_Panel_HistogramHelp" xml:space="preserve"><value>点击柱条以列出其试验</value></data>
-  <data name="Jobs_Tolerance_Panel_HistogramHint" xml:space="preserve"><value>点击直方图的柱条查看其试验；眼睛图标在窗口中重建该试验。</value></data>
+  <data name="Jobs_Tolerance_Panel_HistogramHelp" xml:space="preserve"><value>单击柱条以列出其试验</value></data>
+  <data name="Jobs_Tolerance_Panel_HistogramHint" xml:space="preserve"><value>单击直方图的柱条查看其试验；眼睛图标在窗口中重建该试验。</value></data>
   <data name="Jobs_Tolerance_Panel_HistogramHintSelected" xml:space="preserve"><value>眼睛图标在窗口中以只读方式重建试验。</value></data>
   <data name="Jobs_Tolerance_Panel_HistogramName" xml:space="preserve"><value>{0} 次蒙特卡罗试验的{1}分布</value></data>
   <data name="Jobs_Tolerance_Panel_HistogramSolid" xml:space="preserve"><value>实线：标称值 {0}。</value></data>
@@ -1744,19 +1744,19 @@
   <data name="Jobs_Tolerance_Panel_Run" xml:space="preserve"><value>运行公差分析</value></data>
   <data name="Jobs_Tolerance_Panel_RunHelp" xml:space="preserve"><value>开始运行（Ctrl+Enter）</value></data>
   <data name="Jobs_Tolerance_Panel_Running" xml:space="preserve"><value>正在运行</value></data>
-  <data name="Jobs_Tolerance_Panel_RunningHint" xml:space="preserve"><value>“停止”会保留敏感度和已完成的试验。“取消”会放弃本次运行。可以关闭此面板，任务会继续运行。</value></data>
-  <data name="Jobs_Tolerance_Panel_SaveSensitivityCsv" xml:space="preserve"><value>将敏感度表保存为 CSV…</value></data>
+  <data name="Jobs_Tolerance_Panel_RunningHint" xml:space="preserve"><value>“停止”会保留灵敏度和已完成的试验。“取消”会放弃本次运行。可以关闭此面板，任务会继续运行。</value></data>
+  <data name="Jobs_Tolerance_Panel_SaveSensitivityCsv" xml:space="preserve"><value>将灵敏度表保存为 CSV…</value></data>
   <data name="Jobs_Tolerance_Panel_SaveTrialsCsv" xml:space="preserve"><value>将蒙特卡罗试验保存为 CSV…</value></data>
   <data name="Jobs_Tolerance_Panel_Saved" xml:space="preserve"><value>已保存 {0}。</value></data>
   <data name="Jobs_Tolerance_Panel_Seed" xml:space="preserve"><value>随机种子</value></data>
-  <data name="Jobs_Tolerance_Panel_SensitivityGroup" xml:space="preserve"><value>敏感度</value></data>
-  <data name="Jobs_Tolerance_Panel_SensitivityGroupLargest" xml:space="preserve"><value>敏感度（{0} 项中最大的 25 项）</value></data>
+  <data name="Jobs_Tolerance_Panel_SensitivityGroup" xml:space="preserve"><value>灵敏度</value></data>
+  <data name="Jobs_Tolerance_Panel_SensitivityGroupLargest" xml:space="preserve"><value>灵敏度（{0} 项中最大的 25 项）</value></data>
   <data name="Jobs_Tolerance_Panel_SensitivityRowName" xml:space="preserve"><value>{0}：占 RSS 的 {1}</value></data>
   <data name="Jobs_Tolerance_Panel_ShareOfRss" xml:space="preserve"><value>占 RSS 比例</value></data>
   <data name="Jobs_Tolerance_Panel_ShowLastResults" xml:space="preserve"><value>显示上次结果</value></data>
   <data name="Jobs_Tolerance_Panel_ShowMore" xml:space="preserve"><value>再显示 {0} 项</value></data>
   <data name="Jobs_Tolerance_Panel_Stop" xml:space="preserve"><value>停止</value></data>
-  <data name="Jobs_Tolerance_Panel_StopHelp" xml:space="preserve"><value>立即结束，并保留敏感度和已完成的试验</value></data>
+  <data name="Jobs_Tolerance_Panel_StopHelp" xml:space="preserve"><value>立即结束，并保留灵敏度和已完成的试验</value></data>
   <data name="Jobs_Tolerance_Panel_StoppedEarly" xml:space="preserve"><value>已提前停止：以下为已完成部分的结果。</value></data>
   <data name="Jobs_Tolerance_Panel_Subtitle_Many" xml:space="preserve"><value>{0} 项公差 · {1}</value></data>
   <data name="Jobs_Tolerance_Panel_Subtitle_One" xml:space="preserve"><value>{0} 项公差 · {1}</value></data>
@@ -1765,9 +1765,9 @@
   <data name="Jobs_Tolerance_Panel_SurfaceColumnSurfaceHelp" xml:space="preserve"><value>面（厚度指其后的间隔）</value></data>
   <data name="Jobs_Tolerance_Panel_SurfaceStop" xml:space="preserve"><value>S{0}（光阑）</value></data>
   <data name="Jobs_Tolerance_Panel_SymmetricLimits" xml:space="preserve"><value>对称限值</value></data>
-  <data name="Jobs_Tolerance_Panel_TestFringesAt" xml:space="preserve"><value>光圈检测波长</value></data>
-  <data name="Jobs_Tolerance_Panel_TestFringesHelp" xml:space="preserve"><value>光圈和局部光圈的条纹数按此波长计</value></data>
-  <data name="Jobs_Tolerance_Panel_TestWavelengthName" xml:space="preserve"><value>检测波长（nm）</value></data>
+  <data name="Jobs_Tolerance_Panel_TestFringesAt" xml:space="preserve"><value>光圈检验波长</value></data>
+  <data name="Jobs_Tolerance_Panel_TestFringesHelp" xml:space="preserve"><value>以检验光圈计的光圈数和不规则度按此波长计算</value></data>
+  <data name="Jobs_Tolerance_Panel_TestWavelengthName" xml:space="preserve"><value>检验波长（nm）</value></data>
   <data name="Jobs_Tolerance_Panel_TheDesign" xml:space="preserve"><value>该设计</value></data>
   <data name="Jobs_Tolerance_Panel_TimeLeft" xml:space="preserve"><value>剩余时间</value></data>
   <data name="Jobs_Tolerance_Panel_Title" xml:space="preserve"><value>公差</value></data>
@@ -1794,7 +1794,7 @@
   <data name="Jobs_Tolerance_Panel_Undo_ChangeLevels" xml:space="preserve"><value>更改分位水平</value></data>
   <data name="Jobs_Tolerance_Panel_Undo_ChangePassLimit" xml:space="preserve"><value>更改合格限</value></data>
   <data name="Jobs_Tolerance_Panel_Undo_ChangeSeed" xml:space="preserve"><value>更改随机种子</value></data>
-  <data name="Jobs_Tolerance_Panel_Undo_ChangeTestWavelength" xml:space="preserve"><value>更改检测波长</value></data>
+  <data name="Jobs_Tolerance_Panel_Undo_ChangeTestWavelength" xml:space="preserve"><value>更改检验波长</value></data>
   <data name="Jobs_Tolerance_Panel_Undo_ChangeTolerance" xml:space="preserve"><value>更改公差</value></data>
   <data name="Jobs_Tolerance_Panel_Undo_ChangeToleranceSurface" xml:space="preserve"><value>更改公差面</value></data>
   <data name="Jobs_Tolerance_Panel_Undo_ChangeToleranceUnit" xml:space="preserve"><value>更改公差单位</value></data>
@@ -1806,7 +1806,7 @@
   <data name="Jobs_Tolerance_Panel_Undo_RemoveCompensator" xml:space="preserve"><value>移除补偿器</value></data>
   <data name="Jobs_Tolerance_Panel_Undo_SymmetricLimits" xml:space="preserve"><value>对称限值</value></data>
   <data name="Jobs_Tolerance_Panel_UnitHelp" xml:space="preserve"><value>限值的单位（更改时会换算限值）</value></data>
-  <data name="Jobs_Tolerance_Panel_UnitNeedsData" xml:space="preserve"><value>此单位需要面的通光口径或玻璃的阿贝数，而设计尚未提供。</value></data>
+  <data name="Jobs_Tolerance_Panel_UnitNeedsData" xml:space="preserve"><value>此单位需要面的通光孔径或玻璃的阿贝数，而设计尚未提供。</value></data>
   <data name="Jobs_Tolerance_Panel_WorstTrialsButton" xml:space="preserve"><value>最差试验</value></data>
   <data name="Jobs_Tolerance_Panel_WorstTrialsHelp" xml:space="preserve"><value>列出最差试验，而非所选柱条的试验</value></data>
   <data name="Jobs_Tolerance_Panel_WorstTrialsTitle" xml:space="preserve"><value>最差试验</value></data>
@@ -1874,26 +1874,26 @@
   <!-- end area: Jobs -->
   <!-- area: Results -->
   <data name="Results_A11y_Selected" xml:space="preserve"><value>已选择</value></data>
-  <data name="Results_Axis_DefocusMm" xml:space="preserve"><value>离焦 (mm)</value></data>
-  <data name="Results_Axis_DistortionPercent" xml:space="preserve"><value>畸变 (%)</value></data>
+  <data name="Results_Axis_DefocusMm" xml:space="preserve"><value>离焦量（mm）</value></data>
+  <data name="Results_Axis_DistortionPercent" xml:space="preserve"><value>畸变（%）</value></data>
   <data name="Results_Axis_EncircledEnergy" xml:space="preserve"><value>包围能量</value></data>
   <data name="Results_Axis_Field" xml:space="preserve"><value>视场</value></data>
-  <data name="Results_Axis_FieldUnit" xml:space="preserve"><value>视场 ({0})</value></data>
-  <data name="Results_Axis_FocalShiftUm" xml:space="preserve"><value>焦移 (µm)</value></data>
-  <data name="Results_Axis_FocusShiftMm" xml:space="preserve"><value>焦移 (mm)</value></data>
+  <data name="Results_Axis_FieldUnit" xml:space="preserve"><value>视场（{0}）</value></data>
+  <data name="Results_Axis_FocalShiftUm" xml:space="preserve"><value>焦移（µm）</value></data>
+  <data name="Results_Axis_FocusShiftMm" xml:space="preserve"><value>焦移（mm）</value></data>
   <data name="Results_Axis_Fraction" xml:space="preserve"><value>比例</value></data>
-  <data name="Results_Axis_LateralColorUm" xml:space="preserve"><value>垂轴色差 (µm)</value></data>
-  <data name="Results_Axis_LineSpread" xml:space="preserve"><value>线扩散 ({0})</value></data>
-  <data name="Results_Axis_LongitudinalAberrationMm" xml:space="preserve"><value>轴向像差 (mm)</value></data>
+  <data name="Results_Axis_LateralColorUm" xml:space="preserve"><value>垂轴色差（µm）</value></data>
+  <data name="Results_Axis_LineSpread" xml:space="preserve"><value>线扩散（{0}）</value></data>
+  <data name="Results_Axis_LongitudinalAberrationMm" xml:space="preserve"><value>纵向像差（mm）</value></data>
   <data name="Results_Axis_Modulation" xml:space="preserve"><value>调制度</value></data>
   <data name="Results_Axis_NormalizedField" xml:space="preserve"><value>归一化视场</value></data>
-  <data name="Results_Axis_Position" xml:space="preserve"><value>位置 ({0})</value></data>
+  <data name="Results_Axis_Position" xml:space="preserve"><value>位置（{0}）</value></data>
   <data name="Results_Axis_PupilZone" xml:space="preserve"><value>光瞳带</value></data>
-  <data name="Results_Axis_Radius" xml:space="preserve"><value>半径 ({0})</value></data>
-  <data name="Results_Axis_RmsRadiusUm" xml:space="preserve"><value>RMS 半径 (µm)</value></data>
-  <data name="Results_Axis_SpatialFrequency" xml:space="preserve"><value>空间频率 ({0})</value></data>
-  <data name="Results_Axis_VergenceMd" xml:space="preserve"><value>聚散度 (mD)</value></data>
-  <data name="Results_Axis_WavelengthUm" xml:space="preserve"><value>波长 (µm)</value></data>
+  <data name="Results_Axis_Radius" xml:space="preserve"><value>半径（{0}）</value></data>
+  <data name="Results_Axis_RmsRadiusUm" xml:space="preserve"><value>RMS 半径（µm）</value></data>
+  <data name="Results_Axis_SpatialFrequency" xml:space="preserve"><value>空间频率（{0}）</value></data>
+  <data name="Results_Axis_VergenceMd" xml:space="preserve"><value>聚散度（mD）</value></data>
+  <data name="Results_Axis_WavelengthUm" xml:space="preserve"><value>波长（µm）</value></data>
   <data name="Results_Chart_Distortion" xml:space="preserve"><value>畸变</value></data>
   <data name="Results_Chart_FieldCurvature" xml:space="preserve"><value>场曲</value></data>
   <data name="Results_Chart_FieldNumber" xml:space="preserve"><value>视场 {0}</value></data>
@@ -1904,14 +1904,14 @@
   <data name="Results_Compare_Design" xml:space="preserve"><value>设计</value></data>
   <data name="Results_Compare_Name" xml:space="preserve"><value>显示设计或预览中的候选设计</value></data>
   <data name="Results_Compare_ToolTip" xml:space="preserve"><value>显示设计的结果，或正在预览的候选设计的结果</value></data>
-  <data name="Results_Cra_AngleAxis" xml:space="preserve"><value>主光线角 (°)</value></data>
+  <data name="Results_Cra_AngleAxis" xml:space="preserve"><value>主光线角（°）</value></data>
   <data name="Results_Cra_ChartName" xml:space="preserve"><value>主光线角随像高变化。{0}</value></data>
   <data name="Results_Cra_ChartNameLimit" xml:space="preserve"><value>主光线角随像高变化，含传感器限值。{0}</value></data>
   <data name="Results_Cra_Curve" xml:space="preserve"><value>曲线</value></data>
   <data name="Results_Cra_Display" xml:space="preserve"><value>显示</value></data>
   <data name="Results_Cra_ExceedLimit" xml:space="preserve"><value>{0}，{1} 个采样点超出传感器限值</value></data>
-  <data name="Results_Cra_ImageHeightXMm" xml:space="preserve"><value>像高 x (mm)</value></data>
-  <data name="Results_Cra_ImageHeightYMm" xml:space="preserve"><value>像高 y (mm)</value></data>
+  <data name="Results_Cra_ImageHeightXMm" xml:space="preserve"><value>像高 x（mm）</value></data>
+  <data name="Results_Cra_ImageHeightYMm" xml:space="preserve"><value>像高 y（mm）</value></data>
   <data name="Results_Cra_Incidence" xml:space="preserve"><value>主光线入射角</value></data>
   <data name="Results_Cra_Largest" xml:space="preserve"><value>最大 {0} 度，位于 {1} 毫米处</value></data>
   <data name="Results_Cra_Map" xml:space="preserve"><value>分布图</value></data>
@@ -1920,7 +1920,7 @@
   <data name="Results_Cra_Violation" xml:space="preserve"><value>超限</value></data>
   <data name="Results_Cra_WithinLimit" xml:space="preserve"><value>{0}，在传感器限值之内</value></data>
   <data name="Results_FieldMap_DataRange" xml:space="preserve"><value>数据范围</value></data>
-  <data name="Results_FieldMap_ImageRadiusMm" xml:space="preserve"><value>像面半径 (mm)</value></data>
+  <data name="Results_FieldMap_ImageRadiusMm" xml:space="preserve"><value>像面半径（mm）</value></data>
   <data name="Results_FieldMap_MapName" xml:space="preserve"><value>{0} 归一化视场分布图，{1} × {2} 个采样点，从 {3} 到 {4}</value></data>
   <data name="Results_FieldMap_NoValues" xml:space="preserve"><value>无数值</value></data>
   <data name="Results_FieldMap_Quantity" xml:space="preserve"><value>物理量</value></data>
@@ -1956,7 +1956,7 @@
   <data name="Results_FirstOrder_AtPrimary" xml:space="preserve"><value>λ = {0}（主波长）</value></data>
   <data name="Results_FirstOrder_AtWavelength" xml:space="preserve"><value>λ = {0}</value></data>
   <data name="Results_FirstOrder_Diffractive" xml:space="preserve"><value>衍射</value></data>
-  <data name="Results_FirstOrder_DoePower" xml:space="preserve"><value>DOE 光焦度，面 {0}</value></data>
+  <data name="Results_FirstOrder_DoePower" xml:space="preserve"><value>DOE 光焦度，第 {0} 面</value></data>
   <data name="Results_FirstOrder_DoePowerTip" xml:space="preserve"><value>追迹级次的相位光焦度（不含基底的折射光焦度）</value></data>
   <data name="Results_FirstOrder_OtherWavelengths" xml:space="preserve"><value>其他波长（{0}）</value></data>
   <data name="Results_FirstOrder_Squeeze" xml:space="preserve"><value>压缩比</value></data>
@@ -1969,16 +1969,16 @@
   <data name="Results_FirstOrder_ValueName" xml:space="preserve"><value>{0}：{1}</value></data>
   <data name="Results_Footprint_ClearAperture" xml:space="preserve"><value>通光孔径 {0}</value></data>
   <data name="Results_Footprint_Clipped" xml:space="preserve"><value>{0} 条被遮挡</value></data>
-  <data name="Results_Footprint_Name" xml:space="preserve"><value>面 {0} 上的光斑足迹，{1} 条光线通过，{2} 条被遮挡</value></data>
+  <data name="Results_Footprint_Name" xml:space="preserve"><value>第 {0} 面上的光束足迹，{1} 条光线通过，{2} 条被遮挡</value></data>
   <data name="Results_Generic_Data" xml:space="preserve"><value>数据</value></data>
-  <data name="Results_Generic_Index" xml:space="preserve"><value>索引</value></data>
+  <data name="Results_Generic_Index" xml:space="preserve"><value>序号</value></data>
   <data name="Results_Generic_Missing" xml:space="preserve"><value> · {0} 个无值</value></data>
   <data name="Results_Generic_MoreRows" xml:space="preserve"><value>另有 {0} 行</value></data>
   <data name="Results_Generic_NoValues" xml:space="preserve"><value>{0} · 无数值</value></data>
   <data name="Results_Generic_ReadError" xml:space="preserve"><value>无法读取此结果：{0}</value></data>
   <data name="Results_Generic_Values" xml:space="preserve"><value>数值</value></data>
-  <data name="Results_Ghost_HeadBlur" xml:space="preserve"><value>弥散 ⌀ (mm)</value></data>
-  <data name="Results_Ghost_HeadFocus" xml:space="preserve"><value>焦点 (mm)</value></data>
+  <data name="Results_Ghost_HeadBlur" xml:space="preserve"><value>弥散 ⌀（mm）</value></data>
+  <data name="Results_Ghost_HeadFocus" xml:space="preserve"><value>焦点（mm）</value></data>
   <data name="Results_Ghost_HeadGhost" xml:space="preserve"><value>鬼像</value></data>
   <data name="Results_Ghost_HeadIrradiance" xml:space="preserve"><value>相对辐照度</value></data>
   <data name="Results_Ghost_NearFocus" xml:space="preserve"><value>近焦</value></data>
@@ -1991,27 +1991,27 @@
   <data name="Results_Ghost_TipIrradiance" xml:space="preserve"><value>估计的鬼像辐照度（相对于信号）</value></data>
   <data name="Results_Ghost_TipReflectance" xml:space="preserve"><value>各反射率的乘积</value></data>
   <data name="Results_Ghost_Truncated" xml:space="preserve"><value>受路径预算限制，已舍弃高阶路径。</value></data>
-  <data name="Results_GlassData_Catalog" xml:space="preserve"><value>目录 n_d {0}，V_d {1}</value></data>
+  <data name="Results_GlassData_Catalog" xml:space="preserve"><value>玻璃库 n_d {0}，V_d {1}</value></data>
   <data name="Results_GlassData_ChartName" xml:space="preserve"><value>折射率随波长变化</value></data>
   <data name="Results_GlassData_Density" xml:space="preserve"><value>密度</value></data>
   <data name="Results_GlassData_Dispersion" xml:space="preserve"><value>色散</value></data>
   <data name="Results_GlassData_Extrapolated" xml:space="preserve"><value>超出玻璃的数据范围：折射率为外推值</value></data>
   <data name="Results_GlassData_Formula" xml:space="preserve"><value>色散公式</value></data>
-  <data name="Results_GlassData_HeadCatalogIndex" xml:space="preserve"><value>n 目录</value></data>
+  <data name="Results_GlassData_HeadCatalogIndex" xml:space="preserve"><value>玻璃库 n</value></data>
   <data name="Results_GlassData_Indices" xml:space="preserve"><value>折射率</value></data>
-  <data name="Results_GlassData_NdTip" xml:space="preserve"><value>d 谱线 (587.56 nm) 处的折射率</value></data>
-  <data name="Results_GlassData_NeTip" xml:space="preserve"><value>e 谱线 (546.07 nm) 处的折射率</value></data>
+  <data name="Results_GlassData_NdTip" xml:space="preserve"><value>d 谱线（587.56 nm）处的折射率</value></data>
+  <data name="Results_GlassData_NeTip" xml:space="preserve"><value>e 谱线（546.07 nm）处的折射率</value></data>
   <data name="Results_GlassData_NoCurve" xml:space="preserve"><value>将曲线采样数设为大于零，即可绘制玻璃适用范围内的折射率。</value></data>
   <data name="Results_GlassData_None" xml:space="preserve"><value>无</value></data>
   <data name="Results_GlassData_Offset" xml:space="preserve"><value>偏移</value></data>
-  <data name="Results_GlassData_OffsetTip" xml:space="preserve"><value>相对目录值 Δnd {0}，ΔVd {1}</value></data>
-  <data name="Results_GlassData_PgfTip" xml:space="preserve"><value>相对部分色散 (ng − nF) / (nF − nC)</value></data>
+  <data name="Results_GlassData_OffsetTip" xml:space="preserve"><value>相对玻璃库值 Δnd {0}，ΔVd {1}</value></data>
+  <data name="Results_GlassData_PgfTip" xml:space="preserve"><value>部分色散 (ng − nF) / (nF − nC)</value></data>
   <data name="Results_GlassData_Properties" xml:space="preserve"><value>属性</value></data>
   <data name="Results_GlassData_RelativeCost" xml:space="preserve"><value>相对成本</value></data>
   <data name="Results_GlassData_ThermalExpansion" xml:space="preserve"><value>热膨胀</value></data>
-  <data name="Results_GlassData_ThermoOptic" xml:space="preserve"><value>热光数据 (dn/dT)</value></data>
+  <data name="Results_GlassData_ThermoOptic" xml:space="preserve"><value>热光数据（dn/dT）</value></data>
   <data name="Results_GlassData_TipAbsorption" xml:space="preserve"><value>内部吸收系数</value></data>
-  <data name="Results_GlassData_TipCatalogIndex" xml:space="preserve"><value>目录参考条件下的折射率</value></data>
+  <data name="Results_GlassData_TipCatalogIndex" xml:space="preserve"><value>玻璃库参考条件下的折射率</value></data>
   <data name="Results_GlassData_TipIndex" xml:space="preserve"><value>分析温度和压力下相对于空气的折射率</value></data>
   <data name="Results_GlassData_Valid" xml:space="preserve"><value>有效 {0}</value></data>
   <data name="Results_GlassData_ValidRange" xml:space="preserve"><value>有效范围</value></data>
@@ -2022,12 +2022,12 @@
   <data name="Results_GlassMap_AxisNd" xml:space="preserve"><value>折射率 n_d</value></data>
   <data name="Results_GlassMap_AxisPgf" xml:space="preserve"><value>部分色散 P_g,F</value></data>
   <data name="Results_GlassMap_Catalog" xml:space="preserve"><value>玻璃库</value></data>
-  <data name="Results_GlassMap_CatalogGlass" xml:space="preserve"><value>目录玻璃</value></data>
+  <data name="Results_GlassMap_CatalogGlass" xml:space="preserve"><value>玻璃库玻璃</value></data>
   <data name="Results_GlassMap_ClickHint" xml:space="preserve"><value>单击玻璃以查看详情。</value></data>
   <data name="Results_GlassMap_Excluded" xml:space="preserve"><value>已排除</value></data>
   <data name="Results_GlassMap_InDesign" xml:space="preserve"><value>设计中</value></data>
-  <data name="Results_GlassMap_MeltOffset" xml:space="preserve"><value>熔炼偏移</value></data>
-  <data name="Results_GlassMap_MeltOffsetLower" xml:space="preserve"><value>熔炼偏移</value></data>
+  <data name="Results_GlassMap_MeltOffset" xml:space="preserve"><value>熔炼偏差</value></data>
+  <data name="Results_GlassMap_MeltOffsetLower" xml:space="preserve"><value>熔炼偏差</value></data>
   <data name="Results_GlassMap_ModelGlass" xml:space="preserve"><value>模型玻璃</value></data>
   <data name="Results_GlassMap_ModelName" xml:space="preserve"><value>{0}（模型）</value></data>
   <data name="Results_GlassMap_Name" xml:space="preserve"><value>玻璃图，{0} 种玻璃；设计中：{1}</value></data>
@@ -2043,16 +2043,16 @@
   <data name="Results_GlassMap_StatusMelt" xml:space="preserve"><value>按需熔炼</value></data>
   <data name="Results_GlassMap_StatusObsolete" xml:space="preserve"><value>停产</value></data>
   <data name="Results_GlassMap_StatusOther" xml:space="preserve"><value>状态 {0}</value></data>
-  <data name="Results_GlassMap_StatusPreferred" xml:space="preserve"><value>首选</value></data>
+  <data name="Results_GlassMap_StatusPreferred" xml:space="preserve"><value>推荐</value></data>
   <data name="Results_GlassMap_StatusSpecial" xml:space="preserve"><value>特殊</value></data>
   <data name="Results_GlassMap_StatusStandard" xml:space="preserve"><value>标准</value></data>
   <data name="Results_GlassMap_StatusUnknown" xml:space="preserve"><value>未知</value></data>
   <data name="Results_GlassMap_Substitution" xml:space="preserve"><value>替换</value></data>
   <data name="Results_GlassMap_Surfaces" xml:space="preserve"><value>面</value></data>
   <data name="Results_Glass_FormulaExtended" xml:space="preserve"><value>扩展</value></data>
-  <data name="Results_Glass_FormulaTabulated" xml:space="preserve"><value>列表</value></data>
-  <data name="Results_GridDistortion_ImageXMm" xml:space="preserve"><value>像面 x (mm)</value></data>
-  <data name="Results_GridDistortion_ImageYMm" xml:space="preserve"><value>像面 y (mm)</value></data>
+  <data name="Results_Glass_FormulaTabulated" xml:space="preserve"><value>表格</value></data>
+  <data name="Results_GridDistortion_ImageXMm" xml:space="preserve"><value>像面 x（mm）</value></data>
+  <data name="Results_GridDistortion_ImageYMm" xml:space="preserve"><value>像面 y（mm）</value></data>
   <data name="Results_GridDistortion_Max" xml:space="preserve"><value>最大 {0} %</value></data>
   <data name="Results_GridDistortion_Name" xml:space="preserve"><value>网格畸变，最大 {0}%</value></data>
   <data name="Results_GridDistortion_ParaxialGrid" xml:space="preserve"><value>近轴网格</value></data>
@@ -2061,7 +2061,7 @@
   <data name="Results_ImageSim_AreaSampledTip" xml:space="preserve"><value>引擎在每个像素的精确源点（经过畸变）处计算内置图案，并在像素内取平均，因此模糊完全来自镜头。显示的源图像使用相同的定义绘制。</value></data>
   <data name="Results_ImageSim_At" xml:space="preserve"><value>位于 {0}</value></data>
   <data name="Results_ImageSim_AtAxis" xml:space="preserve"><value>轴上</value></data>
-  <data name="Results_ImageSim_AtView" xml:space="preserve"><value>{0} · 视野 {1}</value></data>
+  <data name="Results_ImageSim_AtView" xml:space="preserve"><value>{0} · 视场范围 {1}</value></data>
   <data name="Results_ImageSim_Blink" xml:space="preserve"><value>闪烁</value></data>
   <data name="Results_ImageSim_ChooseImage" xml:space="preserve"><value>选择图像…</value></data>
   <data name="Results_ImageSim_Clipped" xml:space="preserve"><value>{0}% 溢出</value></data>
@@ -2071,13 +2071,13 @@
   <data name="Results_ImageSim_ExposureToolTip" xml:space="preserve"><value>将模拟图像的线性光强乘以 2^EV；源图像以单位曝光显示</value></data>
   <data name="Results_ImageSim_FieldMapping" xml:space="preserve"><value>视场映射</value></data>
   <data name="Results_ImageSim_FieldMappingName" xml:space="preserve"><value>视场映射</value></data>
-  <data name="Results_ImageSim_FieldOfView" xml:space="preserve"><value>视野</value></data>
+  <data name="Results_ImageSim_FieldOfView" xml:space="preserve"><value>视场范围</value></data>
   <data name="Results_ImageSim_FieldOfViewToolTip" xml:space="preserve"><value>模拟的视场部分：围绕图块中心的正方形，以视场的比例表示。图块越小像素越细，模糊越明显。</value></data>
   <data name="Results_ImageSim_Fit" xml:space="preserve"><value>适应</value></data>
   <data name="Results_ImageSim_FitToolTip" xml:space="preserve"><value>使图像适应视图并重置平移（或双击图像）</value></data>
   <data name="Results_ImageSim_HeadField" xml:space="preserve"><value>视场 (Hx, Hy)</value></data>
-  <data name="Results_ImageSim_HeadIdeal" xml:space="preserve"><value>理想 (mm)</value></data>
-  <data name="Results_ImageSim_HeadReal" xml:space="preserve"><value>实际 (mm)</value></data>
+  <data name="Results_ImageSim_HeadIdeal" xml:space="preserve"><value>理想（mm）</value></data>
+  <data name="Results_ImageSim_HeadReal" xml:space="preserve"><value>实际（mm）</value></data>
   <data name="Results_ImageSim_HeadRelIllum" xml:space="preserve"><value>相对照度</value></data>
   <data name="Results_ImageSim_Help" xml:space="preserve"><value>显示：{0}，缩放 {1} %，曝光 {2}。滚动滚轮围绕指针缩放，拖动平移，双击适应；拖放图像文件可将其用作源图像。</value></data>
   <data name="Results_ImageSim_Image" xml:space="preserve"><value>图像</value></data>
@@ -2128,14 +2128,14 @@
   <data name="Results_ImageSim_Split" xml:space="preserve"><value>分割</value></data>
   <data name="Results_ImageSim_TheImage" xml:space="preserve"><value>图像</value></data>
   <data name="Results_ImageSim_UseAsSource" xml:space="preserve"><value>用作源图像</value></data>
-  <data name="Results_ImageSim_ViewButton" xml:space="preserve"><value>视野 {0}</value></data>
+  <data name="Results_ImageSim_ViewButton" xml:space="preserve"><value>视场范围 {0}</value></data>
   <data name="Results_ImageSim_ZoomIn" xml:space="preserve"><value>放大</value></data>
   <data name="Results_ImageSim_ZoomName" xml:space="preserve"><value>缩放 {0}</value></data>
   <data name="Results_ImageSim_ZoomOut" xml:space="preserve"><value>缩小</value></data>
   <data name="Results_ImageSim_ZoomToolTip" xml:space="preserve"><value>在图像上滚动滚轮以围绕指针缩放；拖动以平移</value></data>
   <data name="Results_KeyNumbers_Airy" xml:space="preserve"><value>艾里斑</value></data>
   <data name="Results_KeyNumbers_At" xml:space="preserve"><value>位于</value></data>
-  <data name="Results_KeyNumbers_BestDefocus" xml:space="preserve"><value>最佳离焦</value></data>
+  <data name="Results_KeyNumbers_BestDefocus" xml:space="preserve"><value>最佳离焦量</value></data>
   <data name="Results_KeyNumbers_Clear" xml:space="preserve"><value>通光</value></data>
   <data name="Results_KeyNumbers_Compared" xml:space="preserve"><value>{0} {1}（设计 {2}）</value></data>
   <data name="Results_KeyNumbers_Errors" xml:space="preserve"><value>错误</value></data>
@@ -2161,15 +2161,15 @@
   <data name="Results_KeyNumbers_Strehl" xml:space="preserve"><value>斯特列尔比</value></data>
   <data name="Results_KeyNumbers_Strongest" xml:space="preserve"><value>最强</value></data>
   <data name="Results_KeyNumbers_Warnings" xml:space="preserve"><value>警告</value></data>
-  <data name="Results_Legend_AiryRadius" xml:space="preserve"><value>± 艾里半径</value></data>
+  <data name="Results_Legend_AiryRadius" xml:space="preserve"><value>± 艾里斑半径</value></data>
   <data name="Results_Legend_DiffractionLimit" xml:space="preserve"><value>衍射极限</value></data>
   <data name="Results_Legend_FieldR80" xml:space="preserve"><value>{0} · r80 {1}</value></data>
   <data name="Results_Legend_RelativeIllumination" xml:space="preserve"><value>相对照度</value></data>
   <data name="Results_Legend_TSolidSDashed" xml:space="preserve"><value>T 实线，S 虚线</value></data>
   <data name="Results_Legend_VignettedFraction" xml:space="preserve"><value>渐晕比例</value></data>
-  <data name="Results_Legend_XFan" xml:space="preserve"><value>x 扇面</value></data>
+  <data name="Results_Legend_XFan" xml:space="preserve"><value>x 光线扇</value></data>
   <data name="Results_Legend_XSolidYDashed" xml:space="preserve"><value>x 实线，y 虚线</value></data>
-  <data name="Results_Legend_YFan" xml:space="preserve"><value>y 扇面</value></data>
+  <data name="Results_Legend_YFan" xml:space="preserve"><value>y 光线扇</value></data>
   <data name="Results_Map_ColorScale" xml:space="preserve"><value>色标</value></data>
   <data name="Results_Map_Linear" xml:space="preserve"><value>线性</value></data>
   <data name="Results_Map_Log" xml:space="preserve"><value>对数</value></data>
@@ -2196,7 +2196,7 @@
   <data name="Results_Psf_HelpWholeWindow" xml:space="preserve"><value>整个窗口</value></data>
   <data name="Results_Psf_MapName" xml:space="preserve"><value>点扩散函数</value></data>
   <data name="Results_Psf_Name" xml:space="preserve"><value>点扩散函数，{0}</value></data>
-  <data name="Results_Psf_OfPeak" xml:space="preserve"><value>{0}  （峰值的 {1}）</value></data>
+  <data name="Results_Psf_OfPeak" xml:space="preserve"><value>{0}（峰值的 {1}）</value></data>
   <data name="Results_Psf_Peak" xml:space="preserve"><value>峰值 {0}</value></data>
   <data name="Results_Psf_Polychromatic" xml:space="preserve"><value>{0} · 复色</value></data>
   <data name="Results_Psf_Samples" xml:space="preserve"><value>{0} × {0} 个采样点，间隔 {1}</value></data>
@@ -2212,7 +2212,7 @@
   <data name="Results_Rule_Best" xml:space="preserve"><value>最佳</value></data>
   <data name="Results_Rule_Image" xml:space="preserve"><value>像面</value></data>
   <data name="Results_Rule_Nyquist" xml:space="preserve"><value>奈奎斯特</value></data>
-  <data name="Results_Seidel_AxisCoefficient" xml:space="preserve"><value>系数 (mm)</value></data>
+  <data name="Results_Seidel_AxisCoefficient" xml:space="preserve"><value>系数（mm）</value></data>
   <data name="Results_Seidel_AxisSurface" xml:space="preserve"><value>面</value></data>
   <data name="Results_Seidel_ChartName" xml:space="preserve"><value>各面的赛德尔系数及其总和</value></data>
   <data name="Results_Seidel_ChoiceChromatic" xml:space="preserve"><value>色差</value></data>
@@ -2227,10 +2227,10 @@
   <data name="Results_Seidel_S3" xml:space="preserve"><value>S_III 像散</value></data>
   <data name="Results_Seidel_S4" xml:space="preserve"><value>S_IV 佩茨瓦尔</value></data>
   <data name="Results_Seidel_S5" xml:space="preserve"><value>S_V 畸变</value></data>
-  <data name="Results_Seidel_Sum" xml:space="preserve"><value>总和 (Σ)</value></data>
-  <data name="Results_Seidel_SurfaceNumber" xml:space="preserve"><value>面 {0}</value></data>
-  <data name="Results_Seidel_WavefrontItemName" xml:space="preserve"><value>{0} {1} waves</value></data>
-  <data name="Results_Seidel_WavefrontWaves" xml:space="preserve"><value>波前 (waves)</value></data>
+  <data name="Results_Seidel_Sum" xml:space="preserve"><value>总和（Σ）</value></data>
+  <data name="Results_Seidel_SurfaceNumber" xml:space="preserve"><value>第 {0} 面</value></data>
+  <data name="Results_Seidel_WavefrontItemName" xml:space="preserve"><value>{0} {1} λ</value></data>
+  <data name="Results_Seidel_WavefrontWaves" xml:space="preserve"><value>波前（λ）</value></data>
   <data name="Results_Sensor_AllGhosts" xml:space="preserve"><value>全部鬼像</value></data>
   <data name="Results_Sensor_Caption" xml:space="preserve"><value>传感器 {0} × {1} mm · 峰值 {2} {3}</value></data>
   <data name="Results_Sensor_GhostPrimaryFlux" xml:space="preserve"><value>鬼像/主像通量比</value></data>
@@ -2250,9 +2250,9 @@
   <data name="Results_Spot_AboutCentroid" xml:space="preserve"><value>{0} · 相对质心</value></data>
   <data name="Results_Spot_AboutChief" xml:space="preserve"><value>{0} · 相对主光线</value></data>
   <data name="Results_Spot_AiryDisk" xml:space="preserve"><value>艾里斑 {0}</value></data>
-  <data name="Results_Spot_Defocus" xml:space="preserve"><value>离焦</value></data>
+  <data name="Results_Spot_Defocus" xml:space="preserve"><value>离焦量</value></data>
   <data name="Results_Spot_Folded" xml:space="preserve"><value>{0} · 加宽窗格可显示所有焦面</value></data>
-  <data name="Results_Spot_HelpAiry" xml:space="preserve"><value>{0}，艾里半径 {1}</value></data>
+  <data name="Results_Spot_HelpAiry" xml:space="preserve"><value>{0}，艾里斑半径 {1}</value></data>
   <data name="Results_Spot_Name" xml:space="preserve"><value>点列图，{0} 个视场 × {1} 个焦面</value></data>
   <data name="Results_Spot_NameCandidate" xml:space="preserve"><value>点列图（候选设计），{0} 个视场 × {1} 个焦面</value></data>
   <data name="Results_Spot_NameDesign" xml:space="preserve"><value>点列图（设计），{0} 个视场 × {1} 个焦面</value></data>
@@ -2275,32 +2275,32 @@
   <data name="Results_Validation_Errors_Many" xml:space="preserve"><value>{0} 个错误</value></data>
   <data name="Results_Validation_Errors_One" xml:space="preserve"><value>1 个错误</value></data>
   <data name="Results_Validation_IssueName" xml:space="preserve"><value>{0}：{1}</value></data>
-  <data name="Results_Validation_IssueNameSurface" xml:space="preserve"><value>{0}：{1}，面 {2}</value></data>
+  <data name="Results_Validation_IssueNameSurface" xml:space="preserve"><value>{0}：{1}，第 {2} 面</value></data>
   <data name="Results_Validation_ListSeparator" xml:space="preserve"><value>，</value></data>
-  <data name="Results_Validation_Name" xml:space="preserve"><value>验证：{0}</value></data>
+  <data name="Results_Validation_Name" xml:space="preserve"><value>校验：{0}</value></data>
   <data name="Results_Validation_NoIssues" xml:space="preserve"><value>没有问题</value></data>
   <data name="Results_Validation_NoIssuesTitle" xml:space="preserve"><value>没有问题</value></data>
   <data name="Results_Validation_Notes_Many" xml:space="preserve"><value>{0} 条提示</value></data>
   <data name="Results_Validation_Notes_One" xml:space="preserve"><value>1 条提示</value></data>
   <data name="Results_Validation_Passed" xml:space="preserve"><value>设计通过了所有检查。</value></data>
   <data name="Results_Validation_PassedName" xml:space="preserve"><value>没有问题：设计通过了所有检查</value></data>
-  <data name="Results_Validation_SelectSurface" xml:space="preserve"><value>在镜头数据中选择面 {0}</value></data>
+  <data name="Results_Validation_SelectSurface" xml:space="preserve"><value>在镜头数据中选择第 {0} 面</value></data>
   <data name="Results_Validation_SeverityError" xml:space="preserve"><value>错误</value></data>
   <data name="Results_Validation_SeverityInfo" xml:space="preserve"><value>提示</value></data>
   <data name="Results_Validation_SeverityWarning" xml:space="preserve"><value>警告</value></data>
-  <data name="Results_Validation_Surface" xml:space="preserve"><value>面 {0}</value></data>
+  <data name="Results_Validation_Surface" xml:space="preserve"><value>第 {0} 面</value></data>
   <data name="Results_Validation_Warnings_Many" xml:space="preserve"><value>{0} 个警告</value></data>
   <data name="Results_Validation_Warnings_One" xml:space="preserve"><value>1 个警告</value></data>
   <data name="Results_Wavefront_Keys" xml:space="preserve"><value>RMS {0} λ   P-V {1} λ   斯特列尔比 {2}</value></data>
   <data name="Results_Wavefront_MapName" xml:space="preserve"><value>波前图</value></data>
-  <data name="Results_Wavefront_Name" xml:space="preserve"><value>波前图，{0}，RMS {1} waves，峰谷值 {2} waves</value></data>
+  <data name="Results_Wavefront_Name" xml:space="preserve"><value>波前图，{0}，RMS {1} λ，峰谷值 {2} λ</value></data>
   <data name="Results_Wavefront_OutsidePupil" xml:space="preserve"><value>光瞳之外</value></data>
   <data name="Results_Zernike_Astig0" xml:space="preserve"><value>像散 0°</value></data>
   <data name="Results_Zernike_Astig45" xml:space="preserve"><value>像散 45°</value></data>
   <data name="Results_Zernike_ComaX" xml:space="preserve"><value>彗差 x</value></data>
   <data name="Results_Zernike_ComaY" xml:space="preserve"><value>彗差 y</value></data>
   <data name="Results_Zernike_Defocus" xml:space="preserve"><value>离焦</value></data>
-  <data name="Results_Zernike_Header" xml:space="preserve"><value>泽尼克 ({0}, waves)</value></data>
+  <data name="Results_Zernike_Header" xml:space="preserve"><value>泽尼克（{0}，λ）</value></data>
   <data name="Results_Zernike_Piston" xml:space="preserve"><value>平移</value></data>
   <data name="Results_Zernike_Spherical" xml:space="preserve"><value>球差</value></data>
   <data name="Results_Zernike_TiltX" xml:space="preserve"><value>倾斜 x</value></data>
@@ -2350,12 +2350,12 @@
   <data name="Glass_Detail_NoNdVd" xml:space="preserve"><value>无 nd 或 Vd：d 线（587.6 nm）超出此玻璃的波长范围。</value></data>
   <data name="Glass_Detail_NoVd" xml:space="preserve"><value>无 Vd：F 线或 C 线超出此玻璃的波长范围。</value></data>
   <data name="Glass_Detail_OpticalData" xml:space="preserve"><value>光学数据</value></data>
-  <data name="Glass_Detail_OverriddenTip" xml:space="preserve"><value>您的设置（与玻璃库不同）</value></data>
+  <data name="Glass_Detail_OverriddenTip" xml:space="preserve"><value>你的设置（与玻璃库不同）</value></data>
   <data name="Glass_Detail_Phosphate" xml:space="preserve"><value>耐磷酸盐性（PR）</value></data>
   <data name="Glass_Detail_PhysicalData" xml:space="preserve"><value>物理与玻璃库数据</value></data>
   <data name="Glass_Detail_Range" xml:space="preserve"><value>范围</value></data>
-  <data name="Glass_Detail_RelativeCost" xml:space="preserve"><value>相对价格</value></data>
-  <data name="Glass_Detail_SettingsNote" xml:space="preserve"><value>您的设置适用于所有设计，不保存在项目中。玻璃替换默认跳过停产、特殊和已排除的玻璃。</value></data>
+  <data name="Glass_Detail_RelativeCost" xml:space="preserve"><value>相对成本</value></data>
+  <data name="Glass_Detail_SettingsNote" xml:space="preserve"><value>你的设置适用于所有设计，不保存在项目中。玻璃替换默认跳过停产、特殊和已排除的玻璃。</value></data>
   <data name="Glass_Detail_Stain" xml:space="preserve"><value>耐污染性（FR）</value></data>
   <data name="Glass_Detail_Thermal" xml:space="preserve"><value>热 dn/dT 数据</value></data>
   <data name="Glass_Detail_Transmission" xml:space="preserve"><value>透过率数据</value></data>
@@ -2388,7 +2388,7 @@
   <data name="Glass_Export_NotExactIntro" xml:space="preserve"><value>AGF 无法表达此玻璃库中的全部内容：</value></data>
   <data name="Glass_Export_NotExactTitle" xml:space="preserve"><value>未能完全导出</value></data>
   <data name="Glass_Filter_HideObsolete" xml:space="preserve"><value>隐藏停产玻璃</value></data>
-  <data name="Glass_Filter_PreferredOnly" xml:space="preserve"><value>仅首选玻璃</value></data>
+  <data name="Glass_Filter_PreferredOnly" xml:space="preserve"><value>仅推荐玻璃</value></data>
   <data name="Glass_Filter_Substitution" xml:space="preserve"><value>可用于玻璃替换</value></data>
   <data name="Glass_Format_Any" xml:space="preserve"><value>任意</value></data>
   <data name="Glass_Ir_CatalogLists" xml:space="preserve"><value>玻璃库所列值：{0}。</value></data>
@@ -2422,7 +2422,7 @@
   <data name="Glass_Menu_ResetToCatalog" xml:space="preserve"><value>恢复为玻璃库设置</value></data>
   <data name="Glass_Menu_ShowInExplorer" xml:space="preserve"><value>在文件资源管理器中显示</value></data>
   <data name="Glass_Menu_UseForSelectedSurface" xml:space="preserve"><value>用于所选面</value></data>
-  <data name="Glass_Menu_UseForSurface" xml:space="preserve"><value>用于面 {0}</value></data>
+  <data name="Glass_Menu_UseForSurface" xml:space="preserve"><value>用于第 {0} 面</value></data>
   <data name="Glass_Name_Builtin" xml:space="preserve"><value>“BUILTIN”是内置玻璃库的名称。</value></data>
   <data name="Glass_Name_Empty" xml:space="preserve"><value>请输入名称。</value></data>
   <data name="Glass_Name_FileCharacter" xml:space="preserve"><value>名称包含文件名中不允许的字符。</value></data>
@@ -2437,7 +2437,7 @@
   <data name="Glass_Origin_DesignOnly" xml:space="preserve"><value>仅此设计</value></data>
   <data name="Glass_Origin_LibraryEveryDesign" xml:space="preserve"><value>资料库 · 加载到每个设计中</value></data>
   <data name="Glass_Origin_LibraryInDesign" xml:space="preserve"><value>资料库 · 已记录在此设计中</value></data>
-  <data name="Glass_Origin_User" xml:space="preserve"><value>您的玻璃 · 保存在应用的资料库中</value></data>
+  <data name="Glass_Origin_User" xml:space="preserve"><value>你的玻璃 · 保存在应用的资料库中</value></data>
   <data name="Glass_Reload_Added" xml:space="preserve"><value>新增</value></data>
   <data name="Glass_Reload_Changed" xml:space="preserve"><value>变更</value></data>
   <data name="Glass_Reload_Group" xml:space="preserve"><value>{0}（{1}）</value></data>
@@ -2460,12 +2460,12 @@
   <data name="Glass_Sidebar_BuiltinTip" xml:space="preserve"><value>MKLight 内置的玻璃</value></data>
   <data name="Glass_Sidebar_Library" xml:space="preserve"><value>资料库</value></data>
   <data name="Glass_Sidebar_NewUserCatalog" xml:space="preserve"><value>新建用户玻璃库</value></data>
-  <data name="Glass_Sidebar_NewUserCatalogTip" xml:space="preserve"><value>存放您自己的玻璃的玻璃库，随资料库保存</value></data>
+  <data name="Glass_Sidebar_NewUserCatalogTip" xml:space="preserve"><value>存放你自己的玻璃的玻璃库，随资料库保存</value></data>
   <data name="Glass_Sidebar_UserGlasses" xml:space="preserve"><value>用户玻璃</value></data>
   <data name="Glass_Status_Melt" xml:space="preserve"><value>按需熔炼</value></data>
   <data name="Glass_Status_Obsolete" xml:space="preserve"><value>停产</value></data>
   <data name="Glass_Status_Other" xml:space="preserve"><value>状态 {0}</value></data>
-  <data name="Glass_Status_Preferred" xml:space="preserve"><value>首选</value></data>
+  <data name="Glass_Status_Preferred" xml:space="preserve"><value>推荐</value></data>
   <data name="Glass_Status_Special" xml:space="preserve"><value>特殊</value></data>
   <data name="Glass_Status_Standard" xml:space="preserve"><value>标准</value></data>
   <data name="Glass_Sync_Error" xml:space="preserve"><value>{0}：{1}</value></data>
@@ -2473,7 +2473,7 @@
   <data name="Glass_Sync_StatusSettings" xml:space="preserve"><value>玻璃状态设置：{0}</value></data>
   <data name="Glass_Table_AddHint" xml:space="preserve"><value>使用“新建玻璃”添加玻璃。</value></data>
   <data name="Glass_Table_CatalogTip" xml:space="preserve"><value>玻璃所属的玻璃库</value></data>
-  <data name="Glass_Table_Cost" xml:space="preserve"><value>价格</value></data>
+  <data name="Glass_Table_Cost" xml:space="preserve"><value>成本</value></data>
   <data name="Glass_Table_Count" xml:space="preserve"><value>{0} / {1} 种玻璃</value></data>
   <data name="Glass_Table_DpgfTip" xml:space="preserve"><value>反常部分色散</value></data>
   <data name="Glass_Table_EmptyCatalog" xml:space="preserve"><value>此玻璃库中没有玻璃。</value></data>
@@ -2489,10 +2489,10 @@
   <data name="Glass_Table_NoMatch" xml:space="preserve"><value>没有与“{0}”匹配的玻璃</value></data>
   <data name="Glass_Table_NoPass" xml:space="preserve"><value>没有符合筛选条件的玻璃</value></data>
   <data name="Glass_Table_NoResults" xml:space="preserve"><value>无结果</value></data>
-  <data name="Glass_Table_OverriddenMark.[using:Microsoft.UI.Xaml.Controls]ToolTipService.ToolTip" xml:space="preserve"><value>您的设置（与玻璃库不同）</value></data>
+  <data name="Glass_Table_OverriddenMark.[using:Microsoft.UI.Xaml.Controls]ToolTipService.ToolTip" xml:space="preserve"><value>你的设置（与玻璃库不同）</value></data>
   <data name="Glass_Table_Range" xml:space="preserve"><value>范围 µm</value></data>
   <data name="Glass_Table_RangeTip" xml:space="preserve"><value>色散公式适用的波长范围</value></data>
-  <data name="Glass_Table_StatusTip" xml:space="preserve"><value>供货状态（您的设置或玻璃库的设置）</value></data>
+  <data name="Glass_Table_StatusTip" xml:space="preserve"><value>供货状态（你的设置或玻璃库的设置）</value></data>
   <data name="Glass_Table_TceTip" xml:space="preserve"><value>热膨胀系数，10⁻⁶/K（−30…+70 °C）</value></data>
   <data name="Glass_Table_VdTip" xml:space="preserve"><value>阿贝数</value></data>
   <data name="Glass_Toast_AddedToDesign" xml:space="preserve"><value>已将 {0}（{1} 种玻璃）添加到设计。</value></data>
@@ -2511,7 +2511,7 @@
   <data name="Glass_Toast_RemovedFromDesign" xml:space="preserve"><value>已从 {1} 中移除 {0}。在设计窗口中撤销即可恢复。</value></data>
   <data name="Glass_Toast_RemovedFromLibrary" xml:space="preserve"><value>已从资料库中移除 {0}。</value></data>
   <data name="Glass_Toast_Saved" xml:space="preserve"><value>已将 {0} 保存到 {1}。</value></data>
-  <data name="Glass_Toast_Used" xml:space="preserve"><value>面 {0} 之后的介质为 {1}（{2}）。</value></data>
+  <data name="Glass_Toast_Used" xml:space="preserve"><value>第 {0} 面之后的介质为 {1}（{2}）。</value></data>
   <data name="Glass_Trash_Button" xml:space="preserve"><value>移到回收站</value></data>
   <data name="Glass_Trash_Message" xml:space="preserve"><value>使用其中玻璃的设计将找不到它们。</value></data>
   <data name="Glass_Trash_Title" xml:space="preserve"><value>将“{0}”移到回收站？</value></data>
@@ -2550,7 +2550,7 @@
   <data name="Model_Param_Radius" xml:space="preserve"><value>曲率半径 {0}</value></data>
   <data name="Model_Param_RadiusY" xml:space="preserve"><value>y 曲率半径 {0}</value></data>
   <data name="Model_Param_SemiDiameter" xml:space="preserve"><value>半口径 {0}</value></data>
-  <data name="Model_Param_SphIrregularity" xml:space="preserve"><value>球差不规则度 {0}</value></data>
+  <data name="Model_Param_SphIrregularity" xml:space="preserve"><value>球面不规则度 {0}</value></data>
   <data name="Model_Param_Temperature" xml:space="preserve"><value>温度</value></data>
   <data name="Model_Param_TermOn" xml:space="preserve"><value>面 {1} 的 {0}</value></data>
   <data name="Model_Param_Thickness" xml:space="preserve"><value>厚度 {0}</value></data>
