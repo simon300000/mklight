@@ -235,10 +235,8 @@ struct TableSettingControl: View {
     static func emptyTitle(_ f: SettingsField) -> String {
         if let r = f.description.range(of: #"empty = ([^;(.]+)"#, options: .regularExpression) {
             let t = f.description[r].dropFirst("empty = ".count).trimmingCharacters(in: .whitespaces)
-            if !t.isEmpty {
-                let s = t.prefix(1).uppercased() + t.dropFirst()
-                return EngineText.translation(s) ?? s
-            }
+            // The clause is engine text; untranslated, it is shown only in English.
+            if !t.isEmpty, EngineText.shared.isEmpty { return t.prefix(1).uppercased() + t.dropFirst() }
         }
         return f.nullable ? String(localized: "Automatic") : String(localized: "None")
     }

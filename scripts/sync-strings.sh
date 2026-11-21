@@ -3,7 +3,7 @@
 #
 #   scripts/sync-strings.sh
 #
-# Compiles the Swift package from scratch (in a temporary build directory,
+# Compiles the Swift package from scratch in release (as shipped; in a temporary build directory,
 # so every file is compiled; the compiler extracts the localizable strings
 # of every file into .stringsdata, as in Xcode) and syncs the extracted strings into
 # apps/macos/Sources/MKLightUI/Resources/Localizable.xcstrings: new strings
@@ -20,7 +20,7 @@ TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
 
 echo "==> compiling with string extraction"
-swift build --package-path "$PKG" --scratch-path "$TMP/build" > "$TMP/build.log" 2>&1 || { cat "$TMP/build.log"; exit 1; }
+swift build --package-path "$PKG" -c release --scratch-path "$TMP/build" > "$TMP/build.log" 2>&1 || { cat "$TMP/build.log"; exit 1; }
 STRINGSDATA=()
 while IFS= read -r f; do STRINGSDATA+=("$f"); done < <(find "$TMP/build" -name '*.stringsdata' -not -path '*Tests*')
 [[ "${#STRINGSDATA[@]}" -gt 0 ]] || { echo "error: the build extracted no strings" >&2; exit 1; }

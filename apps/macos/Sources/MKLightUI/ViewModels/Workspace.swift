@@ -21,9 +21,13 @@ public struct ValidationIssue: Identifiable, Hashable, Sendable {
     public var displayMessage: String {
         var values: [String: String] = [:]
         if let surface { values["surface"] = "\(surface)" }
-        if let field { values["field"] = "\(field)" }
         return EngineText.diagnostic(code: code, message: message, values: values)
     }
+    /// The English message beside a translation, as detail: it holds the
+    /// values the translated template leaves out (docs/I18N.md).
+    public var detailMessage: String? { displayMessage == message ? nil : message }
+    /// The translation with its English detail, on one line.
+    public var fullMessage: String { detailMessage.map { "\(displayMessage) (\($0))" } ?? displayMessage }
     /// Surface index the issue concerns.
     public var surface: Int?
     /// Field index the issue concerns (read from the message for the
@@ -430,7 +434,7 @@ public final class Workspace {
         }
         if let d = descriptor(pane.analysis), !d.available {
             pane.job?.cancel()
-            pane.phase = .unavailable(EngineText.string(d.unavailableReason ?? String(localized: "not available in this engine build")))
+            pane.phase = .unavailable(EngineText.message(d.unavailableReason ?? String(localized: "not available in this engine build")))
             return
         }
         if !descriptors.isEmpty, descriptor(pane.analysis) == nil {
@@ -466,7 +470,7 @@ public final class Workspace {
             case .failure(EngineError.cancelled):
                 pane.phase = .cancelled
             case .failure(EngineError.unsupported(let why)):
-                pane.phase = .unavailable(EngineText.string(why))
+                pane.phase = .unavailable(EngineText.message(why))
             case .failure(let error):
                 pane.phase = .failed(error.localizedDescription)
             }
@@ -621,7 +625,7 @@ public final class Workspace {
         loadedLibrary = (revision, overrides)
         libraryWarnings = sync.errors.map { e in
             let file = e.path.isEmpty ? String(localized: "Glass library") : URL(fileURLWithPath: e.path).lastPathComponent
-            return "\(file): \(EngineText.string(e.message))"
+            return "\(file): \(EngineText.message(e.message))"
         }
         if changed { await refreshCatalogInfo() }
         return changed
@@ -724,7 +728,7 @@ public final class Workspace {
             }
             return String(localized: "Glass catalog “\(ref.name)” was not found. Its glasses are unknown until you add the catalog to the library or the design.")
         }
-        return String(localized: "Glass catalog “\(ref.name)” could not be loaded (\(EngineText.string(error))).")
+        return String(localized: "Glass catalog “\(ref.name)” could not be loaded (\(EngineText.message(error))).")
     }
 
     /// Takes new snapshots after the session's glass library changed: of

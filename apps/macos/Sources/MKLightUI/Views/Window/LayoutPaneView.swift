@@ -86,17 +86,17 @@ struct LayoutPaneView: View {
     @ViewBuilder private var placeholder: some View {
         switch pane.phase {
         case .unavailable(let why):
-            ContentUnavailableView("Layout Not Available", systemImage: "nosign", description: Text(EngineText.string(why)))
+            ContentUnavailableView("Layout Not Available", systemImage: "nosign", description: Text(EngineText.message(why)))
                 .frame(maxWidth: .infinity, maxHeight: .infinity).background(.background)
         case .failed(let why) where workspace.issues.contains { $0.severity == .error }:
-            ContentUnavailableView("Design Has Errors", systemImage: "xmark.octagon", description: Text(EngineText.string(why)))
+            ContentUnavailableView("Design Has Errors", systemImage: "xmark.octagon", description: Text(EngineText.message(why)))
                 .frame(maxWidth: .infinity, maxHeight: .infinity).background(.background)
         case .failed(let why):
-            ContentUnavailableView("No Layout", systemImage: "exclamationmark.triangle", description: Text(EngineText.string(why)))
+            ContentUnavailableView("No Layout", systemImage: "exclamationmark.triangle", description: Text(EngineText.message(why)))
                 .frame(maxWidth: .infinity, maxHeight: .infinity).background(.background)
         default:
             if let e = workspace.modelErrors.first {
-                ContentUnavailableView("Design Not Ready", systemImage: "xmark.octagon", description: Text(EngineText.string(e)))
+                ContentUnavailableView("Design Not Ready", systemImage: "xmark.octagon", description: Text(EngineText.message(e)))
                     .frame(maxWidth: .infinity, maxHeight: .infinity).background(.background)
             } else {
                 ProgressView().controlSize(.small)

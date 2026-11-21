@@ -500,7 +500,7 @@ final class GlassEditorModel {
         }
         switch error as? EngineError {
         case .engine(_, let m)?: return EngineText.translation(m) ?? strip(m)
-        case .invalidModel(let issues)?: return issues.map { EngineText.translation($0) ?? strip($0) }.joined(separator: "; ")
+        case .invalidModel(let issues)?: return issues.map { EngineText.shared.structuralIssue($0) ?? EngineText.translation($0) ?? strip($0) }.joined(separator: "; ")
         default: return error.localizedDescription
         }
     }
@@ -607,7 +607,7 @@ func glassCountText(_ n: Int) -> String { n == 1 ? String(localized: "1 glass") 
 
 /// "line 12: NAME: message" with the message translated.
 func warningText(_ w: CatalogWarning) -> String {
-    (w.line.map { String(localized: "line \($0): ") } ?? "") + (w.glass.map { "\($0): " } ?? "") + EngineText.string(w.message)
+    (w.line.map { String(localized: "line \($0): ") } ?? "") + (w.glass.map { "\($0): " } ?? "") + EngineText.message(w.message)
 }
 
 /// " The reader reported 3 warnings (first: …)." after a catalog load, or "".

@@ -270,7 +270,7 @@ private struct DesignWindowContent: View {
                 window.flash(String(localized: "Loaded glass catalog \(info.name) (\(glassCountText(info.glassCount))).\(warningsNote(info.warnings))"))
                 if reimport, let source = prescriptionURL { await importAgain(source) }
             } catch {
-                window.flash(String(localized: "Glass catalog: \(EngineText.string(error.localizedDescription))"))
+                window.flash(String(localized: "Glass catalog: \(EngineText.message(error.localizedDescription))"))
             }
         }
     }
@@ -302,7 +302,7 @@ private struct DesignWindowContent: View {
             design.edit(String(localized: "Import Lens File Again"), undoManager: undoManager) { $0 = system }
             present(ImportReport(imported, fileName: url.lastPathComponent))
         } catch {
-            window.flash(String(localized: "Import: \(EngineText.string(error.localizedDescription))"))
+            window.flash(String(localized: "Import: \(EngineText.message(error.localizedDescription))"))
         }
     }
 
@@ -315,7 +315,7 @@ private struct DesignWindowContent: View {
                 do {
                     try await openDocument(at: url)
                 } catch {
-                    window.flash("\(url.lastPathComponent): \(EngineText.string(error.localizedDescription))")
+                    window.flash("\(url.lastPathComponent): \(EngineText.message(error.localizedDescription))")
                 }
             }
         }

@@ -10,33 +10,40 @@ import Foundation
 /// repository root:
 ///
 ///     { "strings": { "<exact English>": "<translation>" },
-///       "diagnostics": { "<code>": "<template with {placeholders}>" } }
+///       "enums": { "<settings enum value>": "<label>" },
+///       "diagnostics": { "<code>": "<template with {surface} / {path}>" } }
 ///
 /// The build script copies it into the app bundle as
 /// `Contents/Resources/<language>.lproj/engine.json`, so the language is the
 /// app's own (the per-app language setting or the preferred languages, as
 /// resolved by `Bundle.main`). A miss, or no catalog for the language,
 /// leaves the English. The engine boundary stays English: translate only
-/// where text is shown, never before comparing or parsing it.
+/// where text is shown, never before comparing or parsing it (docs/I18N.md).
 public struct EngineText: Sendable {
     public let strings: [String: String]
+    public let enums: [String: String]
     public let diagnostics: [String: String]
 
-    public static let none = EngineText(strings: [:], diagnostics: [:])
+    public static let none = EngineText(strings: [:])
 
-    public init(strings: [String: String], diagnostics: [String: String] = [:]) {
+    public init(strings: [String: String], enums: [String: String] = [:], diagnostics: [String: String] = [:]) {
         self.strings = strings
+        self.enums = enums
         self.diagnostics = diagnostics
     }
+
+    /// No translations: English, or no catalog for the language.
+    public var isEmpty: Bool { strings.isEmpty && enums.isEmpty && diagnostics.isEmpty }
 
     /// Reads a catalog; anything unreadable gives no translations.
     public init(data: Data?) {
         struct File: Decodable {
             var strings: [String: String]?
+            var enums: [String: String]?
             var diagnostics: [String: String]?
         }
         let file = data.flatMap { try? JSONDecoder().decode(File.self, from: $0) }
-        self.init(strings: file?.strings ?? [:], diagnostics: file?.diagnostics ?? [:])
+        self.init(strings: file?.strings ?? [:], enums: file?.enums ?? [:], diagnostics: file?.diagnostics ?? [:])
     }
 
     /// The catalog of `bundle`'s preferred localization; none for English.
@@ -59,15 +66,36 @@ public struct EngineText: Sendable {
     /// `english` translated, or unchanged.
     public func string(_ english: String) -> String { translation(english) ?? english }
 
+    /// The label of a settings enum value (`hexapolar`), or `nil`: the app
+    /// then formats the value itself. The value written stays the raw one.
+    public func enumLabel(_ value: String) -> String? {
+        guard let t = enums[value], !t.isEmpty else { return nil }
+        return t
+    }
+
     /// A diagnostic by its stable code: the code's template with its
     /// `{placeholders}` filled from `values` (the diagnostic's fields:
-    /// `surface`, `path`, `field`, …). Without a template, or when a
-    /// placeholder has no value, the message itself by exact match, else the
-    /// English message.
+    /// `surface`, `path`). Without a template, or when a placeholder has no
+    /// value, the message itself by exact match, else the English message.
+    /// Show the English message with a translated template, as detail: it
+    /// holds the values the template leaves out.
     public func diagnostic(code: String, message: String, values: [String: String] = [:]) -> String {
         if let template = diagnostics[code], let filled = Self.fill(template, values) { return filled }
         return string(message)
     }
+
+    /// A structural issue as the engine reports an invalid model,
+    /// `[code] path: message` (after an `invalid model: ` prefix, if any),
+    /// translated by its code; `nil` when `text` is not one.
+    public func structuralIssue(_ text: String) -> String? {
+        guard let m = text.firstMatch(of: /\[([a-z_]+)\] ([^:]+): (.*)/) else { return nil }
+        let code = String(m.output.1), path = String(m.output.2), message = String(m.output.3)
+        guard let template = diagnostics[code], let filled = Self.fill(template, ["path": path]) else { return nil }
+        return "\(filled) (\(message))"
+    }
+
+    /// `text` translated: a structural issue by its code, else by exact match.
+    public func message(_ text: String) -> String { structuralIssue(text) ?? string(text) }
 
     /// `template` with every `{name}` replaced; `nil` if a name has no value.
     static func fill(_ template: String, _ values: [String: String]) -> String? {
@@ -90,6 +118,10 @@ public struct EngineText: Sendable {
     public static func string(_ english: String) -> String { shared.string(english) }
     /// The translation through the app's engine catalog, or `nil`.
     public static func translation(_ english: String) -> String? { shared.translation(english) }
+    /// A settings enum label through the app's engine catalog, or `nil`.
+    public static func enumLabel(_ value: String) -> String? { shared.enumLabel(value) }
+    /// An engine message through the app's engine catalog (`message(_:)`).
+    public static func message(_ text: String) -> String { shared.message(text) }
     /// A diagnostic through the app's engine catalog (`diagnostic(code:message:values:)`).
     public static func diagnostic(code: String, message: String, values: [String: String] = [:]) -> String {
         shared.diagnostic(code: code, message: message, values: values)

@@ -114,7 +114,17 @@ import Testing
         #expect(t.diagnostic(code: "thickness_sign", message: "negative", values: ["surface": "3"]) == "面 3 的厚度为负")
         #expect(t.diagnostic(code: "thickness_sign", message: "Spot diagram") == "点列图")
         #expect(t.diagnostic(code: "other", message: "the message", values: ["surface": "3"]) == "the message")
-        #expect(EngineText(data: Data("not json".utf8)).strings.isEmpty)
+        #expect(EngineText(data: Data("not json".utf8)).isEmpty)
+        let u = EngineText(data: Data(#"""
+            { "strings": {}, "enums": { "hexapolar": "六角极坐标" },
+              "diagnostics": { "material": "{path} 的材料无法解析" } }
+            """#.utf8))
+        #expect(u.enumLabel("hexapolar") == "六角极坐标")
+        #expect(u.enumLabel("grid") == nil)
+        #expect(u.message("invalid model: [material] surfaces[2].material: unknown material 'X'")
+            == "surfaces[2].material 的材料无法解析 (unknown material 'X')")
+        #expect(u.message("invalid model: [other] surfaces[2]: m") == "invalid model: [other] surfaces[2]: m")
+        #expect(u.structuralIssue("plain text") == nil)
         #expect(EngineText.fill("{a} and {b}", ["a": "1", "b": "2"]) == "1 and 2")
         #expect(EngineText.fill("{a} and {b}", ["a": "1"]) == nil)
         #expect(EngineText.fill("no {placeholder", [:]) == "no {placeholder")

@@ -186,7 +186,7 @@ struct JobFailure: View {
         ContentUnavailableView {
             Label(title, systemImage: "exclamationmark.triangle")
         } description: {
-            Text(EngineText.string(reason))
+            Text(EngineText.message(reason))
         }
     }
 }
@@ -215,7 +215,7 @@ struct GlassProgress: View {
                 .progressViewStyle(.circular)
                 .controlSize(.small)
             VStack(alignment: .leading, spacing: 0) {
-                Text(detail.isEmpty ? (progress.stage.isEmpty ? String(localized: "Running") : EngineText.string(progress.stage)) : detail)
+                Text(detail.isEmpty ? (progress.stage.isEmpty ? String(localized: "Running") : EngineText.message(progress.stage)) : detail)
                     .font(.callout.monospacedDigit())
                     .lineLimit(1)
                 if progress.fraction >= 0.01 {
@@ -411,7 +411,7 @@ struct OptimizePanel: View {
                     ForEach(r.variables) { v in
                         VStack(alignment: .leading, spacing: 1) {
                             HStack(spacing: Space.xs) {
-                                Text(v.param.map { $0.label(in: design.system) } ?? EngineText.string(v.label))
+                                Text(v.param.map { $0.label(in: design.system) } ?? EngineText.message(v.label))
                                 if v.atBound { Text("at bound").font(.caption2).foregroundStyle(.orange) }
                             }
                             .font(.callout)
@@ -623,7 +623,7 @@ struct SolvesPanel: View {
             }
             .textSelection(.enabled)
             ForEach(session.warnings, id: \.self) { w in
-                WarningNote(EngineText.string(w))
+                WarningNote(EngineText.message(w))
             }
         }
     }

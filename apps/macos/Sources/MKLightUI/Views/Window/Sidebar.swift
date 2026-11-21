@@ -235,7 +235,10 @@ struct IssueRow: View {
         HStack(alignment: .firstTextBaseline, spacing: Space.m) {
             Image(systemName: icon).foregroundStyle(color).accessibilityLabel(severityName)
             VStack(alignment: .leading, spacing: 2) {
-                Text(message).fixedSize(horizontal: false, vertical: true)
+                Text(issue.displayMessage).fixedSize(horizontal: false, vertical: true)
+                if let detail = issue.detailMessage {
+                    Text(detail).font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                }
                 HStack(spacing: Space.s) {
                     if !issue.code.isEmpty { Text(issue.code).monospaced() }
                     if let s = issue.surface { Text("Surface \(s)") }
@@ -247,13 +250,6 @@ struct IssueRow: View {
         }
         .padding(.vertical, 2)
         .contentShape(Rectangle())
-    }
-
-    private var message: String {
-        var values: [String: String] = [:]
-        if let s = issue.surface { values["surface"] = "\(s)" }
-        if let f = issue.field { values["field"] = "\(f)" }
-        return EngineText.diagnostic(code: issue.code, message: issue.message, values: values)
     }
 
     private var severityName: String {

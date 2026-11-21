@@ -92,7 +92,7 @@ public struct MeritOperand: Identifiable, Hashable, Sendable {
         if let i = wavelength["index"]?.int, wavelength["wavelength"]?.string == "index", i >= wavelengthCount {
             out.append(String(localized: "Wavelength \(i + 1) does not exist."))
         }
-        for p in d.params where p.required && (kind[p.key] == nil || kind[p.key] == .null) { out.append(String(localized: "\(EngineText.string(p.title)) is required.")) }
+        for p in d.params where p.required && (kind[p.key] == nil || kind[p.key] == .null) { out.append(String(localized: "\(p.title) is required.")) }
         if !weight.isFinite || weight < 0 { out.append(String(localized: "The weight must be zero or positive.")) }
         return out
     }
@@ -147,12 +147,25 @@ public struct OperandDescriptor: Sendable, Identifiable {
 /// The engine's operands (docs/OPTIMIZATION.md, operand reference), grouped
 /// by category for the searchable picker.
 public enum OperandCatalog {
+    /// The category's title (the categories themselves stay English: they group the operands).
+    public static func categoryTitle(_ c: String) -> String {
+        switch c {
+        case "First order": String(localized: "First order", comment: "operand category")
+        case "Geometry": String(localized: "Geometry", comment: "operand category")
+        case "Real rays": String(localized: "Real rays", comment: "operand category")
+        case "Image quality": String(localized: "Image quality", comment: "operand category")
+        case "Ghosts and stray light": String(localized: "Ghosts and stray light", comment: "operand category")
+        case "Manufacturing": String(localized: "Manufacturing", comment: "operand category")
+        case "Composition": String(localized: "Composition", comment: "operand category")
+        default: c
+        }
+    }
     public static let categories = ["First order", "Geometry", "Real rays", "Image quality", "Ghosts and stray light", "Manufacturing", "Composition"]
 
     static func n(_ key: String, _ title: String, unit: String = "", def: Double = 0, required: Bool = true) -> OperandParam {
         OperandParam(key: key, title: title, kind: .number(unit: unit), required: required, defaultValue: required ? .number(def) : nil)
     }
-    static func surface(_ key: String = "surface", _ title: String = "Surface", required: Bool = false) -> OperandParam {
+    static func surface(_ key: String = "surface", _ title: String = String(localized: "Surface"), required: Bool = false) -> OperandParam {
         OperandParam(key: key, title: title, kind: .surface, required: required)
     }
     static func choice(_ key: String, _ title: String, _ options: [String], def: String? = nil) -> OperandParam {
@@ -161,99 +174,99 @@ public enum OperandCatalog {
     static func wl(_ key: String, _ title: String, def: Int) -> OperandParam {
         OperandParam(key: key, title: title, kind: .wavelength, required: true, defaultValue: .integer(Int64(def)))
     }
-    static let pupil: [OperandParam] = [n("px", "Pupil x", def: 0), n("py", "Pupil y", def: 1)]
-    static let sampling = OperandParam(key: "sampling", title: "Pupil sampling", kind: .sampling,
+    static let pupil: [OperandParam] = [n("px", String(localized: "Pupil x"), def: 0), n("py", String(localized: "Pupil y"), def: 1)]
+    static let sampling = OperandParam(key: "sampling", title: String(localized: "Pupil sampling"), kind: .sampling,
                                        defaultValue: .object(["rings": .integer(3), "arms": .integer(6)]))
 
     public static let all: [OperandDescriptor] = [
         // First order
-        .init(type: "efl", title: "EFL", category: "First order", unit: "mm", summary: "Effective focal length (of the y section)"),
-        .init(type: "efl_x", title: "EFL x", category: "First order", unit: "mm", summary: "Focal length of the x section"),
-        .init(type: "efl_y", title: "EFL y", category: "First order", unit: "mm", summary: "Focal length of the y section"),
-        .init(type: "bfl", title: "BFL", category: "First order", unit: "mm", summary: "Back focal length: last surface to paraxial focus"),
-        .init(type: "bfl_x", title: "BFL x", category: "First order", unit: "mm", summary: "Back focus of the x section"),
-        .init(type: "bfl_y", title: "BFL y", category: "First order", unit: "mm", summary: "Back focus of the y section"),
-        .init(type: "anamorphic_squeeze", title: "Anamorphic squeeze", category: "First order", unit: "", summary: "Signed EFL_y / EFL_x"),
-        .init(type: "f_number", title: "F-number", category: "First order", unit: "", summary: "Image-space, working or real working F/#",
-              params: [choice("kind", "Kind", ["paraxial_image_space", "paraxial_working", "real_working"], def: "paraxial_image_space")]),
-        .init(type: "magnification", title: "Magnification", category: "First order", unit: "", summary: "Paraxial lateral magnification"),
-        .init(type: "entrance_pupil_diameter", title: "Entrance pupil diameter", category: "First order", unit: "mm", summary: ""),
-        .init(type: "entrance_pupil_position", title: "Entrance pupil position", category: "First order", unit: "mm", summary: "From the first surface"),
-        .init(type: "exit_pupil_position", title: "Exit pupil position", category: "First order", unit: "mm", summary: "From the image surface"),
-        .init(type: "paraxial_ray", title: "Paraxial ray", category: "First order", unit: "mm / – / °",
-              summary: "Marginal or chief ray height, slope or angle after a surface",
-              params: [choice("ray", "Ray", ["marginal", "chief"], def: "marginal"), choice("quantity", "Quantity", ["height", "slope", "angle"], def: "height"), surface()]),
-        .init(type: "petzval_sum", title: "Petzval sum", category: "First order", unit: "1/mm", summary: "Σ c (N′ − N)/(N N′)"),
-        .init(type: "axial_colour", title: "Axial color", category: "First order", unit: "mm", summary: "Paraxial focus at short minus long λ",
-              params: [wl("short", "Short λ", def: 0), wl("long", "Long λ", def: 2)]),
+        .init(type: "efl", title: String(localized: "EFL"), category: "First order", unit: "mm", summary: String(localized: "Effective focal length (of the y section)")),
+        .init(type: "efl_x", title: String(localized: "EFL x"), category: "First order", unit: "mm", summary: String(localized: "Focal length of the x section")),
+        .init(type: "efl_y", title: String(localized: "EFL y"), category: "First order", unit: "mm", summary: String(localized: "Focal length of the y section")),
+        .init(type: "bfl", title: String(localized: "BFL"), category: "First order", unit: "mm", summary: String(localized: "Back focal length: last surface to paraxial focus")),
+        .init(type: "bfl_x", title: String(localized: "BFL x"), category: "First order", unit: "mm", summary: String(localized: "Back focus of the x section")),
+        .init(type: "bfl_y", title: String(localized: "BFL y"), category: "First order", unit: "mm", summary: String(localized: "Back focus of the y section")),
+        .init(type: "anamorphic_squeeze", title: String(localized: "Anamorphic squeeze"), category: "First order", unit: "", summary: String(localized: "Signed EFL_y / EFL_x")),
+        .init(type: "f_number", title: String(localized: "F-number"), category: "First order", unit: "", summary: String(localized: "Image-space, working or real working F/#"),
+              params: [choice("kind", String(localized: "Kind"), ["paraxial_image_space", "paraxial_working", "real_working"], def: "paraxial_image_space")]),
+        .init(type: "magnification", title: String(localized: "Magnification"), category: "First order", unit: "", summary: String(localized: "Paraxial lateral magnification")),
+        .init(type: "entrance_pupil_diameter", title: String(localized: "Entrance pupil diameter"), category: "First order", unit: "mm", summary: ""),
+        .init(type: "entrance_pupil_position", title: String(localized: "Entrance pupil position"), category: "First order", unit: "mm", summary: String(localized: "From the first surface")),
+        .init(type: "exit_pupil_position", title: String(localized: "Exit pupil position"), category: "First order", unit: "mm", summary: String(localized: "From the image surface")),
+        .init(type: "paraxial_ray", title: String(localized: "Paraxial ray"), category: "First order", unit: "mm / – / °",
+              summary: String(localized: "Marginal or chief ray height, slope or angle after a surface"),
+              params: [choice("ray", String(localized: "Ray"), ["marginal", "chief"], def: "marginal"), choice("quantity", String(localized: "Quantity"), ["height", "slope", "angle"], def: "height"), surface()]),
+        .init(type: "petzval_sum", title: String(localized: "Petzval sum"), category: "First order", unit: "1/mm", summary: String(localized: "Σ c (N′ − N)/(N N′)")),
+        .init(type: "axial_colour", title: String(localized: "Axial color"), category: "First order", unit: "mm", summary: String(localized: "Paraxial focus at short minus long λ"),
+              params: [wl("short", String(localized: "Short λ"), def: 0), wl("long", String(localized: "Long λ"), def: 2)]),
         // Geometry
-        .init(type: "total_track", title: "Total track", category: "Geometry", unit: "mm", summary: "Sum of thicknesses",
-              params: [surface("from", "From"), surface("to", "To")]),
-        .init(type: "centre_thickness", title: "Center thickness", category: "Geometry", unit: "mm", summary: "Axial gap after a surface",
-              params: [surface(required: true), surface("to", "To")]),
-        .init(type: "edge_thickness", title: "Edge thickness", category: "Geometry", unit: "mm", summary: "Gap at the rim (or a height)",
-              params: [surface(required: true), surface("to", "To"), n("height", "Height", unit: "mm", required: false)]),
-        .init(type: "min_thickness", title: "Minimum thickness", category: "Geometry", unit: "mm", summary: "Smallest gap of a medium",
-              params: [choice("measure", "Measure", ["centre", "edge"], def: "centre"), choice("medium", "Medium", ["glass", "air", "any"], def: "glass"),
-                       surface("from", "From"), surface("to", "To")]),
-        .init(type: "max_thickness", title: "Maximum thickness", category: "Geometry", unit: "mm", summary: "Largest gap of a medium",
-              params: [choice("measure", "Measure", ["centre", "edge"], def: "centre"), choice("medium", "Medium", ["glass", "air", "any"], def: "glass"),
-                       surface("from", "From"), surface("to", "To")]),
+        .init(type: "total_track", title: String(localized: "Total track"), category: "Geometry", unit: "mm", summary: String(localized: "Sum of thicknesses"),
+              params: [surface("from", String(localized: "From")), surface("to", String(localized: "To"))]),
+        .init(type: "centre_thickness", title: String(localized: "Center thickness"), category: "Geometry", unit: "mm", summary: String(localized: "Axial gap after a surface"),
+              params: [surface(required: true), surface("to", String(localized: "To"))]),
+        .init(type: "edge_thickness", title: String(localized: "Edge thickness"), category: "Geometry", unit: "mm", summary: String(localized: "Gap at the rim (or a height)"),
+              params: [surface(required: true), surface("to", String(localized: "To")), n("height", String(localized: "Height"), unit: "mm", required: false)]),
+        .init(type: "min_thickness", title: String(localized: "Minimum thickness"), category: "Geometry", unit: "mm", summary: String(localized: "Smallest gap of a medium"),
+              params: [choice("measure", String(localized: "Measure"), ["centre", "edge"], def: "centre"), choice("medium", String(localized: "Medium"), ["glass", "air", "any"], def: "glass"),
+                       surface("from", String(localized: "From")), surface("to", String(localized: "To"))]),
+        .init(type: "max_thickness", title: String(localized: "Maximum thickness"), category: "Geometry", unit: "mm", summary: String(localized: "Largest gap of a medium"),
+              params: [choice("measure", String(localized: "Measure"), ["centre", "edge"], def: "centre"), choice("medium", String(localized: "Medium"), ["glass", "air", "any"], def: "glass"),
+                       surface("from", String(localized: "From")), surface("to", String(localized: "To"))]),
         // Real rays
-        .init(type: "real_ray", title: "Real ray", category: "Real rays", unit: "mm / – / °", summary: "Position, direction or angle of one ray",
-              params: [choice("quantity", "Quantity", ["x", "y", "z", "l", "m", "n", "angle_x", "angle_y", "incidence_angle", "optical_path"], def: "y"),
-                       surface()] + pupil + [OperandParam(key: "global", title: "Global frame", kind: .flag)], singleField: true),
-        .init(type: "ray_aberration", title: "Ray aberration", category: "Real rays", unit: "mm", summary: "Transverse aberration of one ray",
-              params: [choice("axis", "Axis", ["x", "y"], def: "y")] + pupil + [choice("reference", "Reference", ["chief", "centroid"], def: "chief")],
+        .init(type: "real_ray", title: String(localized: "Real ray"), category: "Real rays", unit: "mm / – / °", summary: String(localized: "Position, direction or angle of one ray"),
+              params: [choice("quantity", String(localized: "Quantity"), ["x", "y", "z", "l", "m", "n", "angle_x", "angle_y", "incidence_angle", "optical_path"], def: "y"),
+                       surface()] + pupil + [OperandParam(key: "global", title: String(localized: "Global frame"), kind: .flag)], singleField: true),
+        .init(type: "ray_aberration", title: String(localized: "Ray aberration"), category: "Real rays", unit: "mm", summary: String(localized: "Transverse aberration of one ray"),
+              params: [choice("axis", String(localized: "Axis"), ["x", "y"], def: "y")] + pupil + [choice("reference", String(localized: "Reference"), ["chief", "centroid"], def: "chief")],
               singleField: true),
-        .init(type: "wavefront_aberration", title: "Wavefront aberration", category: "Real rays", unit: "waves", summary: "OPD of one ray",
-              params: pupil + [choice("reference", "Reference", ["chief", "centroid"], def: "chief")], singleField: true),
-        .init(type: "chief_ray_angle", title: "Chief ray angle", category: "Real rays", unit: "°", summary: "Incidence of the chief ray (0 telecentric)",
+        .init(type: "wavefront_aberration", title: String(localized: "Wavefront aberration"), category: "Real rays", unit: "waves", summary: String(localized: "OPD of one ray"),
+              params: pupil + [choice("reference", String(localized: "Reference"), ["chief", "centroid"], def: "chief")], singleField: true),
+        .init(type: "chief_ray_angle", title: String(localized: "Chief ray angle"), category: "Real rays", unit: "°", summary: String(localized: "Incidence of the chief ray (0 telecentric)"),
               params: [surface()], singleField: true),
         // Image quality
-        .init(type: "rms_spot", title: "RMS spot radius", category: "Image quality", unit: "mm", summary: "About the centroid or the chief ray",
-              params: [choice("reference", "Reference", ["centroid", "chief"], def: "centroid"), sampling]),
-        .init(type: "spot_centroid", title: "Spot centroid", category: "Image quality", unit: "mm", summary: "Centroid minus the chief ray",
-              params: [choice("axis", "Axis", ["x", "y"], def: "y")], singleField: true),
-        .init(type: "wavefront_rms", title: "RMS wavefront", category: "Image quality", unit: "waves", summary: "Piston (and tilt) removed",
-              params: [choice("reference", "Reference", ["centroid", "chief"], def: "centroid"), sampling]),
-        .init(type: "mtf", title: "MTF", category: "Image quality", unit: "", summary: "Modulation at one frequency; use ≥ for a lower bound",
-              params: [n("frequency", "Frequency", unit: "cyc/mm", def: 30), choice("orientation", "Orientation", ["tangential", "sagittal", "average"], def: "average"),
-                       choice("method", "Method", ["diffraction", "geometric"], def: "diffraction"), n("defocus_mm", "Defocus", unit: "mm", required: false)]),
-        .init(type: "distortion", title: "Distortion", category: "Image quality", unit: "%", summary: "Real chief ray against the mapping",
-              params: [choice("mapping", "Mapping", ["f_tan_theta", "f_theta"], def: "f_tan_theta")], singleField: true),
-        .init(type: "lateral_colour", title: "Lateral color", category: "Image quality", unit: "mm", summary: "Chief height at short minus long λ",
-              params: [wl("short", "Short λ", def: 0), wl("long", "Long λ", def: 2)], singleField: true),
-        .init(type: "relative_illumination", title: "Relative illumination", category: "Image quality", unit: "", summary: "Against on axis",
+        .init(type: "rms_spot", title: String(localized: "RMS spot radius"), category: "Image quality", unit: "mm", summary: String(localized: "About the centroid or the chief ray"),
+              params: [choice("reference", String(localized: "Reference"), ["centroid", "chief"], def: "centroid"), sampling]),
+        .init(type: "spot_centroid", title: String(localized: "Spot centroid"), category: "Image quality", unit: "mm", summary: String(localized: "Centroid minus the chief ray"),
+              params: [choice("axis", String(localized: "Axis"), ["x", "y"], def: "y")], singleField: true),
+        .init(type: "wavefront_rms", title: String(localized: "RMS wavefront"), category: "Image quality", unit: "waves", summary: String(localized: "Piston (and tilt) removed"),
+              params: [choice("reference", String(localized: "Reference"), ["centroid", "chief"], def: "centroid"), sampling]),
+        .init(type: "mtf", title: String(localized: "MTF"), category: "Image quality", unit: "", summary: String(localized: "Modulation at one frequency; use ≥ for a lower bound"),
+              params: [n("frequency", String(localized: "Frequency"), unit: "cyc/mm", def: 30), choice("orientation", String(localized: "Orientation"), ["tangential", "sagittal", "average"], def: "average"),
+                       choice("method", String(localized: "Method"), ["diffraction", "geometric"], def: "diffraction"), n("defocus_mm", String(localized: "Defocus"), unit: "mm", required: false)]),
+        .init(type: "distortion", title: String(localized: "Distortion"), category: "Image quality", unit: "%", summary: String(localized: "Real chief ray against the mapping"),
+              params: [choice("mapping", String(localized: "Mapping"), ["f_tan_theta", "f_theta"], def: "f_tan_theta")], singleField: true),
+        .init(type: "lateral_colour", title: String(localized: "Lateral color"), category: "Image quality", unit: "mm", summary: String(localized: "Chief height at short minus long λ"),
+              params: [wl("short", String(localized: "Short λ"), def: 0), wl("long", String(localized: "Long λ"), def: 2)], singleField: true),
+        .init(type: "relative_illumination", title: String(localized: "Relative illumination"), category: "Image quality", unit: "", summary: String(localized: "Against on axis"),
               singleField: true),
         // Ghosts and stray light
-        .init(type: "ghost_focus", title: "Ghost focus distance", category: "Ghosts and stray light", unit: "mm",
-              summary: "Distance of the strongest ghosts' focus from the image (larger is better)",
-              params: [OperandParam(key: "worst", title: "Worst ghosts", kind: .integer(min: 1), defaultValue: .integer(1)),
-                       choice("metric", "Metric", ["distance", "peak"], def: "distance")]),
-        .init(type: "ghost_irradiance", title: "Ghost irradiance", category: "Ghosts and stray light", unit: "rel.", summary: "Ghost against primary",
-              params: [choice("metric", "Metric", ["peak", "mean", "power"], def: "peak"),
-                       OperandParam(key: "max_reflections", title: "Max reflections", kind: .integer(min: 2), defaultValue: .integer(2))]),
-        .init(type: "stray_light_power", title: "Stray light power", category: "Ghosts and stray light", unit: "rel.",
-              summary: "Monte Carlo fraction; not for least squares",
-              params: [choice("class", "Class", ["ghost", "scatter", "mechanical", "sneak", "all_non_primary"], def: "all_non_primary"),
-                       OperandParam(key: "rays", title: "Rays", kind: .integer(min: 1000), defaultValue: .integer(100_000))]),
+        .init(type: "ghost_focus", title: String(localized: "Ghost focus distance"), category: "Ghosts and stray light", unit: "mm",
+              summary: String(localized: "Distance of the strongest ghosts' focus from the image (larger is better)"),
+              params: [OperandParam(key: "worst", title: String(localized: "Worst ghosts"), kind: .integer(min: 1), defaultValue: .integer(1)),
+                       choice("metric", String(localized: "Metric"), ["distance", "peak"], def: "distance")]),
+        .init(type: "ghost_irradiance", title: String(localized: "Ghost irradiance"), category: "Ghosts and stray light", unit: "rel.", summary: String(localized: "Ghost against primary"),
+              params: [choice("metric", String(localized: "Metric"), ["peak", "mean", "power"], def: "peak"),
+                       OperandParam(key: "max_reflections", title: String(localized: "Max reflections"), kind: .integer(min: 2), defaultValue: .integer(2))]),
+        .init(type: "stray_light_power", title: String(localized: "Stray light power"), category: "Ghosts and stray light", unit: "rel.",
+              summary: String(localized: "Monte Carlo fraction; not for least squares"),
+              params: [choice("class", String(localized: "Class"), ["ghost", "scatter", "mechanical", "sneak", "all_non_primary"], def: "all_non_primary"),
+                       OperandParam(key: "rays", title: String(localized: "Rays"), kind: .integer(min: 1000), defaultValue: .integer(100_000))]),
         // Manufacturing
-        .init(type: "doe_min_zone_period", title: "DOE minimum zone period", category: "Manufacturing", unit: "mm", summary: "", params: [surface(required: true)]),
-        .init(type: "doe_max_phase_slope", title: "DOE maximum phase slope", category: "Manufacturing", unit: "rad/mm", summary: "", params: [surface(required: true)]),
-        .init(type: "doe_total_phase", title: "DOE total phase", category: "Manufacturing", unit: "rad", summary: "", params: [surface(required: true)]),
-        .init(type: "q_max_departure", title: "Q-type maximum departure", category: "Manufacturing", unit: "mm", summary: "From the best-fit sphere",
+        .init(type: "doe_min_zone_period", title: String(localized: "DOE minimum zone period"), category: "Manufacturing", unit: "mm", summary: "", params: [surface(required: true)]),
+        .init(type: "doe_max_phase_slope", title: String(localized: "DOE maximum phase slope"), category: "Manufacturing", unit: "rad/mm", summary: "", params: [surface(required: true)]),
+        .init(type: "doe_total_phase", title: String(localized: "DOE total phase"), category: "Manufacturing", unit: "rad", summary: "", params: [surface(required: true)]),
+        .init(type: "q_max_departure", title: String(localized: "Q-type maximum departure"), category: "Manufacturing", unit: "mm", summary: String(localized: "From the best-fit sphere"),
               params: [surface(required: true)]),
-        .init(type: "q_max_departure_slope", title: "Q-type departure slope", category: "Manufacturing", unit: "mm/mm", summary: "",
+        .init(type: "q_max_departure_slope", title: String(localized: "Q-type departure slope"), category: "Manufacturing", unit: "mm/mm", summary: "",
               params: [surface(required: true)]),
-        .init(type: "freeform_max_departure", title: "Freeform maximum departure", category: "Manufacturing", unit: "mm",
-              summary: "XY or Zernike sag from its base conic", params: [surface(required: true)]),
+        .init(type: "freeform_max_departure", title: String(localized: "Freeform maximum departure"), category: "Manufacturing", unit: "mm",
+              summary: String(localized: "XY or Zernike sag from its base conic"), params: [surface(required: true)]),
         // Composition
-        .init(type: "combine", title: "Combine", category: "Composition", unit: "", summary: "Arithmetic on earlier operands",
-              params: [choice("op", "Operation", ["sum", "difference", "product", "quotient", "abs", "min", "max"], def: "sum"),
-                       OperandParam(key: "args", title: "Operands", kind: .operandList, required: true, defaultValue: .array([]))]),
-        .init(type: "param_value", title: "Parameter value", category: "Composition", unit: "", summary: "Any model parameter"),
-        .init(type: "tolerance_sensitivity", title: "Tolerance sensitivity", category: "Composition", unit: "", summary: "Of a criterion to a parameter"),
+        .init(type: "combine", title: String(localized: "Combine"), category: "Composition", unit: "", summary: String(localized: "Arithmetic on earlier operands"),
+              params: [choice("op", String(localized: "Operation"), ["sum", "difference", "product", "quotient", "abs", "min", "max"], def: "sum"),
+                       OperandParam(key: "args", title: String(localized: "Operands"), kind: .operandList, required: true, defaultValue: .array([]))]),
+        .init(type: "param_value", title: String(localized: "Parameter value"), category: "Composition", unit: "", summary: String(localized: "Any model parameter")),
+        .init(type: "tolerance_sensitivity", title: String(localized: "Tolerance sensitivity"), category: "Composition", unit: "", summary: String(localized: "Of a criterion to a parameter")),
     ]
 
     static let byType = Dictionary(all.map { ($0.type, $0) }, uniquingKeysWith: { a, _ in a })
@@ -265,7 +278,7 @@ public enum OperandCatalog {
     public static var addable: [OperandDescriptor] { all.filter { !["param_value", "tolerance_sensitivity"].contains($0.type) } }
 
     public static func title(_ type: String) -> String {
-        descriptor(type).map { EngineText.string($0.title) } ?? type.replacingOccurrences(of: "_", with: " ").capitalized
+        descriptor(type).map(\.title) ?? type.replacingOccurrences(of: "_", with: " ").capitalized
     }
 
     /// Descriptors matching a search, by category.

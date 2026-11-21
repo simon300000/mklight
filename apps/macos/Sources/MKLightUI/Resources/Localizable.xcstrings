@@ -191,7 +191,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "%1$@ %2$@ · 显示在光路图和分析中，未应用"
+            "value" : "%1$@ %2$@ · 显示在布局图和分析中，未应用"
           }
         }
       }
@@ -555,7 +555,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "%@ 光路图"
+            "value" : "%@ 布局图"
           }
         }
       }
@@ -860,6 +860,22 @@
         }
       }
     },
+    "%@ to %@ mm" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "%1$@ to %2$@ mm"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%1$@ 至 %2$@ mm"
+          }
+        }
+      }
+    },
     "%@ versus %@" : {
       "localizations" : {
         "en" : {
@@ -953,7 +969,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "%1$@ · %2$@ · %3$lld 次试验，种子 %4$lld"
+            "value" : "%1$@ · %2$@ · %3$lld 次试验，随机种子 %4$lld"
           }
         }
       }
@@ -1905,7 +1921,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "%1$lld，种子 %2$lld"
+            "value" : "%1$lld，随机种子 %2$lld"
           }
         }
       }
@@ -2541,6 +2557,16 @@
         }
       }
     },
+    "About the centroid or the chief ray" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "相对质心或主光线"
+          }
+        }
+      }
+    },
     "Acid (SR)" : {
       "localizations" : {
         "zh-Hans" : {
@@ -2682,7 +2708,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "添加熔炼偏差…"
+            "value" : "添加熔炼偏移…"
           }
         }
       }
@@ -2909,6 +2935,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "之后"
+          }
+        }
+      }
+    },
+    "Against on axis" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "相对轴上"
           }
         }
       }
@@ -3193,12 +3229,32 @@
         }
       }
     },
+    "Anamorphic squeeze" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "变形压缩比"
+          }
+        }
+      }
+    },
     "Annular" : {
       "localizations" : {
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "环形"
+          }
+        }
+      }
+    },
+    "Any model parameter" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "任意模型参数"
           }
         }
       }
@@ -3319,6 +3375,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "角分"
+          }
+        }
+      }
+    },
+    "Arithmetic on earlier operands" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "对前面的操作数做运算"
           }
         }
       }
@@ -3513,6 +3579,36 @@
         }
       }
     },
+    "Axial color" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "轴向色差"
+          }
+        }
+      }
+    },
+    "Axial gap after a surface" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "面后的轴向间隔"
+          }
+        }
+      }
+    },
+    "Axis" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "轴"
+          }
+        }
+      }
+    },
     "BFL" : {
       "shouldTranslate" : false
     },
@@ -3545,12 +3641,42 @@
         }
       }
     },
+    "Back focal length: last surface to paraxial focus" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "后焦距：最后一面到近轴焦点"
+          }
+        }
+      }
+    },
     "Back focus" : {
       "localizations" : {
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "后焦距"
+          }
+        }
+      }
+    },
+    "Back focus of the x section" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "x 截面的后焦距"
+          }
+        }
+      }
+    },
+    "Back focus of the y section" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "y 截面的后焦距"
           }
         }
       }
@@ -3620,7 +3746,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "返回公差、补偿器和评价标准；“显示结果”可回到此处"
+            "value" : "返回公差、补偿器和判据；“显示结果”可回到此处"
           }
         }
       }
@@ -4280,6 +4406,16 @@
         }
       }
     },
+    "Center thickness" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "中心厚度"
+          }
+        }
+      }
+    },
     "Centre of curvature" : {
       "localizations" : {
         "zh-Hans" : {
@@ -4306,6 +4442,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "质心（去除平移和倾斜）"
+          }
+        }
+      }
+    },
+    "Centroid minus the chief ray" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "质心减主光线"
           }
         }
       }
@@ -4435,7 +4581,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "更改评价标准"
+            "value" : "更改判据"
           }
         }
       }
@@ -4445,7 +4591,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "更改评价标准视场"
+            "value" : "更改判据视场"
           }
         }
       }
@@ -4455,7 +4601,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "更改评价标准波长"
+            "value" : "更改判据波长"
           }
         }
       }
@@ -4775,7 +4921,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "更改种子"
+            "value" : "更改随机种子"
           }
         }
       }
@@ -5006,6 +5152,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "主光线角"
+          }
+        }
+      }
+    },
+    "Chief height at short minus long λ" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "短波长与长波长的主光线高度差"
           }
         }
       }
@@ -5482,6 +5638,16 @@
         }
       }
     },
+    "Combine" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "组合"
+          }
+        }
+      }
+    },
     "Comma separated." : {
       "localizations" : {
         "zh-Hans" : {
@@ -5592,6 +5758,17 @@
         }
       }
     },
+    "Composition" : {
+      "comment" : "operand category",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "组合"
+          }
+        }
+      }
+    },
     "Compute On" : {
       "localizations" : {
         "zh-Hans" : {
@@ -5673,7 +5850,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "配置 %lld"
+            "value" : "结构 %lld"
           }
         }
       }
@@ -5683,7 +5860,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "配置"
+            "value" : "结构"
           }
         }
       }
@@ -5913,7 +6090,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "将摘要拷贝为文本，或将表格存储为 CSV"
+            "value" : "将摘要拷贝为文本，或将表格保存为 CSV"
           }
         }
       }
@@ -5953,7 +6130,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "评价标准"
+            "value" : "判据"
           }
         }
       }
@@ -5963,7 +6140,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "评价标准：%@"
+            "value" : "判据：%@"
           }
         }
       }
@@ -6088,12 +6265,42 @@
         }
       }
     },
+    "DOE maximum phase slope" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "DOE 最大相位斜率"
+          }
+        }
+      }
+    },
+    "DOE minimum zone period" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "DOE 最小环带周期"
+          }
+        }
+      }
+    },
     "DOE power, surface %lld" : {
       "localizations" : {
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "衍射面光焦度，面 %lld"
+            "value" : "衍射面光焦度，第 %lld 面"
+          }
+        }
+      }
+    },
+    "DOE total phase" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "DOE 总相位"
           }
         }
       }
@@ -6868,6 +7075,16 @@
         }
       }
     },
+    "Distance of the strongest ghosts' focus from the image (larger is better)" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "最强鬼像焦点到像面的距离（越大越好）"
+          }
+        }
+      }
+    },
     "Distance to the next vertex." : {
       "localizations" : {
         "zh-Hans" : {
@@ -6949,7 +7166,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "拖移以移动光路图，或拖出窗口以在单独的窗口中打开"
+            "value" : "拖移以移动布局图，或拖出窗口以在单独的窗口中打开"
           }
         }
       }
@@ -7198,6 +7415,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "有效焦距"
+          }
+        }
+      }
+    },
+    "Effective focal length (of the y section)" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "有效焦距（y 截面）"
           }
         }
       }
@@ -7518,6 +7745,16 @@
         }
       }
     },
+    "Entrance pupil position" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "入瞳位置"
+          }
+        }
+      }
+    },
     "Environment" : {
       "localizations" : {
         "zh-Hans" : {
@@ -7704,6 +7941,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "不参与玻璃替换"
+          }
+        }
+      }
+    },
+    "Exit pupil position" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "出瞳位置"
           }
         }
       }
@@ -8065,6 +8312,17 @@
         }
       }
     },
+    "First order" : {
+      "comment" : "operand category",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "一阶"
+          }
+        }
+      }
+    },
     "First plane" : {
       "localizations" : {
         "zh-Hans" : {
@@ -8100,7 +8358,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "适应窗口"
+            "value" : "适合"
           }
         }
       }
@@ -8120,7 +8378,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "适合光路图"
+            "value" : "适合布局图"
           }
         }
       }
@@ -8150,7 +8408,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "使光路图适合窗口（⌘0 或连按）"
+            "value" : "使布局图适合窗口（⌘0 或连按）"
           }
         }
       }
@@ -8255,6 +8513,26 @@
         }
       }
     },
+    "Focal length of the x section" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "x 截面的焦距"
+          }
+        }
+      }
+    },
+    "Focal length of the y section" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "y 截面的焦距"
+          }
+        }
+      }
+    },
     "Focal shift (µm)" : {
       "localizations" : {
         "zh-Hans" : {
@@ -8326,7 +8604,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "面 %1$lld 上的光束足迹，%2$lld 条光线通过，%3$lld 条被遮挡"
+            "value" : "第 %1$lld 面上的光束足迹，%2$lld 条光线通过，%3$lld 条被遮挡"
           }
         }
       }
@@ -8407,6 +8685,16 @@
         }
       }
     },
+    "Freeform maximum departure" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "自由曲面最大偏离量"
+          }
+        }
+      }
+    },
     "Freeform: conic plus Σ C(xᵐyⁿ) Xᵐ Yⁿ with X = x/r_norm, Y = y/r_norm; degrees 1 to 10." : {
       "localizations" : {
         "zh-Hans" : {
@@ -8428,6 +8716,16 @@
       }
     },
     "Frequencies" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "频率"
+          }
+        }
+      }
+    },
+    "Frequency" : {
       "localizations" : {
         "zh-Hans" : {
           "stringUnit" : {
@@ -8472,7 +8770,17 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "光圈数需要面 %lld 的通光口径；请运行光路图或设置半口径。"
+            "value" : "光圈数需要第 %lld 面的通光口径；请运行布局图或设置半口径。"
+          }
+        }
+      }
+    },
+    "From" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "从"
           }
         }
       }
@@ -8505,6 +8813,36 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "在半径 %2$@ 毫米处从 0 到 %1$@ 个波长"
+          }
+        }
+      }
+    },
+    "From the best-fit sphere" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "相对最佳拟合球面"
+          }
+        }
+      }
+    },
+    "From the first surface" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "从第一面起算"
+          }
+        }
+      }
+    },
+    "From the image surface" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "从像面起算"
           }
         }
       }
@@ -8612,6 +8950,16 @@
         }
       }
     },
+    "Gap at the rim (or a height)" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "边缘（或指定高度）处的间隔"
+          }
+        }
+      }
+    },
     "Generate a tolerance set for every element from a class of manufacture" : {
       "localizations" : {
         "zh-Hans" : {
@@ -8648,6 +8996,17 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "几何 MTF"
+          }
+        }
+      }
+    },
+    "Geometry" : {
+      "comment" : "operand category",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "几何"
           }
         }
       }
@@ -8712,6 +9071,36 @@
         }
       }
     },
+    "Ghost against primary" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "鬼像相对主光路"
+          }
+        }
+      }
+    },
+    "Ghost focus distance" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "鬼像焦点距离"
+          }
+        }
+      }
+    },
+    "Ghost irradiance" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "鬼像辐照度"
+          }
+        }
+      }
+    },
     "Ghost/primary flux" : {
       "localizations" : {
         "zh-Hans" : {
@@ -8728,6 +9117,17 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "鬼像"
+          }
+        }
+      }
+    },
+    "Ghosts and stray light" : {
+      "comment" : "operand category",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "鬼像与杂散光"
           }
         }
       }
@@ -9030,6 +9430,16 @@
         }
       }
     },
+    "Global frame" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "全局坐标系"
+          }
+        }
+      }
+    },
     "Grid" : {
       "localizations" : {
         "zh-Hans" : {
@@ -9100,6 +9510,16 @@
         }
       }
     },
+    "Height" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "高度"
+          }
+        }
+      }
+    },
     "He–Ne" : {
       "localizations" : {
         "zh-Hans" : {
@@ -9135,7 +9555,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "隐藏光路图"
+            "value" : "隐藏布局图"
           }
         }
       }
@@ -9399,6 +9819,17 @@
         }
       }
     },
+    "Image quality" : {
+      "comment" : "operand category",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "像质"
+          }
+        }
+      }
+    },
     "Image radius (mm)" : {
       "localizations" : {
         "zh-Hans" : {
@@ -9425,6 +9856,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "像方 F/#"
+          }
+        }
+      }
+    },
+    "Image-space, working or real working F/#" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "像方、工作或实际工作 F 数"
           }
         }
       }
@@ -9569,6 +10010,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "设计中"
+          }
+        }
+      }
+    },
+    "Incidence of the chief ray (0 telecentric)" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "主光线入射角（0 为远心）"
           }
         }
       }
@@ -9942,6 +10393,16 @@
         }
       }
     },
+    "Largest gap of a medium" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "介质的最大间隔"
+          }
+        }
+      }
+    },
     "Last Surface" : {
       "localizations" : {
         "zh-Hans" : {
@@ -9998,6 +10459,16 @@
         }
       }
     },
+    "Lateral color" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "垂轴色差"
+          }
+        }
+      }
+    },
     "Lateral color (µm)" : {
       "localizations" : {
         "zh-Hans" : {
@@ -10023,7 +10494,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "光路图"
+            "value" : "布局图"
           }
         }
       }
@@ -10033,7 +10504,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "光路图不可用"
+            "value" : "布局图不可用"
           }
         }
       }
@@ -10049,7 +10520,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "光路图，%1$@，%2$lld 个面，%3$lld 条光线，长 %4$@ 毫米"
+            "value" : "布局图，%1$@，%2$lld 个面，%3$lld 条光线，长 %4$@ 毫米"
           }
         }
       }
@@ -10059,7 +10530,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "光路图，不可用"
+            "value" : "布局图，不可用"
           }
         }
       }
@@ -10080,6 +10551,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "镜头数据"
+          }
+        }
+      }
+    },
+    "Lens Data: the design's surfaces" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "镜头数据：设计的各个面"
           }
         }
       }
@@ -10119,7 +10600,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "库中的玻璃库会载入所有设计；设计存储时会记录其使用的玻璃库。右键点按玻璃库可重新载入或移除。"
+            "value" : "库中的玻璃库会载入所有设计；设计保存时会记录其使用的玻璃库。右键点按玻璃库可重新载入或移除。"
           }
         }
       }
@@ -10286,12 +10767,22 @@
         }
       }
     },
+    "Long λ" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "长波长"
+          }
+        }
+      }
+    },
     "Long. Aberration" : {
       "localizations" : {
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "轴向像差"
+            "value" : "纵向像差"
           }
         }
       }
@@ -10321,7 +10812,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "轴向像差"
+            "value" : "纵向像差"
           }
         }
       }
@@ -10331,7 +10822,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "轴向像差 (mm)"
+            "value" : "纵向像差 (mm)"
           }
         }
       }
@@ -10390,6 +10881,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "%2$@ cyc/mm 处 MTF ≥ %1$@，最弱视场"
+          }
+        }
+      }
+    },
+    "Magnification" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "放大率"
           }
         }
       }
@@ -10504,6 +11005,17 @@
         }
       }
     },
+    "Manufacturing" : {
+      "comment" : "operand category",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "制造"
+          }
+        }
+      }
+    },
     "Map" : {
       "localizations" : {
         "zh-Hans" : {
@@ -10514,12 +11026,32 @@
         }
       }
     },
+    "Mapping" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "映射"
+          }
+        }
+      }
+    },
     "Margin" : {
       "localizations" : {
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "余量"
+          }
+        }
+      }
+    },
+    "Marginal or chief ray height, slope or angle after a surface" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "面后边缘光线或主光线的高度、斜率或角度"
           }
         }
       }
@@ -10684,6 +11216,16 @@
         }
       }
     },
+    "Max reflections" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "最大反射次数"
+          }
+        }
+      }
+    },
     "Max retardance" : {
       "localizations" : {
         "zh-Hans" : {
@@ -10810,6 +11352,16 @@
         }
       }
     },
+    "Maximum thickness" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "最大厚度"
+          }
+        }
+      }
+    },
     "Mean" : {
       "localizations" : {
         "zh-Hans" : {
@@ -10830,12 +11382,32 @@
         }
       }
     },
+    "Measure" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "度量"
+          }
+        }
+      }
+    },
+    "Medium" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "介质"
+          }
+        }
+      }
+    },
     "Melt" : {
       "localizations" : {
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "熔炼"
+            "value" : "按需熔炼"
           }
         }
       }
@@ -10875,7 +11447,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "熔炼偏差 Δn_d / ΔV_d：替换玻璃不带此偏差"
+            "value" : "熔炼偏移 Δn_d / ΔV_d：替换玻璃不带此偏差"
           }
         }
       }
@@ -10986,6 +11558,16 @@
         }
       }
     },
+    "Metric" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "指标"
+          }
+        }
+      }
+    },
     "Min" : {
       "localizations" : {
         "zh-Hans" : {
@@ -11068,6 +11650,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "%2$@ 中 %1$@ 的最小值"
+          }
+        }
+      }
+    },
+    "Minimum thickness" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "最小厚度"
           }
         }
       }
@@ -11188,6 +11780,16 @@
         }
       }
     },
+    "Modulation at one frequency; use ≥ for a lower bound" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "单一频率的调制度；下限用 ≥"
+          }
+        }
+      }
+    },
     "Monte Carlo" : {
       "localizations" : {
         "zh-Hans" : {
@@ -11210,6 +11812,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "蒙特卡罗 %1$lld / %2$lld"
+          }
+        }
+      }
+    },
+    "Monte Carlo fraction; not for least squares" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "蒙特卡罗比例；不适用于最小二乘"
           }
         }
       }
@@ -11245,7 +11857,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "蒙特卡罗：%1$lld 次试验，种子 %2$lld"
+            "value" : "蒙特卡罗：%1$lld 次试验，随机种子 %2$lld"
           }
         }
       }
@@ -11261,7 +11873,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "蒙特卡罗：%1$lld 次试验，种子 %2$lld，%3$lld 次失败"
+            "value" : "蒙特卡罗：%1$lld 次试验，随机种子 %2$lld，%3$lld 次失败"
           }
         }
       }
@@ -11271,7 +11883,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "蒙特卡罗：每次试验随机抽取每个公差；相同的种子产生相同的试验。"
+            "value" : "蒙特卡罗：每次试验随机抽取每个公差；相同的随机种子产生相同的试验。"
           }
         }
       }
@@ -11637,7 +12249,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "无光路图"
+            "value" : "无布局图"
           }
         }
       }
@@ -11767,7 +12379,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "无光路图"
+            "value" : "无布局图"
           }
         }
       }
@@ -12095,6 +12707,16 @@
         }
       }
     },
+    "OPD of one ray" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "单条光线的光程差"
+          }
+        }
+      }
+    },
     "Object angle" : {
       "localizations" : {
         "zh-Hans" : {
@@ -12141,6 +12763,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "奇次非球面"
+          }
+        }
+      }
+    },
+    "Of a criterion to a parameter" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "判据对参数的灵敏度"
           }
         }
       }
@@ -12281,6 +12913,16 @@
         }
       }
     },
+    "Operation" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "运算"
+          }
+        }
+      }
+    },
     "Optical Data" : {
       "localizations" : {
         "zh-Hans" : {
@@ -12417,6 +13059,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "衍射级次为离散值，不能作为优化变量。"
+          }
+        }
+      }
+    },
+    "Orientation" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "方向"
           }
         }
       }
@@ -12654,6 +13306,16 @@
         }
       }
     },
+    "Parameter value" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "参数值"
+          }
+        }
+      }
+    },
     "Parameters: %@" : {
       "localizations" : {
         "zh-Hans" : {
@@ -12670,6 +13332,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "近轴"
+          }
+        }
+      }
+    },
+    "Paraxial focus at short minus long λ" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "短波长与长波长的近轴焦点差"
           }
         }
       }
@@ -12694,6 +13366,16 @@
         }
       }
     },
+    "Paraxial lateral magnification" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "近轴横向放大率"
+          }
+        }
+      }
+    },
     "Paraxial power" : {
       "localizations" : {
         "zh-Hans" : {
@@ -12710,6 +13392,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "近轴光焦度 φ = −m λ A₁ / (π r_norm²)，叠加到基底的折射光焦度上。衍射面的阿贝数约为 −3.45。"
+          }
+        }
+      }
+    },
+    "Paraxial ray" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "近轴光线"
           }
         }
       }
@@ -12926,6 +13618,16 @@
         }
       }
     },
+    "Petzval sum" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "佩茨瓦尔和"
+          }
+        }
+      }
+    },
     "Pg,F" : {
       "shouldTranslate" : false
     },
@@ -13065,6 +13767,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "平移"
+          }
+        }
+      }
+    },
+    "Piston (and tilt) removed" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "去除平移（和倾斜）"
           }
         }
       }
@@ -13251,6 +13963,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "位置 (mm)"
+          }
+        }
+      }
+    },
+    "Position, direction or angle of one ray" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "单条光线的位置、方向或角度"
           }
         }
       }
@@ -13641,6 +14363,36 @@
         }
       }
     },
+    "Pupil sampling" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "光瞳采样"
+          }
+        }
+      }
+    },
+    "Pupil x" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "光瞳 x"
+          }
+        }
+      }
+    },
+    "Pupil y" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "光瞳 y"
+          }
+        }
+      }
+    },
     "Pupil zone" : {
       "localizations" : {
         "zh-Hans" : {
@@ -13687,6 +14439,26 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Q 型（圆锥）"
+          }
+        }
+      }
+    },
+    "Q-type departure slope" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Q 型偏离斜率"
+          }
+        }
+      }
+    },
+    "Q-type maximum departure" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Q 型最大偏离量"
           }
         }
       }
@@ -13927,7 +14699,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "曲率半径；平面为 ∞。以曲率 c = 1/R 存储。"
+            "value" : "曲率半径；平面为 ∞。以曲率 c = 1/R 保存。"
           }
         }
       }
@@ -14048,6 +14820,16 @@
         }
       }
     },
+    "Ray" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "光线"
+          }
+        }
+      }
+    },
     "Ray Aiming" : {
       "localizations" : {
         "zh-Hans" : {
@@ -14084,6 +14866,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "光线网格"
+          }
+        }
+      }
+    },
+    "Ray aberration" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "光线像差"
           }
         }
       }
@@ -14250,6 +15042,16 @@
         }
       }
     },
+    "Real chief ray against the mapping" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "实际主光线相对映射关系"
+          }
+        }
+      }
+    },
     "Real chief rays" : {
       "localizations" : {
         "zh-Hans" : {
@@ -14270,12 +15072,33 @@
         }
       }
     },
+    "Real ray" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "实际光线"
+          }
+        }
+      }
+    },
     "Real ray aiming" : {
       "localizations" : {
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "实际光线瞄准"
+          }
+        }
+      }
+    },
+    "Real rays" : {
+      "comment" : "operand category",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "实际光线"
           }
         }
       }
@@ -14555,7 +15378,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "移除熔炼偏差"
+            "value" : "移除熔炼偏移"
           }
         }
       }
@@ -15204,7 +16027,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "存储"
+            "value" : "保存"
           }
         }
       }
@@ -15214,7 +16037,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "将蒙特卡罗试验存储为 CSV…"
+            "value" : "将蒙特卡罗试验保存为 CSV…"
           }
         }
       }
@@ -15224,7 +16047,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "将灵敏度表存储为 CSV…"
+            "value" : "将灵敏度表保存为 CSV…"
           }
         }
       }
@@ -15240,7 +16063,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "已将 %1$@ 存储到 %2$@。"
+            "value" : "已将 %1$@ 保存到 %2$@。"
           }
         }
       }
@@ -15356,7 +16179,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "种子"
+            "value" : "随机种子"
           }
         }
       }
@@ -15476,7 +16299,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "在镜头表中选择面 %lld"
+            "value" : "在镜头数据表中选择面 %lld"
           }
         }
       }
@@ -15768,6 +16591,16 @@
         }
       }
     },
+    "Short λ" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "短波长"
+          }
+        }
+      }
+    },
     "Shortest wavelength in micrometers" : {
       "localizations" : {
         "zh-Hans" : {
@@ -15833,7 +16666,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "显示光路图"
+            "value" : "显示布局图"
           }
         }
       }
@@ -16039,7 +16872,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "显示光路图视口（⌥⌘L）"
+            "value" : "显示布局图视口（⌥⌘L）"
           }
         }
       }
@@ -16059,7 +16892,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "显示镜头数据或光路图，或添加分析。移到其他窗口的面板可以移回此处。"
+            "value" : "显示镜头数据或布局图，或添加分析。移到其他窗口的面板可以移回此处。"
           }
         }
       }
@@ -16069,7 +16902,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "应用前在光路图和分析中显示优化后的设计"
+            "value" : "应用前在布局图和分析中显示优化后的设计"
           }
         }
       }
@@ -16144,6 +16977,16 @@
         }
       }
     },
+    "Signed EFL_y / EFL_x" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "带符号的 EFL_y / EFL_x"
+          }
+        }
+      }
+    },
     "Simulated" : {
       "localizations" : {
         "zh-Hans" : {
@@ -16206,6 +17049,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "倾斜刃边"
+          }
+        }
+      }
+    },
+    "Smallest gap of a medium" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "介质的最小间隔"
           }
         }
       }
@@ -16496,6 +17349,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "点列图"
+          }
+        }
+      }
+    },
+    "Spot centroid" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "弥散斑质心"
           }
         }
       }
@@ -16800,6 +17663,16 @@
         }
       }
     },
+    "Stray light power" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "杂散光功率"
+          }
+        }
+      }
+    },
     "Stray total" : {
       "localizations" : {
         "zh-Hans" : {
@@ -16860,6 +17733,16 @@
         }
       }
     },
+    "Sum of thicknesses" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "厚度之和"
+          }
+        }
+      }
+    },
     "Surf" : {
       "localizations" : {
         "zh-Hans" : {
@@ -16895,7 +17778,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "面 %lld 没有可施加不规则度的面型。"
+            "value" : "第 %lld 面没有可施加不规则度的面型。"
           }
         }
       }
@@ -16905,7 +17788,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "面 %lld 没有曲率半径。"
+            "value" : "第 %lld 面没有曲率半径。"
           }
         }
       }
@@ -16915,7 +17798,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "面 %lld 为平面：请以光圈数给出其光焦度。"
+            "value" : "第 %lld 面为平面：请以光圈数给出其光焦度。"
           }
         }
       }
@@ -16931,7 +17814,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "面 %1$lld 之后是 %2$@ (%3$@)。"
+            "value" : "第 %1$lld 面之后是 %2$@ (%3$@)。"
           }
         }
       }
@@ -16947,7 +17830,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "面 %1$lld 之后是 %2$@，不是带有 n_d 和 V_d 的玻璃。"
+            "value" : "第 %1$lld 面之后是 %2$@，不是带有 n_d 和 V_d 的玻璃。"
           }
         }
       }
@@ -16973,7 +17856,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "面 %lld，光阑"
+            "value" : "第 %lld 面，光阑"
           }
         }
       }
@@ -17223,7 +18106,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "测试光圈数"
+            "value" : "检验光圈数"
           }
         }
       }
@@ -17233,7 +18116,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "测试光圈波长"
+            "value" : "检验光圈波长"
           }
         }
       }
@@ -17304,6 +18187,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "%@ 的阿贝数尚未知：请以 ΔV_d 给出极限，或等待玻璃数据。"
+          }
+        }
+      }
+    },
+    "The MKLight engine could not be started" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "无法启动 MKLight 引擎"
           }
         }
       }
@@ -17403,7 +18296,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "面 %lld 的通光口径大于其球面。"
+            "value" : "第 %lld 面的通光口径大于其球面。"
           }
         }
       }
@@ -17639,7 +18532,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "随机装调结果的期望值：标称值加上每个公差在其分布上的期望变化（独立误差对均方评价标准的变化相加）"
+            "value" : "随机装调结果的期望值：标称值加上每个公差在其分布上的期望变化（独立误差对均方判据的变化相加）"
           }
         }
       }
@@ -17709,7 +18602,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "无法存储玻璃库（%@）。"
+            "value" : "无法保存玻璃库（%@）。"
           }
         }
       }
@@ -17759,7 +18652,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "光路图已过期。点按以更新。"
+            "value" : "布局图已过期。点按以更新。"
           }
         }
       }
@@ -18482,6 +19375,16 @@
         }
       }
     },
+    "To" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "至"
+          }
+        }
+      }
+    },
     "Toggle Variable" : {
       "localizations" : {
         "zh-Hans" : {
@@ -18518,6 +19421,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "公差分析：灵敏度与蒙特卡罗（⌃⌘T）"
+          }
+        }
+      }
+    },
+    "Tolerance sensitivity" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "公差灵敏度"
           }
         }
       }
@@ -18577,7 +19490,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "复曲面"
+            "value" : "环曲面"
           }
         }
       }
@@ -18628,6 +19541,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "透过率数据"
+          }
+        }
+      }
+    },
+    "Transverse aberration of one ray" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "单条光线的垂轴像差"
           }
         }
       }
@@ -18999,7 +19922,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "每种玻璃的 V_d：模型玻璃的 V_d，玻璃库玻璃的熔炼偏差 ΔV_d。"
+            "value" : "每种玻璃的 V_d：模型玻璃的 V_d，玻璃库玻璃的熔炼偏移 ΔV_d。"
           }
         }
       }
@@ -19336,6 +20259,16 @@
         }
       }
     },
+    "Wavefront aberration" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "波前像差"
+          }
+        }
+      }
+    },
     "Wavefront map, RMS %.3f waves, peak to valley %.3f waves" : {
       "localizations" : {
         "en" : {
@@ -19533,7 +20466,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "加上熔炼偏差 (%1$@) 后，%2$@ 将超出 ±%3$@，即引擎的限值。"
+            "value" : "加上熔炼偏移 (%1$@) 后，%2$@ 将超出 ±%3$@，即引擎的限值。"
           }
         }
       }
@@ -19564,6 +20497,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "最差试验"
+          }
+        }
+      }
+    },
+    "Worst ghosts" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "最强鬼像数"
           }
         }
       }
@@ -19607,6 +20550,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "XY 项"
+          }
+        }
+      }
+    },
+    "XY or Zernike sag from its base conic" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "XY 或泽尼克面相对基底二次曲面的矢高"
           }
         }
       }
@@ -19685,7 +20638,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "你的玻璃 · 存储在 App 的库中"
+            "value" : "你的玻璃 · 保存在 App 的库中"
           }
         }
       }
@@ -19705,7 +20658,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "你的设置适用于所有设计，不会存储在项目中。玻璃替换默认跳过停产、特殊和已排除的玻璃。"
+            "value" : "你的设置适用于所有设计，不会保存在项目中。玻璃替换默认跳过停产、特殊和已排除的玻璃。"
           }
         }
       }
@@ -20419,7 +21372,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "每种玻璃的 n_d：模型玻璃的 n_d，玻璃库玻璃的熔炼偏差 Δn_d。"
+            "value" : "每种玻璃的 n_d：模型玻璃的 n_d，玻璃库玻璃的熔炼偏移 Δn_d。"
           }
         }
       }
@@ -21381,6 +22334,9 @@
       }
     },
     "ΠR" : {
+      "shouldTranslate" : false
+    },
+    "Σ c (N′ − N)/(N N′)" : {
       "shouldTranslate" : false
     },
     "Φ (waves)" : {

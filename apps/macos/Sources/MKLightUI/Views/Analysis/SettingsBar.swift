@@ -153,12 +153,13 @@ struct SettingsBar: View {
 
     static func title(_ v: JSONValue) -> String {
         guard case .string(let s) = v else { return v.displayText }
+        if let label = EngineText.enumLabel(s) { return label }
         if s.count <= 3 { return s.uppercased() }
         // A name with capitals (a glass such as N-SK16) is shown as written;
         // only snake_case identifiers are turned into words.
         if s.contains(where: \.isUppercase) { return s }
         let shown = s.replacingOccurrences(of: "_", with: " ").capitalized
-        return EngineText.translation(s) ?? EngineText.translation(shown) ?? shown
+        return shown
     }
 }
 
@@ -756,7 +757,7 @@ struct ThroughFocusControl: View {
         let planes = steps == 1 ? String(localized: "1 plane") : String(localized: "\(steps) planes")
         if let a = v["min"]?.doubleValue, let b = v["max"]?.doubleValue {
             if abs(a + b) <= 1e-12 * Swift.max(1, abs(b)) { return "±\(Fmt.short(b)) mm · " + planes }
-            return "\(Fmt.short(a)) to \(Fmt.short(b)) mm · " + planes
+            return String(localized: "\(Fmt.short(a)) to \(Fmt.short(b)) mm") + " · " + planes
         }
         if let used = AutoSettings.used("through_focus", analysis: "spot_diagram", output: output) { return "\(used) mm · " + planes }
         return String(localized: "Auto range") + " · " + planes

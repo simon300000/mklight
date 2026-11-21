@@ -109,11 +109,11 @@ public enum EngineError: Error, Sendable, Hashable, LocalizedError {
     public var errorDescription: String? {
         switch self {
         case .cancelled: String(localized: "Cancelled")
-        case .invalidModel(let issues): String(localized: "Invalid model: \(issues.map(EngineText.string).joined(separator: "; "))")
-        case .invalidSettings(let issues): String(localized: "Invalid analysis settings: \(issues.map(EngineText.string).joined(separator: "; "))")
-        case .unsupported(let s): String(localized: "Unsupported: \(EngineText.string(s))")
-        case .failed(let s): EngineText.string(s)
-        case .engine(let code, let s): s.isEmpty ? String(localized: "Engine error: \(code.description)") : EngineText.string(s)
+        case .invalidModel(let issues): String(localized: "Invalid model: \(issues.map(EngineText.message).joined(separator: "; "))")
+        case .invalidSettings(let issues): String(localized: "Invalid analysis settings: \(issues.map(EngineText.message).joined(separator: "; "))")
+        case .unsupported(let s): String(localized: "Unsupported: \(EngineText.message(s))")
+        case .failed(let s): EngineText.message(s)
+        case .engine(let code, let s): s.isEmpty ? String(localized: "Engine error: \(code.description)") : EngineText.message(s)
         case .libraryUnavailable(let s): String(localized: "Engine library unavailable: \(s)")
         }
     }

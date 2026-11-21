@@ -41,7 +41,7 @@ struct WelcomeView: View {
         .fileImporter(isPresented: $importing, allowedContentTypes: UTType.mklightReadable) { result in
             switch result {
             case .success(let url): open([url])
-            case .failure(let e): error = EngineText.string(e.localizedDescription)
+            case .failure(let e): error = EngineText.message(e.localizedDescription)
             }
         }
         .dropDestination(for: URL.self) { urls, _ in
@@ -72,7 +72,7 @@ struct WelcomeView: View {
                     try await openDocument(at: url)
                     opened = true
                 } catch {
-                    self.error = "\(url.lastPathComponent): \(EngineText.string(error.localizedDescription))"
+                    self.error = "\(url.lastPathComponent): \(EngineText.message(error.localizedDescription))"
                 }
             }
             if opened { dismissWindow(id: Self.windowID) }
@@ -177,7 +177,7 @@ private struct SampleCard: View {
                 RoundedRectangle(cornerRadius: 12, style: .continuous)
                     .strokeBorder(hover ? AnyShapeStyle(.tint) : AnyShapeStyle(.separator), lineWidth: hover ? 2 : 0.5))
             VStack(alignment: .leading, spacing: 1) {
-                Text(EngineText.string(s.name)).font(.body.weight(.semibold)).lineLimit(1)
+                Text(s.name).font(.body.weight(.semibold)).lineLimit(1)
                 Text(detail(s)).font(.caption).foregroundStyle(.secondary).lineLimit(2, reservesSpace: true)
             }
             .padding(.horizontal, 2)
@@ -187,7 +187,7 @@ private struct SampleCard: View {
         .animation(reduceMotion ? nil : .smooth(duration: 0.2), value: hover)
         .onHover { hover = $0 }
         .accessibilityElement(children: .ignore)
-        .accessibilityLabel("\(EngineText.string(s.name)). \(detail(s))")
+        .accessibilityLabel("\(s.name). \(detail(s))")
         .accessibilityAddTraits(.isButton)
         .accessibilityHint("Creates a new design from this sample")
     }
@@ -195,7 +195,7 @@ private struct SampleCard: View {
     private func detail(_ s: OpticalSystem) -> String {
         let n = s.surfaces.count - 2
         let kinds = Set(s.surfaces.map(\.shape.kind)).filter { !$0.isLegacy }.map { SurfaceTypes.descriptor(for: $0).title }.sorted()
-        let notes = !kinds.isEmpty ? kinds.joined(separator: ", ") : EngineText.string(s.notes)
+        let notes = !kinds.isEmpty ? kinds.joined(separator: ", ") : s.notes
         return notes.isEmpty ? String(localized: "\(n) surfaces") : String(localized: "\(n) surfaces · \(notes)")
     }
 }

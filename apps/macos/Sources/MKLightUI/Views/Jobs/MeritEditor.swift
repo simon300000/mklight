@@ -95,7 +95,7 @@ struct MeritFunctionSection: View {
                     OperandTable(design: design, workspace: workspace, session: session, selection: $selection)
                 }
                 if let e = session.evaluationError, !session.evaluating {
-                    Label("The engine could not evaluate this merit: \(EngineText.string(e))", systemImage: "exclamationmark.triangle.fill")
+                    Label("The engine could not evaluate this merit: \(EngineText.message(e))", systemImage: "exclamationmark.triangle.fill")
                         .font(.caption).foregroundStyle(.orange).lineLimit(4).fixedSize(horizontal: false, vertical: true)
                 }
                 Toggle("Hold the focal length", isOn: Binding(get: { merit.holdEFL }, set: { v in edit(String(localized: "Hold Focal Length")) { $0.holdEFL = v } }))
@@ -124,8 +124,8 @@ struct MeritReadout: View {
         HStack(spacing: Space.xs) {
             if session.evaluating { ProgressView().controlSize(.mini) }
             if let e = session.evaluationError, !session.evaluating {
-                Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.orange).help(EngineText.string(e))
-                    .accessibilityLabel("Evaluation failed: \(EngineText.string(e))")
+                Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.orange).help(EngineText.message(e))
+                    .accessibilityLabel("Evaluation failed: \(EngineText.message(e))")
             }
             VStack(alignment: .trailing, spacing: 0) {
                 Text("Merit").font(.caption2).foregroundStyle(.secondary)
@@ -519,7 +519,7 @@ struct OperandRow: View {
         .accessibilityValue(accessibilityValue)
     }
 
-    private var problem: String? { evaluation?.error.map { String(localized: "The engine could not evaluate it: \(EngineText.string($0))") } ?? issues.first }
+    private var problem: String? { evaluation?.error.map { String(localized: "The engine could not evaluate it: \(EngineText.message($0))") } ?? issues.first }
 
     private var detail: String {
         if let problem { return problem }
@@ -571,13 +571,13 @@ enum OperandSummary {
         for p in op.descriptor?.params ?? [] {
             guard let v = op.kind[p.key], v != .null else { continue }
             switch p.kind {
-            case .surface: parts.append("\(EngineText.string(p.title).lowercased()) S\(v.int.map(String.init) ?? "?")")
-            case .wavelength: parts.append("\(EngineText.string(p.title)) λ\((v.int ?? 0) + 1)")
+            case .surface: parts.append("\(p.title.lowercased()) S\(v.int.map(String.init) ?? "?")")
+            case .wavelength: parts.append("\(p.title) λ\((v.int ?? 0) + 1)")
             case .choice: parts.append((v.string ?? v.displayText).replacingOccurrences(of: "_", with: " "))
-            case .flag: if v.bool == true { parts.append(EngineText.string(p.title).lowercased()) }
+            case .flag: if v.bool == true { parts.append(p.title.lowercased()) }
             case .sampling: parts.append("\(v["rings"]?.int ?? 3)×\(v["arms"]?.int ?? 6)")
             case .operandList: parts.append(String(localized: "of \((v.intArray ?? []).map { "#\($0 + 1)" }.joined(separator: ", "))"))
-            case .number, .integer: parts.append("\(EngineText.string(p.title).lowercased()) \(v.doubleValue.map(Fmt.short) ?? v.displayText)")
+            case .number, .integer: parts.append("\(p.title.lowercased()) \(v.doubleValue.map(Fmt.short) ?? v.displayText)")
             }
         }
         // Field and wavelength first: generated operands differ in them,
@@ -614,7 +614,7 @@ struct OperandDetail: View {
                 Spacer()
                 if let d = operand.descriptor, !d.unit.isEmpty { Text(d.unit).font(.caption).foregroundStyle(.secondary) }
             }
-            if let s = operand.descriptor?.summary, !s.isEmpty { Text(EngineText.string(s)).font(.caption).foregroundStyle(.secondary) }
+            if let s = operand.descriptor?.summary, !s.isEmpty { Text(s).font(.caption).foregroundStyle(.secondary) }
             ForEach(operand.descriptor?.params ?? []) { p in param(p) }
             if operand.descriptor == nil {
                 Text("Parameters: \(JSONText.text(.object(operand.kind)))").font(.caption.monospaced()).foregroundStyle(.secondary).lineLimit(3)
@@ -651,7 +651,7 @@ struct OperandDetail: View {
                 }
             }
             if let error = evaluation?.error {
-                WarningNote(EngineText.string(error))
+                WarningNote(EngineText.message(error))
                     .fixedSize(horizontal: false, vertical: true)
             }
             ForEach(operand.localIssues(fieldCount: system.fields.fields.count, wavelengthCount: system.wavelengths.wavelengths.count), id: \.self) {
@@ -667,7 +667,7 @@ struct OperandDetail: View {
 
     @ViewBuilder private func param(_ p: OperandParam) -> some View {
         let v = operand.kind[p.key]
-        let title = EngineText.string(p.title)
+        let title = p.title
         let name = String(localized: "Change \(title)")
         switch p.kind {
         case .number(let unit):
@@ -798,18 +798,18 @@ struct OperandPicker: View {
                 .onSubmit { if let first = OperandCatalog.search(query).first?.items.first { pick(first) } }
             List {
                 ForEach(OperandCatalog.search(query), id: \.category) { group in
-                    Section(EngineText.string(group.category)) {
+                    Section(OperandCatalog.categoryTitle(group.category)) {
                         ForEach(group.items) { d in
                             Button {
                                 pick(d)
                             } label: {
                                 VStack(alignment: .leading, spacing: 1) {
                                     HStack {
-                                        Text(EngineText.string(d.title))
+                                        Text(d.title)
                                         Spacer()
                                         if !d.unit.isEmpty { Text(d.unit).font(.caption).foregroundStyle(.secondary) }
                                     }
-                                    if !d.summary.isEmpty { Text(EngineText.string(d.summary)).font(.caption).foregroundStyle(.secondary).lineLimit(1) }
+                                    if !d.summary.isEmpty { Text(d.summary).font(.caption).foregroundStyle(.secondary).lineLimit(1) }
                                 }
                                 .contentShape(Rectangle())
                             }

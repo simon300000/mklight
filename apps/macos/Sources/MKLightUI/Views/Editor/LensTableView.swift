@@ -383,7 +383,7 @@ private struct SurfaceLabel: View {
                 Image(systemName: worst == .error ? "xmark.octagon.fill" : "exclamationmark.triangle.fill")
                     .font(.caption)
                     .foregroundStyle(worst == .error ? .red : .orange)
-                    .help(issues.map(\.displayMessage).joined(separator: "\n"))
+                    .help(issues.map(\.fullMessage).joined(separator: "\n"))
                     .accessibilityLabel(issues.map(\.displayMessage).joined(separator: ". "))
             }
             Text(row.surfaceText)
