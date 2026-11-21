@@ -24,6 +24,249 @@
   <!-- area: Analysis -->
   <!-- end area: Analysis -->
   <!-- area: Jobs -->
+  <data name="Jobs_Merit_AddOperand" xml:space="preserve"><value>Add Operand</value></data>
+  <data name="Jobs_Merit_AddOperandHelp" xml:space="preserve"><value>Add an operand after the selection</value></data>
+  <data name="Jobs_Merit_All" xml:space="preserve"><value>All</value></data>
+  <data name="Jobs_Merit_AllFieldsWeighted" xml:space="preserve"><value>All fields (weighted)</value></data>
+  <data name="Jobs_Merit_AllWavelengths" xml:space="preserve"><value>All (polychromatic)</value></data>
+  <data name="Jobs_Merit_Arms" xml:space="preserve"><value>Arms</value></data>
+  <data name="Jobs_Merit_Auto" xml:space="preserve"><value>auto</value></data>
+  <data name="Jobs_Merit_Caption_Mtf" xml:space="preserve"><value>Polychromatic tangential and sagittal MTF lower bounds at each frequency.</value></data>
+  <data name="Jobs_Merit_Caption_RmsSpot" xml:space="preserve"><value>The mean square RMS spot radius over the chosen fields and wavelengths, by their weights.</value></data>
+  <data name="Jobs_Merit_Caption_Wavefront" xml:space="preserve"><value>The mean square RMS wavefront error over the chosen fields and wavelengths, by their weights.</value></data>
+  <data name="Jobs_Merit_ChecklistSummary" xml:space="preserve"><value>{0}: {1}</value></data>
+  <data name="Jobs_Merit_ComparisonHelp" xml:space="preserve"><value>= target, ≤ an upper bound, ≥ a lower bound</value></data>
+  <data name="Jobs_Merit_Constraint" xml:space="preserve"><value>Constraint</value></data>
+  <data name="Jobs_Merit_ConstraintHelp" xml:space="preserve"><value>Hold it exactly (or as a bound) instead of weighting it in the merit</value></data>
+  <data name="Jobs_Merit_ConstraintTag" xml:space="preserve"><value>constraint</value></data>
+  <data name="Jobs_Merit_ConvertToCustom" xml:space="preserve"><value>Convert to Custom</value></data>
+  <data name="Jobs_Merit_ConvertToCustomHelp" xml:space="preserve"><value>Start a custom merit from the operands the default generates for this design</value></data>
+  <data name="Jobs_Merit_Criterion" xml:space="preserve"><value>Criterion</value></data>
+  <data name="Jobs_Merit_Criterion_RmsSpot" xml:space="preserve"><value>RMS spot radius</value></data>
+  <data name="Jobs_Merit_Criterion_Wavefront" xml:space="preserve"><value>RMS wavefront</value></data>
+  <data name="Jobs_Merit_DeleteSelected" xml:space="preserve"><value>Delete the selected operands (Delete)</value></data>
+  <data name="Jobs_Merit_Detail_Weight" xml:space="preserve"><value>w {0}</value></data>
+  <data name="Jobs_Merit_DuplicateSelected" xml:space="preserve"><value>Duplicate the selected operands</value></data>
+  <data name="Jobs_Merit_Enabled" xml:space="preserve"><value>Enabled</value></data>
+  <data name="Jobs_Merit_EvaluationError" xml:space="preserve"><value>The engine could not evaluate this merit: {0}</value></data>
+  <data name="Jobs_Merit_Field" xml:space="preserve"><value>Field</value></data>
+  <data name="Jobs_Merit_Fields" xml:space="preserve"><value>Fields</value></data>
+  <data name="Jobs_Merit_Frequencies" xml:space="preserve"><value>Frequencies</value></data>
+  <data name="Jobs_Merit_FrequenciesName" xml:space="preserve"><value>MTF frequencies in cycles per mm</value></data>
+  <data name="Jobs_Merit_Help_CpuReference" xml:space="preserve"><value>CPU f64 reference</value></data>
+  <data name="Jobs_Merit_Help_Degraded_Many" xml:space="preserve"><value>{0} residuals carry penalty values (failed rays or operands).</value></data>
+  <data name="Jobs_Merit_Help_Degraded_One" xml:space="preserve"><value>{0} residual carry penalty values (failed rays or operands).</value></data>
+  <data name="Jobs_Merit_Help_Failed" xml:space="preserve"><value>The evaluation failed: no meaningful merit.</value></data>
+  <data name="Jobs_Merit_Help_Merit" xml:space="preserve"><value>Merit {0} at the current design ({1}).</value></data>
+  <data name="Jobs_Merit_Help_Violation" xml:space="preserve"><value>Constraint violation {0}.</value></data>
+  <data name="Jobs_Merit_HideThickness" xml:space="preserve"><value>Hide the thickness limits</value></data>
+  <data name="Jobs_Merit_HoldEfl" xml:space="preserve"><value>Hold the focal length</value></data>
+  <data name="Jobs_Merit_HoldEflHelp" xml:space="preserve"><value>Keep the EFL at its start value as a constraint, unless the merit has an EFL operand.</value></data>
+  <data name="Jobs_Merit_Issue_NeedsOneField" xml:space="preserve"><value>Needs one field, not all fields.</value></data>
+  <data name="Jobs_Merit_Issue_NoField" xml:space="preserve"><value>Field {0} does not exist.</value></data>
+  <data name="Jobs_Merit_Issue_NoWavelength" xml:space="preserve"><value>Wavelength {0} does not exist.</value></data>
+  <data name="Jobs_Merit_Issue_Required" xml:space="preserve"><value>{0} is required.</value></data>
+  <data name="Jobs_Merit_Issue_Weight" xml:space="preserve"><value>The weight must be zero or positive.</value></data>
+  <data name="Jobs_Merit_Menu_Delete" xml:space="preserve"><value>Delete</value></data>
+  <data name="Jobs_Merit_Menu_Disable" xml:space="preserve"><value>Disable</value></data>
+  <data name="Jobs_Merit_Menu_Duplicate" xml:space="preserve"><value>Duplicate</value></data>
+  <data name="Jobs_Merit_Menu_Enable" xml:space="preserve"><value>Enable</value></data>
+  <data name="Jobs_Merit_Method" xml:space="preserve"><value>Method</value></data>
+  <data name="Jobs_Merit_Method_Diffraction" xml:space="preserve"><value>Diffraction</value></data>
+  <data name="Jobs_Merit_Method_Geometric" xml:space="preserve"><value>Geometric</value></data>
+  <data name="Jobs_Merit_ModeHelp" xml:space="preserve"><value>Default: the engine generates the merit from a few choices. Custom: edit every operand.</value></data>
+  <data name="Jobs_Merit_Mode_Custom" xml:space="preserve"><value>Custom</value></data>
+  <data name="Jobs_Merit_Mode_Default" xml:space="preserve"><value>Default</value></data>
+  <data name="Jobs_Merit_MoveDown" xml:space="preserve"><value>Move down</value></data>
+  <data name="Jobs_Merit_MoveUp" xml:space="preserve"><value>Move up</value></data>
+  <data name="Jobs_Merit_MtfTargetName" xml:space="preserve"><value>MTF target</value></data>
+  <data name="Jobs_Merit_NoOperands" xml:space="preserve"><value>No operands. Add one with +, or convert the default merit.</value></data>
+  <data name="Jobs_Merit_None" xml:space="preserve"><value>none</value></data>
+  <data name="Jobs_Merit_NotEvaluated" xml:space="preserve"><value>not evaluated</value></data>
+  <data name="Jobs_Merit_OperandCount_Many" xml:space="preserve"><value>{0} operands</value></data>
+  <data name="Jobs_Merit_OperandCount_One" xml:space="preserve"><value>{0} operand</value></data>
+  <data name="Jobs_Merit_OperandError" xml:space="preserve"><value>The engine could not evaluate it: {0}</value></data>
+  <data name="Jobs_Merit_OperandHeading" xml:space="preserve"><value>{0}. {1}</value></data>
+  <data name="Jobs_Merit_OperandListHelp" xml:space="preserve"><value>Numbers of earlier operands, e.g. 1, 3</value></data>
+  <data name="Jobs_Merit_OperandRowName" xml:space="preserve"><value>Operand {0}, {1}, {2}</value></data>
+  <data name="Jobs_Merit_OperandValue" xml:space="preserve"><value>Value {0}</value></data>
+  <data name="Jobs_Merit_OperandValueShare" xml:space="preserve"><value>Value {0} · {1}</value></data>
+  <data name="Jobs_Merit_ParametersJson" xml:space="preserve"><value>Parameters: {0}</value></data>
+  <data name="Jobs_Merit_PrimaryWavelength" xml:space="preserve"><value>Primary</value></data>
+  <data name="Jobs_Merit_Readout" xml:space="preserve"><value>Merit</value></data>
+  <data name="Jobs_Merit_ReadoutHelp" xml:space="preserve"><value>The merit at the current design, before optimizing.</value></data>
+  <data name="Jobs_Merit_ReadoutName" xml:space="preserve"><value>Current merit</value></data>
+  <data name="Jobs_Merit_Reference" xml:space="preserve"><value>Reference</value></data>
+  <data name="Jobs_Merit_Reference_Centroid" xml:space="preserve"><value>Centroid</value></data>
+  <data name="Jobs_Merit_Reference_CentroidWavefront" xml:space="preserve"><value>Centroid (piston and tilt removed)</value></data>
+  <data name="Jobs_Merit_Reference_ChiefRay" xml:space="preserve"><value>Chief ray</value></data>
+  <data name="Jobs_Merit_Reference_ChiefRayWavefront" xml:space="preserve"><value>Chief ray (piston removed)</value></data>
+  <data name="Jobs_Merit_Rings" xml:space="preserve"><value>Rings</value></data>
+  <data name="Jobs_Merit_SearchOperands" xml:space="preserve"><value>Search operands</value></data>
+  <data name="Jobs_Merit_ShowThickness" xml:space="preserve"><value>Show the thickness limits</value></data>
+  <data name="Jobs_Merit_SomeOf" xml:space="preserve"><value>{0} of {1}</value></data>
+  <data name="Jobs_Merit_SqueezeTarget" xml:space="preserve"><value>Squeeze target</value></data>
+  <data name="Jobs_Merit_SqueezeTargetHelp" xml:space="preserve"><value>Hold the signed EFL_y / EFL_x at this value (anamorphic designs).</value></data>
+  <data name="Jobs_Merit_Summary_Of" xml:space="preserve"><value>of {0}</value></data>
+  <data name="Jobs_Merit_Summary_Polychromatic" xml:space="preserve"><value>poly</value></data>
+  <data name="Jobs_Merit_Surface" xml:space="preserve"><value>Surface {0}</value></data>
+  <data name="Jobs_Merit_SurfaceLabeled" xml:space="preserve"><value>Surface {0} · {1}</value></data>
+  <data name="Jobs_Merit_Surface_First" xml:space="preserve"><value>First</value></data>
+  <data name="Jobs_Merit_Surface_Image" xml:space="preserve"><value>Image</value></data>
+  <data name="Jobs_Merit_Surface_Next" xml:space="preserve"><value>Next</value></data>
+  <data name="Jobs_Merit_Target" xml:space="preserve"><value>Target</value></data>
+  <data name="Jobs_Merit_ThicknessLimits" xml:space="preserve"><value>Thickness limits (mm)</value></data>
+  <data name="Jobs_Merit_Thickness_Air" xml:space="preserve"><value>Air</value></data>
+  <data name="Jobs_Merit_Thickness_AirName" xml:space="preserve"><value>Air {0}</value></data>
+  <data name="Jobs_Merit_Thickness_Glass" xml:space="preserve"><value>Glass</value></data>
+  <data name="Jobs_Merit_Thickness_GlassName" xml:space="preserve"><value>Glass {0}</value></data>
+  <data name="Jobs_Merit_Thickness_MaxCenter" xml:space="preserve"><value>Max center</value></data>
+  <data name="Jobs_Merit_Thickness_MinCenter" xml:space="preserve"><value>Min center</value></data>
+  <data name="Jobs_Merit_Thickness_MinEdge" xml:space="preserve"><value>Min edge</value></data>
+  <data name="Jobs_Merit_Title" xml:space="preserve"><value>Merit Function</value></data>
+  <data name="Jobs_Merit_Undo_AddOperand" xml:space="preserve"><value>Add Operand</value></data>
+  <data name="Jobs_Merit_Undo_Centroid" xml:space="preserve"><value>Change Centroid</value></data>
+  <data name="Jobs_Merit_Undo_Comparison" xml:space="preserve"><value>Change Comparison</value></data>
+  <data name="Jobs_Merit_Undo_ConvertToCustom" xml:space="preserve"><value>Convert Merit to Custom</value></data>
+  <data name="Jobs_Merit_Undo_Criterion" xml:space="preserve"><value>Change Criterion</value></data>
+  <data name="Jobs_Merit_Undo_DeleteOperand" xml:space="preserve"><value>Delete Operand</value></data>
+  <data name="Jobs_Merit_Undo_DeleteOperands" xml:space="preserve"><value>Delete Operands</value></data>
+  <data name="Jobs_Merit_Undo_DisableOperand" xml:space="preserve"><value>Disable Operand</value></data>
+  <data name="Jobs_Merit_Undo_DuplicateOperand" xml:space="preserve"><value>Duplicate Operand</value></data>
+  <data name="Jobs_Merit_Undo_EnableOperand" xml:space="preserve"><value>Enable Operand</value></data>
+  <data name="Jobs_Merit_Undo_Fields" xml:space="preserve"><value>Change Merit Fields</value></data>
+  <data name="Jobs_Merit_Undo_HoldEfl" xml:space="preserve"><value>Hold Focal Length</value></data>
+  <data name="Jobs_Merit_Undo_MakeConstraint" xml:space="preserve"><value>Make Constraint</value></data>
+  <data name="Jobs_Merit_Undo_MakeResidual" xml:space="preserve"><value>Make Residual</value></data>
+  <data name="Jobs_Merit_Undo_MoveOperand" xml:space="preserve"><value>Move Operand</value></data>
+  <data name="Jobs_Merit_Undo_MtfFieldRule" xml:space="preserve"><value>Change MTF Field Rule</value></data>
+  <data name="Jobs_Merit_Undo_MtfFrequencies" xml:space="preserve"><value>Change MTF Frequencies</value></data>
+  <data name="Jobs_Merit_Undo_MtfMethod" xml:space="preserve"><value>Change MTF Method</value></data>
+  <data name="Jobs_Merit_Undo_MtfTarget" xml:space="preserve"><value>Change MTF Target</value></data>
+  <data name="Jobs_Merit_Undo_OperandField" xml:space="preserve"><value>Change Operand Field</value></data>
+  <data name="Jobs_Merit_Undo_OperandWavelength" xml:space="preserve"><value>Change Operand Wavelength</value></data>
+  <data name="Jobs_Merit_Undo_Param" xml:space="preserve"><value>Change {0}</value></data>
+  <data name="Jobs_Merit_Undo_PupilArms" xml:space="preserve"><value>Change Pupil Arms</value></data>
+  <data name="Jobs_Merit_Undo_PupilRings" xml:space="preserve"><value>Change Pupil Rings</value></data>
+  <data name="Jobs_Merit_Undo_Reference" xml:space="preserve"><value>Change Reference</value></data>
+  <data name="Jobs_Merit_Undo_SqueezeTarget" xml:space="preserve"><value>Change Squeeze Target</value></data>
+  <data name="Jobs_Merit_Undo_Target" xml:space="preserve"><value>Change Target</value></data>
+  <data name="Jobs_Merit_Undo_ThicknessLimits" xml:space="preserve"><value>Change Thickness Limits</value></data>
+  <data name="Jobs_Merit_Undo_UseCustom" xml:space="preserve"><value>Use Custom Merit</value></data>
+  <data name="Jobs_Merit_Undo_UseDefault" xml:space="preserve"><value>Use Default Merit</value></data>
+  <data name="Jobs_Merit_Undo_Wavelengths" xml:space="preserve"><value>Change Merit Wavelengths</value></data>
+  <data name="Jobs_Merit_Undo_Weight" xml:space="preserve"><value>Change Weight</value></data>
+  <data name="Jobs_Merit_Wavelength" xml:space="preserve"><value>Wavelength</value></data>
+  <data name="Jobs_Merit_Wavelengths" xml:space="preserve"><value>Wavelengths</value></data>
+  <data name="Jobs_Merit_WeakestField" xml:space="preserve"><value>Weakest field</value></data>
+  <data name="Jobs_Merit_WeakestFieldHelp" xml:space="preserve"><value>Maximise the weakest field and direction at each frequency (minimax), instead of the field-weighted bounds.</value></data>
+  <data name="Jobs_Merit_Weight" xml:space="preserve"><value>Weight</value></data>
+  <data name="Jobs_Merit_WhiteLightCentroid" xml:space="preserve"><value>White-light centroid</value></data>
+  <data name="Jobs_Merit_WhiteLightCentroidHelp" xml:space="preserve"><value>One centroid for all wavelengths, so lateral color counts; otherwise one per wavelength.</value></data>
+  <data name="Jobs_Optimize_Activity" xml:space="preserve"><value>Optimizing</value></data>
+  <data name="Jobs_Optimize_ActivityIteration" xml:space="preserve"><value>Optimizing · {0}</value></data>
+  <data name="Jobs_Optimize_Algorithm" xml:space="preserve"><value>Algorithm</value></data>
+  <data name="Jobs_Optimize_Algorithm_De" xml:space="preserve"><value>Differential evolution</value></data>
+  <data name="Jobs_Optimize_Algorithm_Dogleg" xml:space="preserve"><value>Trust region (dogleg)</value></data>
+  <data name="Jobs_Optimize_Algorithm_Hammer" xml:space="preserve"><value>Basin hopping</value></data>
+  <data name="Jobs_Optimize_Algorithm_Lm" xml:space="preserve"><value>Damped least squares (LM)</value></data>
+  <data name="Jobs_Optimize_Applied" xml:space="preserve"><value>Applied</value></data>
+  <data name="Jobs_Optimize_Apply" xml:space="preserve"><value>Apply to Design</value></data>
+  <data name="Jobs_Optimize_ApplyHelp" xml:space="preserve"><value>Apply the result as one step you can undo (Ctrl+Enter)</value></data>
+  <data name="Jobs_Optimize_AtBound" xml:space="preserve"><value>at bound</value></data>
+  <data name="Jobs_Optimize_AutomaticVariables" xml:space="preserve"><value>Every curvature and the back focus</value></data>
+  <data name="Jobs_Optimize_Back" xml:space="preserve"><value>Back</value></data>
+  <data name="Jobs_Optimize_BackHelp" xml:space="preserve"><value>Back to the job's settings</value></data>
+  <data name="Jobs_Optimize_CancelHelp" xml:space="preserve"><value>End the run and discard it (Esc)</value></data>
+  <data name="Jobs_Optimize_Candidate" xml:space="preserve"><value>Candidate</value></data>
+  <data name="Jobs_Optimize_DesignVariables" xml:space="preserve"><value>Design variables ({0})</value></data>
+  <data name="Jobs_Optimize_Discard" xml:space="preserve"><value>Discard</value></data>
+  <data name="Jobs_Optimize_DiscardHelp" xml:space="preserve"><value>Drop this result; the design stays as it is</value></data>
+  <data name="Jobs_Optimize_Done" xml:space="preserve"><value>Done</value></data>
+  <data name="Jobs_Optimize_DoneHelp" xml:space="preserve"><value>Back to the merit function and variables</value></data>
+  <data name="Jobs_Optimize_EvaluatedOnCpu" xml:space="preserve"><value>Evaluated on the CPU f64 reference.</value></data>
+  <data name="Jobs_Optimize_Failed" xml:space="preserve"><value>Optimization Failed</value></data>
+  <data name="Jobs_Optimize_FixErrorsFirst" xml:space="preserve"><value>Fix the design's errors first.</value></data>
+  <data name="Jobs_Optimize_Improvement" xml:space="preserve"><value>Improvement</value></data>
+  <data name="Jobs_Optimize_Iteration" xml:space="preserve"><value>Iteration</value></data>
+  <data name="Jobs_Optimize_IterationProgress" xml:space="preserve"><value>Iteration {0}</value></data>
+  <data name="Jobs_Optimize_Iterations" xml:space="preserve"><value>Iterations</value></data>
+  <data name="Jobs_Optimize_IterationsDefault" xml:space="preserve"><value>default</value></data>
+  <data name="Jobs_Optimize_Merit" xml:space="preserve"><value>Merit</value></data>
+  <data name="Jobs_Optimize_MeritAfter" xml:space="preserve"><value>After</value></data>
+  <data name="Jobs_Optimize_MeritBefore" xml:space="preserve"><value>Merit before</value></data>
+  <data name="Jobs_Optimize_Method" xml:space="preserve"><value>Method</value></data>
+  <data name="Jobs_Optimize_NoMerit" xml:space="preserve"><value>The engine returned no merit.</value></data>
+  <data name="Jobs_Optimize_NoOperands" xml:space="preserve"><value>The engine generated no operands for this design.</value></data>
+  <data name="Jobs_Optimize_NoResult" xml:space="preserve"><value>The engine returned no optimized design.</value></data>
+  <data name="Jobs_Optimize_NoVariablesHint" xml:space="preserve"><value>Mark values with V in the lens data (right-click a value, or Ctrl+Shift+V) to choose them; each gets sensible bounds you can edit here.</value></data>
+  <data name="Jobs_Optimize_PreviewInWindow" xml:space="preserve"><value>Preview in the window</value></data>
+  <data name="Jobs_Optimize_PreviewInWindowHelp" xml:space="preserve"><value>Show the optimized design in the layout and analyses before applying it</value></data>
+  <data name="Jobs_Optimize_Queued" xml:space="preserve"><value>Queued</value></data>
+  <data name="Jobs_Optimize_Run" xml:space="preserve"><value>Optimize</value></data>
+  <data name="Jobs_Optimize_RunHelp" xml:space="preserve"><value>Start optimizing (Ctrl+Enter)</value></data>
+  <data name="Jobs_Optimize_RunningHint" xml:space="preserve"><value>Stop keeps the best design so far. Cancel discards the run. You can close this panel; the job continues.</value></data>
+  <data name="Jobs_Optimize_SearchMerit" xml:space="preserve"><value>Search merit</value></data>
+  <data name="Jobs_Optimize_SearchMeritHelp" xml:space="preserve"><value>The best merit so far, as the search evaluates it.</value></data>
+  <data name="Jobs_Optimize_SearchMeritPopulationHelp" xml:space="preserve"><value>The search's merit, including the penalty that holds the focal length; the result reports the merit itself.</value></data>
+  <data name="Jobs_Optimize_SearchedOn" xml:space="preserve"><value>Searched on {0}; merits reported on the CPU f64 reference.</value></data>
+  <data name="Jobs_Optimize_Seed" xml:space="preserve"><value>Seed</value></data>
+  <data name="Jobs_Optimize_Stop" xml:space="preserve"><value>Stop</value></data>
+  <data name="Jobs_Optimize_StopHelp" xml:space="preserve"><value>End now and keep the best design so far</value></data>
+  <data name="Jobs_Optimize_Title" xml:space="preserve"><value>Optimize</value></data>
+  <data name="Jobs_Optimize_TryAgain" xml:space="preserve"><value>Try Again</value></data>
+  <data name="Jobs_Optimize_TryAgainHelp" xml:space="preserve"><value>Run the job again with the same settings</value></data>
+  <data name="Jobs_Optimize_Undo_Apply" xml:space="preserve"><value>Apply Optimization</value></data>
+  <data name="Jobs_Optimize_UntitledDesign" xml:space="preserve"><value>Untitled design</value></data>
+  <data name="Jobs_Optimize_VariableChangeName" xml:space="preserve"><value>{0}: {1} to {2}</value></data>
+  <data name="Jobs_Optimize_Variables" xml:space="preserve"><value>Variables</value></data>
+  <data name="Jobs_Results_Counts" xml:space="preserve"><value>{0} iterations, {1} evaluations.</value></data>
+  <data name="Jobs_Results_Infeasible" xml:space="preserve"><value>Some constraints are not met.</value></data>
+  <data name="Jobs_Results_NotImproved" xml:space="preserve"><value>No better design was found; the result equals the start.</value></data>
+  <data name="Jobs_Results_PreviewTitle" xml:space="preserve"><value>Optimize result · merit {0}</value></data>
+  <data name="Jobs_Results_PreviewTitleChange" xml:space="preserve"><value>{0} ({1})</value></data>
+  <data name="Jobs_Results_PreviewTitleStopped" xml:space="preserve"><value>Optimize result (stopped) · merit {0}</value></data>
+  <data name="Jobs_Results_StoppedEarly" xml:space="preserve"><value>Stopped early: this is the best design found so far.</value></data>
+  <data name="Jobs_Variables_BoundsAs" xml:space="preserve"><value>Bounds as {0}. {1}</value></data>
+  <data name="Jobs_Variables_BoundsIn" xml:space="preserve"><value>The bounds are in {0}</value></data>
+  <data name="Jobs_Variables_BoundsInHelp" xml:space="preserve"><value>Bounds in {0}.</value></data>
+  <data name="Jobs_Variables_CurvatureHelp" xml:space="preserve"><value>Bounds on the curvature c = 1/R (1/mm).</value></data>
+  <data name="Jobs_Variables_CurvaturesAs" xml:space="preserve"><value>Curvatures as</value></data>
+  <data name="Jobs_Variables_Dimensionless" xml:space="preserve"><value>Dimensionless</value></data>
+  <data name="Jobs_Variables_DimensionlessHelp" xml:space="preserve"><value>Bounds of a dimensionless parameter.</value></data>
+  <data name="Jobs_Variables_Max" xml:space="preserve"><value>Max</value></data>
+  <data name="Jobs_Variables_MaxName" xml:space="preserve"><value>Maximum of {0}</value></data>
+  <data name="Jobs_Variables_MaxNameUnit" xml:space="preserve"><value>Maximum of {0} in {1}</value></data>
+  <data name="Jobs_Variables_Min" xml:space="preserve"><value>Min</value></data>
+  <data name="Jobs_Variables_MinName" xml:space="preserve"><value>Minimum of {0}</value></data>
+  <data name="Jobs_Variables_MinNameUnit" xml:space="preserve"><value>Minimum of {0} in {1}</value></data>
+  <data name="Jobs_Variables_Now" xml:space="preserve"><value>now {0}</value></data>
+  <data name="Jobs_Variables_NowCurvature" xml:space="preserve"><value>now c {0}</value></data>
+  <data name="Jobs_Variables_NowRadius" xml:space="preserve"><value>now R {0}</value></data>
+  <data name="Jobs_Variables_NowRadiusThroughFlat" xml:space="preserve"><value>now R {0} · through ∞</value></data>
+  <data name="Jobs_Variables_Pin" xml:space="preserve"><value>Pin at its value (equal bounds): keep it as a variable but hold it</value></data>
+  <data name="Jobs_Variables_PinnedHelp" xml:space="preserve"><value>Pinned: kept as a variable but held at its value</value></data>
+  <data name="Jobs_Variables_Problem_AutoSemiDiameter" xml:space="preserve"><value>The semi-diameter is automatic: set a value in the lens data first.</value></data>
+  <data name="Jobs_Variables_Problem_Gone" xml:space="preserve"><value>This parameter does not exist on the surface any more.</value></data>
+  <data name="Jobs_Variables_Problem_MinAboveMax" xml:space="preserve"><value>The minimum is above the maximum.</value></data>
+  <data name="Jobs_Variables_Problem_OutOfBounds" xml:space="preserve"><value>Now {0}: outside its bounds</value></data>
+  <data name="Jobs_Variables_Problem_Solved" xml:space="preserve"><value>Set by a solve: not varied</value></data>
+  <data name="Jobs_Variables_RadiusContainsZero" xml:space="preserve"><value>This radius window passes through R = 0, which is not a range of curvatures. For |R| ≥ r, enter min r and max −r (through ∞).</value></data>
+  <data name="Jobs_Variables_RadiusHelp" xml:space="preserve"><value>Bounds as a radius window in mm; the optimizer bounds the curvature c = 1/R. Empty is open on that side. Min above max wraps through flat (R = ∞): min 100, max −100 is |R| ≥ 100. 0 leaves the curvature unbounded on that side.</value></data>
+  <data name="Jobs_Variables_Refusal" xml:space="preserve"><value>Set by a solve ({0}), so the optimizer cannot vary it. Remove the solve to make it a variable.</value></data>
+  <data name="Jobs_Variables_Remove" xml:space="preserve"><value>Fix this parameter (remove the variable)</value></data>
+  <data name="Jobs_Variables_SolvedHelp" xml:space="preserve"><value>A {0} solve sets this value, so the optimizer leaves the variable out of the run. Remove the variable, or remove the solve to vary it.</value></data>
+  <data name="Jobs_Variables_Undo_Bounds" xml:space="preserve"><value>Change Bounds</value></data>
+  <data name="Jobs_Variables_Undo_Make" xml:space="preserve"><value>Make Variable</value></data>
+  <data name="Jobs_Variables_Undo_Pin" xml:space="preserve"><value>Pin Variable</value></data>
+  <data name="Jobs_Variables_Undo_Remove" xml:space="preserve"><value>Remove Variable</value></data>
+  <data name="Jobs_Variables_Undo_Unpin" xml:space="preserve"><value>Unpin Variable</value></data>
+  <data name="Jobs_Variables_Unit" xml:space="preserve"><value>Unit</value></data>
+  <data name="Jobs_Variables_UnitHelp" xml:space="preserve"><value>Enter and read the bounds of radii as a radius window in mm, or as the curvature c = 1/R the optimizer uses</value></data>
+  <data name="Jobs_Variables_Unit_Curvature" xml:space="preserve"><value>Curvature 1/mm</value></data>
+  <data name="Jobs_Variables_Unit_Radius" xml:space="preserve"><value>Radius mm</value></data>
+  <data name="Jobs_Variables_Unpin" xml:space="preserve"><value>Unpin: let the optimizer vary it again</value></data>
+  <data name="Jobs_Variables_Variable" xml:space="preserve"><value>Variable</value></data>
   <!-- end area: Jobs -->
   <!-- area: Results -->
   <!-- end area: Results -->

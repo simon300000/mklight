@@ -1,5 +1,6 @@
 using System.Globalization;
 using System.Text.Json.Nodes;
+using MKLight.App.Support;
 using MKLight.Model;
 
 namespace MKLight.App.ViewModels.Jobs;
@@ -104,7 +105,7 @@ public static class DesignVariables
     /// </summary>
     public static string? Refusal(OpticalSystem system, ParamPath path) =>
         system.SolveFor(path) is { } s
-            ? $"Set by a solve ({s.Kind.Type.Title()}), so the optimizer cannot vary it. Remove the solve to make it a variable."
+            ? Loc.F("Jobs_Variables_Refusal", s.Kind.Type.Title())
             : null;
 
     /// <summary>
@@ -127,7 +128,7 @@ public static class DesignVariables
         {
             list.RemoveAll(v => system.Canonical(v.Param) == p);
         }
-        document.EditSection("variables", Encode(list), on ? "Make Variable" : "Remove Variable");
+        document.EditSection("variables", Encode(list), Loc.S(on ? "Jobs_Variables_Undo_Make" : "Jobs_Variables_Undo_Remove"));
         return null;
     }
 
@@ -142,7 +143,7 @@ public static class DesignVariables
         if (i < 0) return false;
         var old = list[i];
         if (old.Lower == lower && old.Upper == upper) return false;
-        var action = lower is not null && lower == upper ? "Pin Variable" : old.IsPinned ? "Unpin Variable" : "Change Bounds";
+        var action = Loc.S(lower is not null && lower == upper ? "Jobs_Variables_Undo_Pin" : old.IsPinned ? "Jobs_Variables_Undo_Unpin" : "Jobs_Variables_Undo_Bounds");
         list[i] = old with { Lower = lower, Upper = upper };
         return document.EditSection("variables", Encode(list), action);
     }
@@ -182,17 +183,17 @@ public static class DesignVariables
     /// </summary>
     public static string? Problem(DesignVariable v, OpticalSystem system, bool asRadius)
     {
-        if (system.IsSolved(v.Param)) return "Set by a solve: not varied";
+        if (system.IsSolved(v.Param)) return Loc.S("Jobs_Variables_Problem_Solved");
         if (v.Param is ParamPath.SemiDiameter sd && system.SurfaceIndexOf(sd.Surface) is { } i && system.Surfaces[i].SemiDiameter is SemiDiameter.Auto)
-            return "The semi-diameter is automatic: set a value in the lens data first.";
-        if (system.ValueAt(v.Param) is not { } value) return "This parameter does not exist on the surface any more.";
-        if (v.Lower is { } lo && v.Upper is { } hi && lo > hi) return "The minimum is above the maximum.";
+            return Loc.S("Jobs_Variables_Problem_AutoSemiDiameter");
+        if (system.ValueAt(v.Param) is not { } value) return Loc.S("Jobs_Variables_Problem_Gone");
+        if (v.Lower is { } lo && v.Upper is { } hi && lo > hi) return Loc.S("Jobs_Variables_Problem_MinAboveMax");
         if (v.OutOfBounds(value))
         {
             var now = asRadius && v.Param.IsCurvature
                 ? "R " + BoundsFormat.Short(RadiusDisplay.RadiusFromCurvature(value)) + " mm"
                 : BoundsFormat.Short(value) + (v.Param.Unit(system) is { Length: > 0 } u ? " " + u : "");
-            return $"Now {now}: outside its bounds";
+            return Loc.F("Jobs_Variables_Problem_OutOfBounds", now);
         }
         return null;
     }
@@ -210,11 +211,9 @@ public enum CurvatureBoundsUnit { Radius, Curvature }
 /// </summary>
 public static class RadiusBounds
 {
-    public const string ContainsZero =
-        "This radius window passes through R = 0, which is not a range of curvatures. For |R| ≥ r, enter min r and max −r (through ∞).";
+    public static string ContainsZero => Loc.S("Jobs_Variables_RadiusContainsZero");
 
-    public const string Help =
-        "Bounds as a radius window in mm; the optimizer bounds the curvature c = 1/R. Empty is open on that side. Min above max wraps through flat (R = ∞): min 100, max −100 is |R| ≥ 100. 0 leaves the curvature unbounded on that side.";
+    public static string Help => Loc.S("Jobs_Variables_RadiusHelp");
 
     /// <summary>Curvature bounds for a typed radius window (null = an empty field); the error when it contains R = 0.</summary>
     public static (double? Lower, double? Upper, string? Error) Curvature(double? minRadius, double? maxRadius)
