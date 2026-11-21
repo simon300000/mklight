@@ -42,7 +42,7 @@ struct SettingsBar: View {
             .foregroundStyle(.secondary)
             .gridColumnAlignment(.trailing)
             .lineLimit(1)
-            .help(f.description.isEmpty ? f.title : f.description)
+            .help(EngineText.string(f.description.isEmpty ? f.title : f.description))
             .accessibilityHidden(true)
     }
 
@@ -74,32 +74,33 @@ struct SettingsBar: View {
         guard let descriptor else { return "" }
         return descriptor.settingsFields.compactMap { f -> String? in
             guard let v = pane.settings[f.name], v != f.defaultValue, v != descriptor.defaultSettings[f.name] else { return nil }
-            if f.name == "spectrum" { return SpectrumSetting(json: v).map { $0.kind == .design ? nil : "Spectrum \($0.summary)" } ?? "Spectrum custom" }
+            if f.name == "spectrum" { return SpectrumSetting(json: v).map { $0.kind == .design ? nil : String(localized: "Spectrum \($0.summary)") } ?? String(localized: "Spectrum custom") }
             if f.name == "optics", pane.analysis == "image_simulation" {
                 let e = v["field_extent"]?.doubleValue ?? ImageSimulationSettings.fullExtent
                 let c = v["field_center"]?.array?.compactMap(\.doubleValue) ?? []
-                let at = c.count == 2 && (c[0] != 0 || c[1] != 0) ? " at " + ImageSimulationSettings.coordinates(SIMD2(c[0], c[1])) : ""
-                return "View \(ImageSimulationSettings.extentTitle(e))" + at
+                let extent = ImageSimulationSettings.extentTitle(e)
+                guard c.count == 2 && (c[0] != 0 || c[1] != 0) else { return String(localized: "View \(extent)") }
+                return String(localized: "View \(extent) at \(ImageSimulationSettings.coordinates(SIMD2(c[0], c[1])))")
             }
-            if f.name == "pupil", let g = v["grid"]?.int { return g == 0 ? nil : "Pupil \(g)" }
+            if f.name == "pupil", let g = v["grid"]?.int { return g == 0 ? nil : String(localized: "Pupil \(g)") }
             if f.name == "through_focus", pane.analysis == "spot_diagram" {
-                return v == .null ? "Single plane" : ThroughFocusControl.summary(v, output: pane.output)
+                return v == .null ? String(localized: "Single plane") : ThroughFocusControl.summary(v, output: pane.output)
             }
-            if let a = AutoSettings.sentinel(f.name, analysis: pane.analysis), AutoSettings.isAuto(v, a) { return "\(label(f)) auto" }
+            if let a = AutoSettings.sentinel(f.name, analysis: pane.analysis), AutoSettings.isAuto(v, a) { return String(localized: "\(label(f)) auto") }
             if let t = arraySummary(f, v) { return "\(label(f)) \(t)" }
-            if let variant = f.variant(of: v) { return "\(label(f)) \(variant.title.lowercased())" }
+            if let variant = f.variant(of: v) { return "\(label(f)) \(EngineText.string(variant.title).lowercased())" }
             let value: String =
                 switch v["type"]?.string {
-                case "all": "all"
-                case "primary": "primary"
+                case "all": String(localized: "all")
+                case "primary": String(localized: "primary")
                 case "index": "\((v["index"]?.int ?? 0) + 1)"
                 case "list": "\(v["indices"]?.array?.count ?? 0)"
                 default:
                     switch v {
-                    case .null: "off"
-                    case .object: "on"
+                    case .null: String(localized: "off")
+                    case .object: String(localized: "on")
                     case .array(let a): "\(a.count)"
-                    case .bool(let b): b ? "on" : "off"
+                    case .bool(let b): b ? String(localized: "on") : String(localized: "off")
                     default: v.string.map { title(.string($0)) } ?? v.doubleValue.map(Fmt.short) ?? v.displayText
                     }
                 }
@@ -132,21 +133,21 @@ struct SettingsBar: View {
     var wavelengthOptions: [(Int, String)] {
         guard let s = system else { return [] }
         return s.wavelengths.wavelengths.enumerated().map { k, w in
-            (k, String(format: "%.4f µm", w.um) + (k == s.wavelengths.primary ? " (primary)" : ""))
+            (k, k == s.wavelengths.primary ? String(localized: "\(String(format: "%.4f", w.um)) µm (primary)") : String(format: "%.4f µm", w.um))
         }
     }
 
     var surfaceOptions: [(Int, String)] {
         guard let s = system else { return [] }
         return (1...max(s.imageIndex, 1)).map { i in
-            (i, i == s.imageIndex ? "Image" : i == s.stop ? "\(i) (stop)" : "\(i)" + (s.surfaces[i].label.isEmpty ? "" : " " + s.surfaces[i].label))
+            (i, i == s.imageIndex ? String(localized: "surface.image", defaultValue: "Image", comment: "the image surface") : i == s.stop ? String(localized: "\(i) (stop)") : "\(i)" + (s.surfaces[i].label.isEmpty ? "" : " " + s.surfaces[i].label))
         }
     }
 
     static func label(_ f: SettingsField) -> String {
         var name = f.name
         for suffix in ["_mm", "_um", "_deg"] where name.hasSuffix(suffix) { name.removeLast(suffix.count) }
-        let t = f.title == f.name ? name.replacingOccurrences(of: "_", with: " ").capitalized : f.title
+        let t = f.title == f.name ? name.replacingOccurrences(of: "_", with: " ").capitalized : EngineText.string(f.title)
         return t.count > 22 ? String(t.prefix(20)) + "…" : t
     }
 
@@ -156,7 +157,8 @@ struct SettingsBar: View {
         // A name with capitals (a glass such as N-SK16) is shown as written;
         // only snake_case identifiers are turned into words.
         if s.contains(where: \.isUppercase) { return s }
-        return s.replacingOccurrences(of: "_", with: " ").capitalized
+        let shown = s.replacingOccurrences(of: "_", with: " ").capitalized
+        return EngineText.translation(s) ?? EngineText.translation(shown) ?? shown
     }
 }
 
@@ -217,15 +219,15 @@ struct SettingControlView: View {
         let f = field, value = slot.current, label = SettingsBar.label(f)
         switch control {
         case .fieldSelection:
-            SelectionMenu(label: "Fields", value: value, options: context.fieldOptions, allowsPrimary: false, set: { slot.set($0) })
+            SelectionMenu(label: String(localized: "Fields"), value: value, options: context.fieldOptions, allowsPrimary: false, set: { slot.set($0) })
         case .wavelengthSelection:
             SelectionMenu(label: "λ", value: value, options: context.wavelengthOptions, allowsPrimary: true, set: { slot.set($0) })
         case .fieldIndex:
-            IndexMenu(label: "Field", value: value, options: context.fieldOptions, nullTitle: nil, set: { slot.set($0) })
+            IndexMenu(label: String(localized: "Field"), value: value, options: context.fieldOptions, nullTitle: nil, set: { slot.set($0) })
         case .wavelengthIndex:
-            IndexMenu(label: label, value: value, options: context.wavelengthOptions, nullTitle: f.name == "wavelength" ? "Primary" : "Auto", set: { slot.set($0) })
+            IndexMenu(label: label, value: value, options: context.wavelengthOptions, nullTitle: f.name == "wavelength" ? String(localized: "Primary") : String(localized: "Auto"), set: { slot.set($0) })
         case .surfaceIndex:
-            IndexMenu(label: "Surface", value: value, options: context.surfaceOptions, nullTitle: nil, set: { slot.set($0) })
+            IndexMenu(label: String(localized: "Surface"), value: value, options: context.surfaceOptions, nullTitle: nil, set: { slot.set($0) })
         case .picker:
             Picker(label, selection: Binding(get: { value ?? .null }, set: { slot.set($0) })) {
                 ForEach(f.enumValues, id: \.self) { v in Text(SettingsBar.title(v)).tag(v) }
@@ -233,12 +235,12 @@ struct SettingControlView: View {
             .pickerStyle(.menu)
             .labelsHidden()
             .fixedSize()
-            .help(f.description)
+            .help(EngineText.string(f.description))
             .accessibilityLabel(label)
         case .toggle:
             Toggle(label, isOn: Binding(get: { value?.bool ?? false }, set: { slot.set(.bool($0)) }))
                 .labelsHidden()
-                .help(f.description)
+                .help(EngineText.string(f.description))
                 .accessibilityLabel(label)
         case .number:
             SettingNumberField(
@@ -292,9 +294,9 @@ struct SettingGroupControl: View {
         VStack(alignment: .leading, spacing: Space.s) {
             if nullable {
                 Toggle(isOn: Binding(get: { isOn }, set: { slot.set($0 ? SettingControls.enabledValue(field) : .null) })) {
-                    Text(isOn ? "On" : "Off").foregroundStyle(.secondary)
+                    (isOn ? Text("On") : Text("Off")).foregroundStyle(.secondary)
                 }
-                .help(field.description)
+                .help(EngineText.string(field.description))
                 .accessibilityLabel(SettingsBar.label(field))
             }
             if isOn {
@@ -320,7 +322,7 @@ struct NestedSettings: View {
                             .foregroundStyle(.secondary)
                             .gridColumnAlignment(.trailing)
                             .lineLimit(1)
-                            .help(f.description.isEmpty ? f.title : f.description)
+                            .help(EngineText.string(f.description.isEmpty ? f.title : f.description))
                         SettingControlView(field: f, control: control, slot: slot.child(f), context: context)
                             .gridColumnAlignment(.leading)
                     }
@@ -344,12 +346,12 @@ struct VariantControl: View {
         VStack(alignment: .leading, spacing: Space.s) {
             Picker(SettingsBar.label(field), selection: Binding(get: { current?.id ?? "" }, set: choose)) {
                 if nullable { Text("Off").tag("") }
-                ForEach(field.variants) { v in Text(v.title).tag(v.id) }
+                ForEach(field.variants) { v in Text(EngineText.string(v.title)).tag(v.id) }
             }
             .pickerStyle(.menu)
             .labelsHidden()
             .fixedSize()
-            .help(field.description)
+            .help(EngineText.string(field.description))
             .accessibilityLabel(SettingsBar.label(field))
             if let v = current, v.properties.contains(where: { $0.constValue == nil }) {
                 NestedSettings(fields: v.properties, slot: slot, context: context)
@@ -390,18 +392,18 @@ struct SelectionMenu: View {
         }
         .menuStyle(.borderlessButton)
         .fixedSize()
-        .accessibilityLabel(label == "λ" ? "Wavelengths" : label)
+        .accessibilityLabel(label == "λ" ? String(localized: "Wavelengths") : label)
         .accessibilityValue(current)
     }
 
     private var current: String {
         switch value?["type"]?.string {
-        case "primary": return "Primary"
+        case "primary": return String(localized: "Primary")
         case "index":
             let i = value?["index"]?.int ?? 0
             return options.first { $0.0 == i }.map { String($0.1.split(separator: ":").first ?? "") } ?? "\(i + 1)"
-        case "list": return "\(value?["indices"]?.array?.count ?? 0) selected"
-        default: return "All"
+        case "list": return String(localized: "\(value?["indices"]?.array?.count ?? 0) selected")
+        default: return String(localized: "All")
         }
     }
 }
@@ -460,16 +462,16 @@ struct IndexListMenu: View {
         }
         .menuStyle(.borderlessButton)
         .fixedSize()
-        .help(help)
+        .help(EngineText.string(help))
         .accessibilityLabel(label)
         .accessibilityValue(current)
     }
 
     private var current: String {
         let s = selected
-        if s.isEmpty || s.count == options.count && !options.isEmpty { return "All" }
+        if s.isEmpty || s.count == options.count && !options.isEmpty { return String(localized: "All") }
         if s.count == 1, let k = s.first, let t = options.first(where: { $0.0 == k }) { return String(t.1.split(separator: ":").first ?? Substring(t.1)) }
-        return "\(s.count) of \(options.count)"
+        return String(localized: "\(s.count) of \(options.count)")
     }
 }
 
@@ -485,12 +487,12 @@ struct SettingTextField: View {
 
     var body: some View {
         CommittingField(value: value, format: entry, commit: set) { text, focused in
-            TextField(field.nullable ? "any" : label, text: text)
+            TextField(field.nullable ? String(localized: "any") : label, text: text)
                 .textFieldStyle(.roundedBorder)
                 .frame(width: 140)
                 .materialSuggestions(focused ? suggestions(text.wrappedValue) : [])
         }
-        .help(field.description.isEmpty ? field.title : field.description)
+        .help(EngineText.string(field.description.isEmpty ? field.title : field.description))
         .accessibilityLabel(label)
     }
 
@@ -547,15 +549,15 @@ struct SettingNumberField: View {
     private var isInteger: Bool { field.types.contains("integer") && !field.types.contains("number") }
     private var nullable: Bool { field.types.contains("null") }
     private var isAuto: Bool { auto.map { AutoSettings.isAuto(value, $0) } ?? false }
-    private var placeholder: String { auto != nil ? AutoSettings.display(used: autoUsed) : nullable ? "auto" : "" }
+    private var placeholder: String { auto != nil ? AutoSettings.display(used: autoUsed) : nullable ? String(localized: "auto") : "" }
 
     private var helpText: String {
-        var h = field.description.isEmpty ? field.title : field.description
+        var h = EngineText.string(field.description.isEmpty ? field.title : field.description)
         if auto != nil {
             h +=
                 isAuto
-                ? "\nAutomatic: the engine chooses from the system."
-                : auto == .zero ? "\nClear the field (or type 0) to let the engine choose." : "\nClear the field to let the engine choose."
+                ? "\n" + String(localized: "Automatic: the engine chooses from the system.")
+                : "\n" + (auto == .zero ? String(localized: "Clear the field (or type 0) to let the engine choose.") : String(localized: "Clear the field to let the engine choose."))
         }
         return h
     }
@@ -609,13 +611,13 @@ struct PupilSamplingControl: View {
     var body: some View {
         HStack(spacing: Space.s) {
             SettingNumberField(
-                field: Self.field("grid", "Pupil grid samples per side; 0 chooses from the wavefront slope (64 to 1024)."),
-                label: "Grid", value: slot.current?["grid"], auto: .zero,
+                field: Self.field("grid", String(localized: "Pupil grid samples per side; 0 chooses from the wavefront slope (64 to 1024).")),
+                label: String(localized: "Grid"), value: slot.current?["grid"], auto: .zero,
                 autoUsed: AutoSettings.used(slot.path + ".grid", analysis: context.analysis, output: context.output)
             ) { set("grid", $0) }
             SettingNumberField(
-                field: Self.field("rays", "Rays traced per pupil diameter (the lattice the wavefront is interpolated from)."),
-                label: "Rays", value: slot.current?["rays"]
+                field: Self.field("rays", String(localized: "Rays traced per pupil diameter (the lattice the wavefront is interpolated from).")),
+                label: String(localized: "Rays"), value: slot.current?["rays"]
             ) { set("rays", $0) }
         }
     }
@@ -646,14 +648,14 @@ struct NumberListField: View {
     var body: some View {
         HStack(spacing: Space.xs) {
             CommittingField(value: value, format: entry, commit: set) { text, _ in
-                TextField(field.nullable ? "auto" : "none", text: text)
+                TextField(field.nullable ? String(localized: "auto") : String(localized: "none"), text: text)
                     .textFieldStyle(.roundedBorder)
                     .numeric()
                     .frame(width: max(96, CGFloat(text.wrappedValue.count) * 7 + 8))
             }
             if !field.unit.isEmpty { Text(field.unit).foregroundStyle(.secondary) }
         }
-        .help(field.description + "\nComma separated.")
+        .help(EngineText.string(field.description) + "\n" + String(localized: "Comma separated."))
         .accessibilityElement(children: .contain)
         .accessibilityLabel(label)
         .accessibilityValue(entry.display(value))
@@ -697,7 +699,7 @@ struct FrequencyListSetting: View {
             }
             Text(field.unit.isEmpty ? "cycles/mm" : field.unit).foregroundStyle(.secondary)
         }
-        .help(field.description + "\nComma separated; empty lets the engine choose.")
+        .help(EngineText.string(field.description) + "\n" + String(localized: "Comma separated; empty lets the engine choose."))
         .accessibilityElement(children: .contain)
         .accessibilityLabel("Frequencies")
         .accessibilityValue(values.isEmpty ? placeholder : Self.text(values))
@@ -751,21 +753,21 @@ struct ThroughFocusControl: View {
     /// "±0.08 mm · 3 planes" (the range the run used when automatic).
     static func summary(_ v: JSONValue, output: AnalysisOutput?) -> String {
         let steps = v["steps"]?.int ?? 3
-        let planes = steps == 1 ? "1 plane" : "\(steps) planes"
+        let planes = steps == 1 ? String(localized: "1 plane") : String(localized: "\(steps) planes")
         if let a = v["min"]?.doubleValue, let b = v["max"]?.doubleValue {
             if abs(a + b) <= 1e-12 * Swift.max(1, abs(b)) { return "±\(Fmt.short(b)) mm · " + planes }
             return "\(Fmt.short(a)) to \(Fmt.short(b)) mm · " + planes
         }
         if let used = AutoSettings.used("through_focus", analysis: "spot_diagram", output: output) { return "\(used) mm · " + planes }
-        return "Auto range · " + planes
+        return String(localized: "Auto range") + " · " + planes
     }
 
     var body: some View {
         VStack(alignment: .leading, spacing: Space.s) {
             Toggle(isOn: Binding(get: { isOn }, set: { on in set(on ? .object(["min": .null, "max": .null, "steps": .integer(Int64(steps))]) : .null) })) {
-                Text(isOn ? "Planes before and after focus" : "Image surface only").foregroundStyle(.secondary)
+                (isOn ? Text("Planes before and after focus") : Text("Image surface only")).foregroundStyle(.secondary)
             }
-            .help(field.description)
+            .help(EngineText.string(field.description))
             .accessibilityLabel("Through focus")
             if isOn {
                 HStack(spacing: Space.s) {
@@ -801,7 +803,7 @@ struct ThroughFocusControl: View {
     }
 
     private func bound(_ key: String) -> SettingsField {
-        SettingsField(name: key, schema: .object(["type": .array([.string("number"), .string("null")]), "description": .string("Half-range of the planes; empty lets the engine choose from the depth of focus and the geometric blur.")]), required: false)
+        SettingsField(name: key, schema: .object(["type": .array([.string("number"), .string("null")]), "description": .string(String(localized: "Half-range of the planes; empty lets the engine choose from the depth of focus and the geometric blur."))]), required: false)
     }
 
     private func update(min newMin: Double? = nil, max newMax: Double? = nil, steps newSteps: Int? = nil) {

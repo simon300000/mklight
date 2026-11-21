@@ -108,13 +108,13 @@ public enum EngineError: Error, Sendable, Hashable, LocalizedError {
 
     public var errorDescription: String? {
         switch self {
-        case .cancelled: "Cancelled"
-        case .invalidModel(let issues): "Invalid model: " + issues.joined(separator: "; ")
-        case .invalidSettings(let issues): "Invalid analysis settings: " + issues.joined(separator: "; ")
-        case .unsupported(let s): "Unsupported: \(s)"
-        case .failed(let s): s
-        case .engine(let code, let s): s.isEmpty ? "Engine error: \(code)" : s
-        case .libraryUnavailable(let s): "Engine library unavailable: \(s)"
+        case .cancelled: String(localized: "Cancelled")
+        case .invalidModel(let issues): String(localized: "Invalid model: \(issues.map(EngineText.string).joined(separator: "; "))")
+        case .invalidSettings(let issues): String(localized: "Invalid analysis settings: \(issues.map(EngineText.string).joined(separator: "; "))")
+        case .unsupported(let s): String(localized: "Unsupported: \(EngineText.string(s))")
+        case .failed(let s): EngineText.string(s)
+        case .engine(let code, let s): s.isEmpty ? String(localized: "Engine error: \(code.description)") : EngineText.string(s)
+        case .libraryUnavailable(let s): String(localized: "Engine library unavailable: \(s)")
         }
     }
 
@@ -271,15 +271,15 @@ extension EngineClient {
     public func catalogs() async -> [CatalogInfo] { [] }
 
     public func loadCatalog(at url: URL) async throws -> CatalogInfo {
-        throw EngineError.unsupported("\(info.name) cannot load glass catalogs")
+        throw EngineError.unsupported(String(localized: "\(info.name) cannot load glass catalogs"))
     }
 
     public func removeCatalog(named name: String) async throws {
-        throw EngineError.unsupported("\(info.name) cannot remove glass catalogs")
+        throw EngineError.unsupported(String(localized: "\(info.name) cannot remove glass catalogs"))
     }
 
     public func reloadCatalog(named name: String) async throws -> CatalogChanges {
-        throw EngineError.unsupported("\(info.name) cannot reload glass catalogs")
+        throw EngineError.unsupported(String(localized: "\(info.name) cannot reload glass catalogs"))
     }
 
     public func setLibraryCatalogs(_ files: [URL]) async -> LibrarySync { LibrarySync() }
@@ -289,26 +289,26 @@ extension EngineClient {
     public func glassRows(in catalog: String?) async throws -> [GlassRow] { [] }
 
     public func glassDetails(catalog: String?, name: String) async throws -> GlassDetails {
-        throw EngineError.unsupported("\(info.name) has no glass data")
+        throw EngineError.unsupported(String(localized: "\(info.name) has no glass data"))
     }
 
     public func libraryCatalogsInUse() async -> [CatalogReference] { [] }
 
     public func glass(from spec: JSONValue) throws -> JSONValue {
-        throw EngineError.unsupported("\(info.name) cannot make glasses")
+        throw EngineError.unsupported(String(localized: "\(info.name) cannot make glasses"))
     }
 
     public func agf(of catalog: JSONValue) throws -> AGFExport {
-        throw EngineError.unsupported("\(info.name) cannot write AGF catalogs")
+        throw EngineError.unsupported(String(localized: "\(info.name) cannot write AGF catalogs"))
     }
 
     public func importPrescription(_ data: Data, format: PrescriptionFormat) throws -> PrescriptionImport {
-        throw EngineError.unsupported("\(info.name) cannot import lens prescription files")
+        throw EngineError.unsupported(String(localized: "\(info.name) cannot import lens prescription files"))
     }
 
     public func importPrescription(at url: URL) async throws -> PrescriptionImport {
         guard let format = PrescriptionFormat(fileExtension: url.pathExtension) else {
-            throw EngineError.unsupported("\(url.lastPathComponent) is not a lens prescription file")
+            throw EngineError.unsupported(String(localized: "\(url.lastPathComponent) is not a lens prescription file"))
         }
         return try importPrescription(try Data(contentsOf: url), format: format)
     }

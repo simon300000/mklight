@@ -133,7 +133,7 @@ struct SpotGrid: Sendable {
                     rms: rms, geo: geo, extent: count > 0 ? extent : (geo.isFinite ? geo : 0))
             }
             return Row(
-                id: index, title: "Field \(index + 1)", value: context.fieldLabel(f["field_value"]?.nfArray),
+                id: index, title: String(localized: "Field \(index + 1)"), value: context.fieldLabel(f["field_value"]?.nfArray),
                 cells: cells, baseColumn: baseIndex ?? 0)
         }
     }
@@ -200,8 +200,8 @@ enum SpotScale: String, CaseIterable, Identifiable, Sendable {
     var id: String { rawValue }
     var title: String {
         switch self {
-        case .grid: "Common"
-        case .field: "Per field"
+        case .grid: String(localized: "Common")
+        case .field: String(localized: "Per field")
         }
     }
 }
@@ -276,7 +276,7 @@ struct SpotGridView: View {
             ScrollView(m.scrollsHorizontally ? [.horizontal, .vertical] : .vertical) {
                 Grid(alignment: .top, horizontalSpacing: SpotGridLayout.spacing, verticalSpacing: SpotGridLayout.spacing) {
                     GridRow {
-                        Text(grid.planes.count > 1 ? "Defocus" : "")
+                        Text(grid.planes.count > 1 ? String(localized: "Defocus") : "")
                             .font(.caption2).foregroundStyle(.tertiary)
                             .frame(width: m.rowHeader, alignment: .leading)
                         ForEach(Array(grid.planes.enumerated()), id: \.offset) { c, d in
@@ -307,7 +307,7 @@ struct SpotGridView: View {
             .font(.caption.monospacedDigit().weight(isBase ? .semibold : .regular))
             .foregroundStyle(isBase ? .primary : .secondary)
             .lineLimit(1).minimumScaleFactor(0.7)
-            .help(isBase ? "Defocus the points were computed at" : "Defocus from the image surface")
+            .help(isBase ? String(localized: "Defocus the points were computed at") : String(localized: "Defocus from the image surface"))
     }
 
     private func rowHeader(_ row: SpotGrid.Row, halfWidth: Double) -> some View {

@@ -47,8 +47,8 @@ public enum AutoSettings {
     /// The display of an automatic setting: "Auto (282)", or "Auto" before
     /// a run has said what it used.
     public static func display(used: String?) -> String {
-        guard let used, !used.isEmpty else { return "Auto" }
-        return "Auto (\(used))"
+        guard let used, !used.isEmpty else { return String(localized: "Auto") }
+        return String(localized: "Auto (\(used))")
     }
 
     /// The value the engine used for the automatic setting `key`, read from
@@ -80,7 +80,7 @@ public enum AutoSettings {
             let planes = (j["fields"]?.array?.first?["through_focus"]?.array ?? []).compactMap { $0["defocus"]?.doubleValue }
             guard let lo = planes.min(), let hi = planes.max(), lo.isFinite, hi.isFinite else { return nil }
             if abs(lo + hi) <= 1e-9 * max(1, abs(hi)) { return "±" + String(format: "%.3g", hi) }
-            return String(format: "%.3g to %.3g", lo, hi)
+            return String(localized: "\(String(format: "%.3g", lo)) to \(String(format: "%.3g", hi))")
         case (_, "pupil.grid"):
             // Wavefront maps report their grids; other analyses do not.
             return range((j["maps"]?.array ?? []).compactMap { $0["grid"]?.doubleValue })

@@ -115,7 +115,7 @@ struct SensorMapView: View {
             } side: {
                 if !rows.isEmpty { KeyValueGrid(rows: rows) }
             }
-            Text(String(format: "Sensor %.2f × %.2f mm", m.grid.xRange.upperBound - m.grid.xRange.lowerBound, m.grid.yRange.upperBound - m.grid.yRange.lowerBound))
+            Text(String(format: String(localized: "Sensor %.2f × %.2f mm"), m.grid.xRange.upperBound - m.grid.xRange.lowerBound, m.grid.yRange.upperBound - m.grid.yRange.lowerBound))
                 .font(.caption2).foregroundStyle(.secondary)
         }
         .padding(Space.m)
@@ -131,8 +131,8 @@ struct GhostIrradianceView: View {
         guard half.count == 2, half[0] >= 0, half[1] >= 0 else { return nil }
         let xr = -half[0]...half[0], yr = -half[1]...half[1]
         var maps: [(String, Grid2D)] = []
-        if let g = Grid2D(output.buffer(named: "total_ghost_map"), xRange: xr, yRange: yr) { maps.append(("All ghosts", g)) }
-        if let g = Grid2D(output.buffer(named: "primary_map"), xRange: xr, yRange: yr) { maps.append(("Primary image", g)) }
+        if let g = Grid2D(output.buffer(named: "total_ghost_map"), xRange: xr, yRange: yr) { maps.append((String(localized: "All ghosts"), g)) }
+        if let g = Grid2D(output.buffer(named: "primary_map"), xRange: xr, yRange: yr) { maps.append((String(localized: "Primary image"), g)) }
         guard !maps.isEmpty else { return nil }
         map = SensorMapView(maps: maps.map { (title: $0.0, grid: $0.1) }, unit: "mm⁻²", rows: GhostIrradianceSummary(j).rows())
     }
@@ -150,10 +150,10 @@ struct StrayLightView: View {
         guard hx >= 0, hy >= 0 else { return nil }
         let xr = -hx...hx, yr = -hy...hy
         var maps: [(String, Grid2D)] = []
-        if let g = Grid2D(output.buffer(named: "total_irradiance"), xRange: xr, yRange: yr) { maps.append(("Stray total", g)) }
+        if let g = Grid2D(output.buffer(named: "total_irradiance"), xRange: xr, yRange: yr) { maps.append((String(localized: "Stray total"), g)) }
         let classes = j["map_classes"]?.array?.compactMap(\.string) ?? []
         for (k, c) in classes.enumerated() {
-            if let g = Grid2D(output.buffer(named: "class_irradiance"), slice: k, xRange: xr, yRange: yr) { maps.append((c.capitalized, g)) }
+            if let g = Grid2D(output.buffer(named: "class_irradiance"), slice: k, xRange: xr, yRange: yr) { maps.append((EngineText.translation(c.capitalized) ?? c.capitalized, g)) }
         }
         guard !maps.isEmpty else { return nil }
         map = SensorMapView(maps: maps.map { (title: $0.0, grid: $0.1) }, unit: "W/mm²", rows: StrayLightSummary(j).rows)
@@ -165,7 +165,16 @@ struct StrayLightView: View {
 // MARK: - Polarisation pupil map
 
 struct PolarizationView: View {
-    enum Quantity: String, CaseIterable { case intensity = "Intensity", diattenuation = "Diattenuation", retardance = "Retardance" }
+    enum Quantity: String, CaseIterable {
+        case intensity = "Intensity", diattenuation = "Diattenuation", retardance = "Retardance"
+        var title: String {
+            switch self {
+            case .intensity: String(localized: "Intensity")
+            case .diattenuation: String(localized: "Diattenuation")
+            case .retardance: String(localized: "Retardance")
+            }
+        }
+    }
     let pupil: [(Double, Double)]
     let reached: [Bool]
     let values: [Quantity: [Double]]
@@ -184,10 +193,10 @@ struct PolarizationView: View {
         ]
         let j = output.json
         stats = [
-            ("Mean intensity", Fmt.short(j["mean_intensity"]?.nf ?? .nan)),
-            ("Max diattenuation", Fmt.short(j["max_diattenuation"]?.nf ?? .nan)),
-            ("Max retardance", Fmt.short(j["max_retardance"]?.nf ?? .nan) + " rad"),
-            ("RMS retardance", Fmt.short(j["rms_retardance"]?.nf ?? .nan) + " rad"),
+            (String(localized: "Mean intensity"), Fmt.short(j["mean_intensity"]?.nf ?? .nan)),
+            (String(localized: "Max diattenuation"), Fmt.short(j["max_diattenuation"]?.nf ?? .nan)),
+            (String(localized: "Max retardance"), Fmt.short(j["max_retardance"]?.nf ?? .nan) + " rad"),
+            (String(localized: "RMS retardance"), Fmt.short(j["rms_retardance"]?.nf ?? .nan) + " rad"),
         ]
     }
 
@@ -196,7 +205,7 @@ struct PolarizationView: View {
         let finite = v.enumerated().filter { reached.indices.contains($0.offset) && reached[$0.offset] && $0.element.isFinite }.map(\.element)
         let range = (finite.min() ?? 0)...max(finite.max() ?? 1, (finite.min() ?? 0) + 1e-12)
         VStack(alignment: .leading, spacing: Space.s) {
-            SegmentedOrMenu(title: "Quantity", options: Quantity.allCases.map { ($0, $0.rawValue) }, selection: $quantity)
+            SegmentedOrMenu(title: String(localized: "Quantity"), options: Quantity.allCases.map { ($0, $0.title) }, selection: $quantity)
             MapLayout {
                     Canvas { ctx, size in
                         let r = min(size.width, size.height) / 2
@@ -210,7 +219,7 @@ struct PolarizationView: View {
                             ctx.fill(Path(CGRect(x: q.x - cell / 2, y: q.y - cell / 2, width: cell, height: cell)), with: .color(Color(.sRGB, red: rgb.x, green: rgb.y, blue: rgb.z)))
                         }
                     }
-                    .accessibilityLabel("\(quantity.rawValue) over the pupil")
+                    .accessibilityLabel(String(localized: "\(quantity.title) over the pupil"))
             } bar: {
                 ColorBar(scale: .perceptual, range: range, unit: quantity == .retardance ? "rad" : "")
             } side: {
@@ -246,7 +255,7 @@ struct TransmissionView: View {
                 ForEach(fields, id: \.self) { f in
                     LegendItem(
                         color: Palette.fieldColor(f),
-                        label: (fieldLabels.indices.contains(f) ? fieldLabels[f] : "Field \(f + 1)")
+                        label: (fieldLabels.indices.contains(f) ? fieldLabels[f] : String(localized: "Field \(f + 1)"))
                             + (polychromatic.indices.contains(f) ? " · " + Fmt.percent(polychromatic[f]) : ""))
                 }
             }
@@ -254,7 +263,7 @@ struct TransmissionView: View {
                 LineChart(
                     series: fields.map { f in
                         Series(id: "\(f)", label: "", color: Palette.fieldColor(f), points: points.filter { $0.field == f }.map { ($0.um, $0.t) })
-                    }, xLabel: "Wavelength (µm)", yLabel: "Transmission", yDomain: 0...1.02, zeroLine: false)
+                    }, xLabel: String(localized: "Wavelength (µm)"), yLabel: String(localized: "Transmission"), yDomain: 0...1.02, zeroLine: false)
             } else {
                 Chart(points, id: \.field) { p in
                     BarMark(x: .value("Field", "\(p.field + 1)"), y: .value("Transmission", p.t)).foregroundStyle(Palette.fieldColor(p.field)).cornerRadius(3)

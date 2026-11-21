@@ -86,7 +86,7 @@ struct ImportReportSheet: View {
 
     private var footer: some View {
         HStack(spacing: Space.m) {
-            Button(copied ? "Copied" : "Copy Report") {
+            Button(copied ? String(localized: "Copied") : String(localized: "Copy Report")) {
                 Clipboard.copy(report.plainText)
                 copied = true
             }

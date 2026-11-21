@@ -47,7 +47,7 @@ struct GlassBrowserView: View {
                 .navigationSplitViewColumnWidth(min: 270, ideal: 300, max: 420)
         }
         .navigationTitle(scopeTitle)
-        .navigationSubtitle(model.designTitle.map { "Glasses of \($0)" } ?? "No design open")
+        .navigationSubtitle(model.designTitle.map { String(localized: "Glasses of \($0)") } ?? String(localized: "No design open"))
         .searchable(text: $model.search, placement: .toolbar, prompt: "Glass name")
         .toolbar { toolbar }
         .overlay(alignment: .bottom) { footer }
@@ -100,7 +100,7 @@ struct GlassBrowserView: View {
                     do {
                         try model.library.deleteUserCatalog(n)
                         model.scope = .all
-                        model.message = "Moved \(n) to the Trash."
+                        model.message = String(localized: "Moved \(n) to the Trash.")
                     } catch { model.message = error.localizedDescription }
                 }
             }
@@ -115,7 +115,8 @@ struct GlassBrowserView: View {
                 if let g = model.pendingDeletion { model.delete(g) }
             }
         } message: {
-            Text("The glass is removed from \(model.pendingDeletion?.catalog ?? "its catalog"). Designs that use it will not find it. This cannot be undone.")
+            Text(model.pendingDeletion.map { String(localized: "The glass is removed from \($0.catalog). Designs that use it will not find it. This cannot be undone.") }
+                ?? String(localized: "The glass is removed from its catalog. Designs that use it will not find it. This cannot be undone."))
         }
         .onAppear(perform: applyLaunchOptions)
         // Edit ▸ Undo undoes the design's changes made here.
@@ -153,15 +154,15 @@ struct GlassBrowserView: View {
 
     private var scopeTitle: String {
         switch model.scope {
-        case .all: "All Glasses"
-        case .catalog(let n): n == "BUILTIN" ? "Built-in" : n
+        case .all: String(localized: "All Glasses")
+        case .catalog(let n): n == "BUILTIN" ? String(localized: "Built-in") : n
         }
     }
 
     private func export(_ catalog: String) {
         guard let e = model.agfExport(of: catalog) else { return }
         exporting = AGFFile(name: catalog + ".agf", text: e.text)
-        if !e.warnings.isEmpty { model.message = "Not exported: " + e.warnings.joined(separator: "; ") }
+        if !e.warnings.isEmpty { model.message = String(localized: "Not exported: \(e.warnings.joined(separator: "; "))") }
     }
 
     @ToolbarContentBuilder private var toolbar: some ToolbarContent {
@@ -250,7 +251,7 @@ private struct GlassCatalogSidebar: View {
     var body: some View {
         List(selection: Binding(get: { model.scope }, set: { model.scope = $0 ?? .all })) {
             Label("All Glasses", systemImage: "square.grid.2x2").tag(GlassBrowserModel.Scope.all)
-            ForEach(model.builtinCatalogs) { c in row(c, title: "Built-in Glasses", symbol: "shippingbox") }
+            ForEach(model.builtinCatalogs) { c in row(c, title: String(localized: "Built-in Glasses"), symbol: "shippingbox") }
             Section {
                 ForEach(model.libraryCatalogs) { c in
                     row(c, symbol: "books.vertical")
@@ -319,7 +320,7 @@ private struct GlassCatalogSidebar: View {
         } icon: {
             Image(systemName: symbol)
         }
-        .help(c.path ?? (c.isBuiltin ? "The glasses built into MKLight" : c.name))
+        .help(c.path ?? (c.isBuiltin ? String(localized: "The glasses built into MKLight") : c.name))
         .tag(GlassBrowserModel.Scope.catalog(c.name))
     }
 
@@ -408,8 +409,8 @@ struct GlassTable: View {
     }
 
     private var emptyText: String {
-        if let n = model.scopeCatalog, model.library.isUserCatalog(n) { return "Add a glass with New Glass…." }
-        return "This catalog has no glasses."
+        if let n = model.scopeCatalog, model.library.isUserCatalog(n) { return String(localized: "Add a glass with New Glass….") }
+        return String(localized: "This catalog has no glasses.")
     }
 
     static func fixed(_ v: Double, _ digits: Int) -> String {
@@ -421,7 +422,7 @@ struct GlassTable: View {
     }
 
     static func range(_ r: GlassRow) -> String {
-        r.unrestrictedRange ? "any" : String(format: "%.2f–%.2f", r.minUm, r.maxUm)
+        r.unrestrictedRange ? String(localized: "any") : String(format: "%.2f–%.2f", r.minUm, r.maxUm)
     }
 }
 
@@ -466,12 +467,12 @@ private struct CatalogBar: View {
     }
 
     private func origin(user: Bool) -> String {
-        if catalog.isBuiltin { return "Built into MKLight" }
-        if user { return "Your glasses · saved in the app's library" }
+        if catalog.isBuiltin { return String(localized: "Built into MKLight") }
+        if user { return String(localized: "Your glasses · saved in the app's library") }
         switch (catalog.library, catalog.inProject) {
-        case (true, true): return "Library · recorded in this design"
-        case (true, false): return "Library · loaded into every design"
-        default: return "This design only · not in the library"
+        case (true, true): return String(localized: "Library · recorded in this design")
+        case (true, false): return String(localized: "Library · loaded into every design")
+        default: return String(localized: "This design only · not in the library")
         }
     }
 }
@@ -483,7 +484,7 @@ private struct CatalogWarningsButton: View {
     @State private var shown = false
 
     var body: some View {
-        Button(warnings.count == 1 ? "1 Warning" : "\(warnings.count) Warnings", systemImage: "exclamationmark.triangle") {
+        Button(warnings.count == 1 ? String(localized: "1 Warning") : String(localized: "\(warnings.count) Warnings"), systemImage: "exclamationmark.triangle") {
             shown = true
         }
         .help("What reading the catalog file reported: skipped, replaced or inconsistent glasses")
@@ -491,7 +492,7 @@ private struct CatalogWarningsButton: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: Space.xs) {
                     ForEach(Array(warnings.enumerated()), id: \.offset) { _, w in
-                        Text(w.text).font(.callout).textSelection(.enabled).fixedSize(horizontal: false, vertical: true)
+                        Text(warningText(w)).font(.callout).textSelection(.enabled).fixedSize(horizontal: false, vertical: true)
                     }
                 }
                 .padding()
@@ -565,14 +566,14 @@ private struct GlassRowMenu: View {
             Divider()
             Button("Catalog's Status") { model.setStatus(nil, for: row) }
         }
-        Button(row.excludeSubstitution ? "Allow in Glass Substitution" : "Exclude from Glass Substitution") {
+        Button(row.excludeSubstitution ? String(localized: "Allow in Glass Substitution") : String(localized: "Exclude from Glass Substitution")) {
             model.setExcluded(!row.excludeSubstitution, for: row)
         }
         if row.overridden {
             Button("Reset to Catalog Settings") { model.resetStatus(of: row) }
         }
         Divider()
-        Button(model.library.isUserCatalog(row.catalog) ? "Duplicate…" : "Duplicate to User Glasses…") {
+        Button(model.library.isUserCatalog(row.catalog) ? String(localized: "Duplicate…") : String(localized: "Duplicate to User Glasses…")) {
             Task { await model.duplicate(row) }
         }
         if model.library.isUserCatalog(row.catalog) {
@@ -581,7 +582,7 @@ private struct GlassRowMenu: View {
     }
 
     private var useTitle: String {
-        model.assignment.index.map { "Use for Surface \($0)" } ?? "Use for Selected Surface"
+        model.assignment.index.map { String(localized: "Use for Surface \($0)") } ?? String(localized: "Use for Selected Surface")
     }
 }
 
@@ -657,13 +658,13 @@ private struct GlassDetailView: View {
             Button {
                 model.useSelected()
             } label: {
-                Label(assignment.index.map { "Use for Surface \($0)" } ?? "Use for Surface", systemImage: "arrow.down.left.circle")
+                Label(assignment.index.map { String(localized: "Use for Surface \($0)") } ?? String(localized: "Use for Surface"), systemImage: "arrow.down.left.circle")
                     .frame(maxWidth: .infinity)
             }
             .buttonStyle(.glassProminent)
             .controlSize(.large)
             .disabled(assignment.index == nil)
-            .help(assignment.why ?? "Make the selected surface's following medium this glass")
+            .help(assignment.why ?? String(localized: "Make the selected surface's following medium this glass"))
             if let why = assignment.why {
                 Text(why).font(.caption).foregroundStyle(.secondary)
             }
@@ -711,18 +712,18 @@ private struct GlassDetailView: View {
             Grid(alignment: .leading, horizontalSpacing: Space.l, verticalSpacing: Space.xs) {
                 if let nd = d.row.nd {
                     gridRow("nd", Self.fmt(nd, 6))
-                    gridRow("Vd", d.row.vd.map { Self.fmt($0, 3) } ?? "none (F or C line outside the range)")
+                    gridRow("Vd", d.row.vd.map { Self.fmt($0, 3) } ?? String(localized: "none (F or C line outside the range)"))
                     if d.row.listedValuesDiffer, let cnd = d.row.catalogNd {
                         gridRow("Catalog lists", "nd \(Self.fmt(cnd, 6)), Vd \(Self.fmt(d.row.catalogVd ?? 0, 2))")
                             .help("The catalog file's nd and Vd disagree with its dispersion coefficients. MKLight uses the coefficients.")
                     }
                 } else {
-                    gridRow("nd, Vd", "none (the d line is outside the range)")
+                    gridRow("nd, Vd", String(localized: "none (the d line is outside the range)"))
                 }
                 if let p = d.row.pgf { gridRow("Pg,F", Self.fmt(p, 4)) }
                 if let p = d.row.dpgf { gridRow("ΔPg,F", GlassTable.signedText(p)) }
                 if let p = d.catalogDpgf { gridRow("ΔPg,F (catalog)", GlassTable.signedText(p)) }
-                gridRow("Range", d.row.unrestrictedRange ? "unrestricted" : String(format: "%.3f – %.3f µm", d.row.minUm, d.row.maxUm))
+                gridRow("Range", d.row.unrestrictedRange ? String(localized: "unrestricted") : String(format: "%.3f – %.3f µm", d.row.minUm, d.row.maxUm))
                 ForEach(d.lines, id: \.line) { l in
                     gridRow("n\(l.line) (\(String(format: "%.1f", l.um * 1000)) nm)", Self.fmt(l.n, 6))
                 }
@@ -751,14 +752,14 @@ private struct GlassDetailView: View {
                 if let m = d.model {
                     Text("Model glass: nd \(Self.fmt(m.nd, 5)), Vd \(Self.fmt(m.vd, 2)), ΔPg,F \(GlassTable.signedText(m.dpgf))")
                 } else {
-                    Text(d.formula.map { "Formula \($0): \(d.formulaName)" } ?? d.formulaName)
+                    Text(d.formula.map { String(localized: "Formula \($0): \(d.formulaName)") } ?? d.formulaName)
                 }
                 if d.model == nil, !d.coefficients.isEmpty, let f = d.formula {
                     let names = GlassEditorModel.coefficientNames(f)
                     Grid(alignment: .leading, horizontalSpacing: Space.l, verticalSpacing: 2) {
                         ForEach(Array(d.coefficients.enumerated()), id: \.offset) { i, c in
                             if c != 0 || i < names.count {
-                                gridRow(i < names.count ? names[i] : "c\(i)", String(format: "%.10g", c))
+                                gridRow(LocalizedStringKey(i < names.count ? names[i] : "c\(i)"), String(format: "%.10g", c))
                             }
                         }
                     }
@@ -785,14 +786,14 @@ private struct GlassDetailView: View {
                     gridRow("Transmission data", String(format: "%.3f – %.3f µm", lo, hi))
                 }
                 if let v = d.row.lambda80Um { gridRow("λ for 80 % (10 mm)", String(format: "%.0f nm", v * 1000)) }
-                gridRow("Thermal dn/dT data", d.hasThermalData ? "yes" : "none")
+                gridRow("Thermal dn/dT data", d.hasThermalData ? String(localized: "yes") : String(localized: "none"))
                 if let m = d.milCode { gridRow("Glass code", m) }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
         }
     }
 
-    private func gridRow(_ label: String, _ value: String) -> some View {
+    private func gridRow(_ label: LocalizedStringKey, _ value: String) -> some View {
         GridRow {
             Text(label).foregroundStyle(.secondary)
             Text(value).monospacedDigit().textSelection(.enabled)
@@ -817,7 +818,7 @@ struct CatalogChangesSheet: View {
     var body: some View {
         VStack(alignment: .leading, spacing: Space.l) {
             Text("\(changes.catalog) Reloaded").font(.title3.weight(.semibold))
-            Text(changes.isEmpty ? "The file has the same glasses as before (\(changes.unchanged))." : "\(changes.summary); \(changes.unchanged) unchanged.")
+            Text(changes.isEmpty ? String(localized: "The file has the same glasses as before (\(changes.unchanged)).") : String(localized: "\(changes.localizedSummary); \(changes.unchanged) unchanged."))
                 .foregroundStyle(.secondary)
             if !changes.isEmpty {
                 List {

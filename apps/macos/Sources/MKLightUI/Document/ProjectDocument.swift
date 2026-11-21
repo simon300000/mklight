@@ -81,7 +81,7 @@ public final class ProjectDocument: ReferenceFileDocument, Sendable {
     /// A design from a lens prescription file, with its import report.
     static func importDesign(_ data: Data, format: PrescriptionFormat, fileName: String) throws -> DesignDocument {
         guard let engine = importEngine.withLock({ $0 }) else {
-            throw EngineError.unsupported("No engine is available to import lens files")
+            throw EngineError.unsupported(String(localized: "No engine is available to import lens files"))
         }
         let imported = try engine.importPrescription(data, format: format)
         var system = imported.system

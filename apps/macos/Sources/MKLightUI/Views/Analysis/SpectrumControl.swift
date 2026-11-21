@@ -95,12 +95,12 @@ public struct SpectrumControl: View {
                 Label("Sensor Response from CSV…", systemImage: SpectrumSetting.Kind.sensor.systemImage)
             }
         } label: {
-            Text(setting?.kind.title ?? "Custom")
+            Text(setting?.kind.title ?? String(localized: "Custom"))
         }
         .fixedSize()
         .help("The wavelengths this analysis runs with: the design's, or a spectrum sampled for this run only.")
         .accessibilityLabel("Spectrum")
-        .accessibilityValue(setting?.kind.title ?? "Custom")
+        .accessibilityValue(setting?.kind.title ?? String(localized: "Custom"))
     }
 
     private func choose(_ k: SpectrumSetting.Kind) {
@@ -161,7 +161,7 @@ public struct SpectrumControl: View {
                 GridRow {
                     Text("Temperature").foregroundStyle(.secondary)
                     HStack(spacing: Space.xs) {
-                        SpectrumNumberField(value: t, width: 52, label: "Temperature in kelvin") { v in
+                        SpectrumNumberField(value: t, width: 52, label: String(localized: "Temperature in kelvin")) { v in
                             write(.blackbody(temperatureK: v, sampling: sampling))
                         }
                         Text("K").foregroundStyle(.secondary)
@@ -172,7 +172,7 @@ public struct SpectrumControl: View {
                                 .controlSize(.mini)
                                 .monospacedDigit()
                                 .disabled(p == t)
-                                .help(p == 5500 ? "Daylight, 5500 K" : "Tungsten halogen, 3200 K")
+                                .help(p == 5500 ? String(localized: "Daylight, 5500 K") : String(localized: "Tungsten halogen, 3200 K"))
                         }
                     }
                 }
@@ -180,7 +180,7 @@ public struct SpectrumControl: View {
             GridRow {
                 Text("Samples").foregroundStyle(.secondary)
                 HStack(spacing: Space.xs) {
-                    SpectrumNumberField(value: Double(sampling.samples), width: 44, integer: true, label: "Number of samples") { v in
+                    SpectrumNumberField(value: Double(sampling.samples), width: 44, integer: true, label: String(localized: "Number of samples")) { v in
                         var n = sampling
                         n.samples = min(max(Int(saturating: v), SpectralSampling.sampleLimits.lowerBound), SpectralSampling.sampleLimits.upperBound)
                         write(s.with(sampling: n))
@@ -201,13 +201,13 @@ public struct SpectrumControl: View {
             GridRow {
                 Text("Range").foregroundStyle(.secondary)
                 HStack(spacing: Space.xs) {
-                    SpectrumNumberField(value: sampling.lowerUm, width: 52, label: "Shortest wavelength in micrometers") { v in
+                    SpectrumNumberField(value: sampling.lowerUm, width: 52, label: String(localized: "Shortest wavelength in micrometers")) { v in
                         var n = sampling
                         n.lowerUm = v
                         write(s.with(sampling: n))
                     }
                     Text("–").foregroundStyle(.secondary)
-                    SpectrumNumberField(value: sampling.upperUm, width: 52, label: "Longest wavelength in micrometers") { v in
+                    SpectrumNumberField(value: sampling.upperUm, width: 52, label: String(localized: "Longest wavelength in micrometers")) { v in
                         var n = sampling
                         n.upperUm = v
                         write(s.with(sampling: n))
@@ -233,13 +233,13 @@ public struct SpectrumControl: View {
                         HStack(spacing: Space.xs) {
                             Circle().fill(Palette.wavelengthColor(w.um)).frame(width: 7, height: 7)
                                 .accessibilityHidden(true)
-                            SpectrumNumberField(value: w.um, width: 64, label: "Wavelength \(k + 1) in micrometers") { v in
+                            SpectrumNumberField(value: w.um, width: 64, label: String(localized: "Wavelength \(k + 1) in micrometers")) { v in
                                 var l = list
                                 l[k].um = v
                                 write(.explicit(l))
                             }
                         }
-                        SpectrumNumberField(value: w.weight, width: 52, label: "Weight of wavelength \(k + 1)") { v in
+                        SpectrumNumberField(value: w.weight, width: 52, label: String(localized: "Weight of wavelength \(k + 1)")) { v in
                             var l = list
                             l[k].weight = v
                             write(.explicit(l))
@@ -274,7 +274,7 @@ public struct SpectrumControl: View {
 
     private func importReport(_ r: SpectrumCSV) -> some View {
         VStack(alignment: .leading, spacing: Space.xxs) {
-            Text("Imported \(r.table.count) rows in \(r.unit.rawValue)" + (r.header == nil ? "" : ", header skipped"))
+            Text(r.header == nil ? String(localized: "Imported \(r.table.count) rows in \(r.unit.rawValue)") : String(localized: "Imported \(r.table.count) rows in \(r.unit.rawValue), header skipped"))
                 .font(.caption).foregroundStyle(.secondary)
             if !r.badRows.isEmpty {
                 DisclosureGroup {
@@ -287,7 +287,7 @@ public struct SpectrumControl: View {
                     .font(.caption.monospacedDigit())
                     .foregroundStyle(.secondary)
                 } label: {
-                    Label("\(r.badRows.count) row\(r.badRows.count == 1 ? "" : "s") skipped", systemImage: "exclamationmark.triangle.fill")
+                    Label(r.badRows.count == 1 ? String(localized: "1 row skipped") : String(localized: "\(r.badRows.count) rows skipped"), systemImage: "exclamationmark.triangle.fill")
                         .font(.caption).foregroundStyle(.orange)
                 }
             }
@@ -298,7 +298,7 @@ public struct SpectrumControl: View {
         let scoped = url.startAccessingSecurityScopedResource()
         defer { if scoped { url.stopAccessingSecurityScopedResource() } }
         guard let data = try? Data(contentsOf: url) else {
-            report = SpectrumCSV(table: [], unit: .micrometre, header: nil, badRows: [.init(line: 0, text: url.lastPathComponent, reason: "cannot be read")])
+            report = SpectrumCSV(table: [], unit: .micrometre, header: nil, badRows: [.init(line: 0, text: url.lastPathComponent, reason: String(localized: "cannot be read"))])
             return
         }
         let text = String(decoding: data, as: UTF8.self)
@@ -312,8 +312,8 @@ public struct SpectrumControl: View {
     }
 
     static func tableSummary(_ t: [SpectrumSample]) -> String {
-        guard let a = t.first?.um, let b = t.last?.um else { return "No table" }
-        return String(format: "%d rows · %.3f–%.3f µm", t.count, a, b)
+        guard let a = t.first?.um, let b = t.last?.um else { return String(localized: "No table") }
+        return String(format: String(localized: "%d rows · %.3f–%.3f µm"), t.count, a, b)
     }
 
     // MARK: Preview
@@ -390,10 +390,10 @@ struct SpectrumPreview: View {
 
         var caption: String {
             switch self {
-            case .design: "Design"
-            case .exact: "Explicit"
-            case .engine: "Engine-resolved"
-            case .approximate: "Approximate preview"
+            case .design: String(localized: "Design")
+            case .exact: String(localized: "Explicit")
+            case .engine: String(localized: "Engine-resolved")
+            case .approximate: String(localized: "Approximate preview")
             }
         }
     }
@@ -446,7 +446,7 @@ struct SpectrumPreview: View {
                 Text("\(samples.count) λ")
                 if let primary {
                     Text("·")
-                    Text(String(format: "primary %.4f µm", samples[primary].um))
+                    Text(String(format: String(localized: "primary %.4f µm"), samples[primary].um))
                 }
             }
             .font(.caption2)
@@ -468,8 +468,8 @@ struct SpectrumPreview: View {
 
     private func accessibilityValue(_ primary: Int?) -> String {
         guard let lo = samples.map(\.um).min(), let hi = samples.map(\.um).max() else { return "" }
-        var s = String(format: "%d wavelengths from %.3f to %.3f micrometers", samples.count, lo, hi)
-        if let primary { s += String(format: ", primary %.4f", samples[primary].um) }
+        var s = String(format: String(localized: "%d wavelengths from %.3f to %.3f micrometers"), samples.count, lo, hi)
+        if let primary { s += String(format: String(localized: ", primary %.4f"), samples[primary].um) }
         return s
     }
 }

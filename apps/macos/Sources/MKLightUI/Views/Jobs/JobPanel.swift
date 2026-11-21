@@ -135,10 +135,10 @@ struct JobActions {
     /// them) and the same run again, recomputed.
     @ViewBuilder func failed(back: (() -> Void)?, retryDisabled: Bool = false, retry: @escaping () -> Void) -> some View {
         if let back {
-            GlassAction(title: "Back", id: "secondary", namespace: namespace, action: back)
+            GlassAction(title: String(localized: "Back"), id: "secondary", namespace: namespace, action: back)
                 .help("Back to the job's settings")
         }
-        GlassAction(title: "Try Again", systemImage: "arrow.clockwise", prominent: true, id: "primary", namespace: namespace, action: retry)
+        GlassAction(title: String(localized: "Try Again"), systemImage: "arrow.clockwise", prominent: true, id: "primary", namespace: namespace, action: retry)
             .keyboardShortcut(.defaultAction)
             .disabled(retryDisabled)
             .help("Run the job again with the same settings")
@@ -150,9 +150,9 @@ struct JobActions {
         cancel: @escaping () -> Void, stop: @escaping () -> Void
     ) -> some View {
         GlassProgress(progress: progress, detail: detail, namespace: namespace)
-        GlassAction(title: "Cancel", role: .destructive, id: "secondary", namespace: namespace, action: cancel)
+        GlassAction(title: String(localized: "Cancel"), role: .destructive, id: "secondary", namespace: namespace, action: cancel)
             .help("End the run and discard it")
-        GlassAction(title: "Stop", systemImage: "stop.fill", id: "primary", namespace: namespace, action: stop)
+        GlassAction(title: String(localized: "Stop"), systemImage: "stop.fill", id: "primary", namespace: namespace, action: stop)
             .disabled(!canStop)
             .help(stopHelp)
     }
@@ -160,10 +160,10 @@ struct JobActions {
     /// A result to review: Discard (when it can be dropped) and Apply to Design.
     @ViewBuilder func review(discard: (() -> Void)?, applyDisabled: Bool, apply: @escaping () -> Void) -> some View {
         if let discard {
-            GlassAction(title: "Discard", id: "secondary", namespace: namespace, action: discard)
+            GlassAction(title: String(localized: "Discard"), id: "secondary", namespace: namespace, action: discard)
                 .help("Drop this result; the design stays as it is")
         }
-        GlassAction(title: "Apply to Design", prominent: true, id: "primary", namespace: namespace, action: apply)
+        GlassAction(title: String(localized: "Apply to Design"), prominent: true, id: "primary", namespace: namespace, action: apply)
             .keyboardShortcut(.defaultAction)
             .disabled(applyDisabled)
             .help("Apply the result as one step you can undo")
@@ -171,7 +171,7 @@ struct JobActions {
 
     /// After the result was applied (or read): back to the job's starting page.
     func done(help: String, action: @escaping () -> Void) -> some View {
-        GlassAction(title: "Done", prominent: true, id: "primary", namespace: namespace, action: action)
+        GlassAction(title: String(localized: "Done"), prominent: true, id: "primary", namespace: namespace, action: action)
             .keyboardShortcut(.defaultAction)
             .help(help)
     }
@@ -186,7 +186,7 @@ struct JobFailure: View {
         ContentUnavailableView {
             Label(title, systemImage: "exclamationmark.triangle")
         } description: {
-            Text(reason)
+            Text(EngineText.string(reason))
         }
     }
 }
@@ -215,7 +215,7 @@ struct GlassProgress: View {
                 .progressViewStyle(.circular)
                 .controlSize(.small)
             VStack(alignment: .leading, spacing: 0) {
-                Text(detail.isEmpty ? (progress.stage.isEmpty ? "Running" : progress.stage) : detail)
+                Text(detail.isEmpty ? (progress.stage.isEmpty ? String(localized: "Running") : EngineText.string(progress.stage)) : detail)
                     .font(.callout.monospacedDigit())
                     .lineLimit(1)
                 if progress.fraction >= 0.01 {
@@ -263,7 +263,7 @@ struct OptimizePanel: View {
             case .setup: setup
             case .running(let p): running(p)
             case .finished: result
-            case .failed(let why): JobFailure(title: "Optimization Failed", reason: why)
+            case .failed(let why): JobFailure(title: String(localized: "Optimization Failed"), reason: why)
             }
         } actions: {
             actions
@@ -287,7 +287,7 @@ struct OptimizePanel: View {
     /// analyses) until it is applied or discarded.
     private func syncPreview(_ p: Int) {
         if p == 2, let s = session.result?.system, session.result?.improved == true {
-            workspace.preview(s, title: session.result?.stopped == true ? "Optimized design (stopped)" : "Optimized design")
+            workspace.preview(s, title: session.result?.stopped == true ? String(localized: "Optimized design (stopped)") : String(localized: "Optimized design"))
         } else if p != 1 {
             workspace.preview(nil)
         }
@@ -365,14 +365,14 @@ struct OptimizePanel: View {
     private func running(_ p: JobProgress) -> some View {
         VStack(alignment: .leading, spacing: Space.l) {
             HStack(alignment: .firstTextBaseline, spacing: Space.xl) {
-                BigNumber(label: "Iteration", value: session.trace.last.map { "\($0.iteration)" } ?? "—")
-                BigNumber(label: "Search merit", value: session.trace.last.map { Fmt.short($0.merit) } ?? "—")
+                BigNumber(label: String(localized: "Iteration"), value: session.trace.last.map { "\($0.iteration)" } ?? "—")
+                BigNumber(label: String(localized: "Search merit"), value: session.trace.last.map { Fmt.short($0.merit) } ?? "—")
                     .help(["de", "cma_es", "nelder_mead"].contains(session.algorithm)
-                        ? "The search's merit, including the penalty that holds the focal length; the result reports the merit itself."
-                        : "The best merit so far, as the search evaluates it.")
+                        ? String(localized: "The search's merit, including the penalty that holds the focal length; the result reports the merit itself.")
+                        : String(localized: "The best merit so far, as the search evaluates it."))
             }
             if let first = session.trace.first, let last = session.trace.last, first.merit > 0 {
-                BigNumber(label: "Improvement", value: Fmt.percent(1 - last.merit / first.merit))
+                BigNumber(label: String(localized: "Improvement"), value: Fmt.percent(1 - last.merit / first.merit))
             }
             Sparkline(values: session.trace.map(\.merit))
                 .frame(height: 120)
@@ -387,13 +387,13 @@ struct OptimizePanel: View {
             VStack(alignment: .leading, spacing: Space.l) {
                 if session.applied { AppliedNotice() }
                 HStack(alignment: .firstTextBaseline, spacing: Space.xl) {
-                    BigNumber(label: "Merit before", value: Fmt.short(r.startMerit))
-                    BigNumber(label: "After", value: Fmt.short(r.finalMerit))
+                    BigNumber(label: String(localized: "Merit before"), value: Fmt.short(r.startMerit))
+                    BigNumber(label: String(localized: "After"), value: Fmt.short(r.finalMerit))
                 }
-                BigNumber(label: "Improvement", value: Fmt.percent(r.improvement))
+                BigNumber(label: String(localized: "Improvement"), value: Fmt.percent(r.improvement))
                 if !session.applied, r.system != nil, r.improved {
                     Toggle("Preview in the window", isOn: Binding(get: { workspace.isPreviewing }, set: { on in
-                        workspace.preview(on ? r.system : nil, title: "Optimized design")
+                        workspace.preview(on ? r.system : nil, title: String(localized: "Optimized design"))
                     }))
                     .help("Show the optimized design in the layout and analyses before applying it")
                     if workspace.isPreviewing {
@@ -411,7 +411,7 @@ struct OptimizePanel: View {
                     ForEach(r.variables) { v in
                         VStack(alignment: .leading, spacing: 1) {
                             HStack(spacing: Space.xs) {
-                                Text(v.param.map { $0.label(in: design.system) } ?? v.label)
+                                Text(v.param.map { $0.label(in: design.system) } ?? EngineText.string(v.label))
                                 if v.atBound { Text("at bound").font(.caption2).foregroundStyle(.orange) }
                             }
                             .font(.callout)
@@ -431,8 +431,8 @@ struct OptimizePanel: View {
                 if !r.evaluatedOn.isEmpty {
                     Text(
                         r.evaluatedOn.hasPrefix("cpu")
-                            ? "Evaluated on the CPU f64 reference."
-                            : "Searched on \(r.evaluatedOn); merits reported on the CPU f64 reference."
+                            ? String(localized: "Evaluated on the CPU f64 reference.")
+                            : String(localized: "Searched on \(r.evaluatedOn); merits reported on the CPU f64 reference.")
                     )
                     .font(.caption).foregroundStyle(.secondary)
                 }
@@ -452,10 +452,10 @@ struct OptimizePanel: View {
     }
 
     private func statusText(_ r: OptimizeResult) -> String {
-        var s = "\(r.iterations) iterations, \(r.evaluations) evaluations. "
-        if r.stopped { s += "Stopped early: this is the best design found so far. " }
-        if !r.improved { s += "No better design was found; the result equals the start. " }
-        if !r.feasible { s += "Some constraints are not met. " }
+        var s = String(localized: "\(r.iterations) iterations, \(r.evaluations) evaluations.") + " "
+        if r.stopped { s += String(localized: "Stopped early: this is the best design found so far.") + " " }
+        if !r.improved { s += String(localized: "No better design was found; the result equals the start.") + " " }
+        if !r.feasible { s += String(localized: "Some constraints are not met.") + " " }
         return s
     }
 
@@ -464,18 +464,18 @@ struct OptimizePanel: View {
         let cannotRun = blocked || session.variableProblem(design.variables, system: design.system) != nil
         switch session.state {
         case .setup:
-            bar.start("Optimize", disabled: cannotRun) { session.start(in: workspace, variables: design.variables) }
+            bar.start(String(localized: "Optimize"), disabled: cannotRun) { session.start(in: workspace, variables: design.variables) }
         case .failed:
             bar.failed(back: session.reset, retryDisabled: cannotRun) {
                 session.start(in: workspace, variables: design.variables, fresh: true)
             }
         case .running(let p):
             bar.running(
-                p, detail: session.trace.last.map { "Iteration \($0.iteration)" } ?? "", canStop: session.canStop,
-                stopHelp: "End now and keep the best design so far", cancel: session.cancel, stop: session.stop)
+                p, detail: session.trace.last.map { String(localized: "Iteration \($0.iteration)") } ?? "", canStop: session.canStop,
+                stopHelp: String(localized: "End now and keep the best design so far"), cancel: session.cancel, stop: session.stop)
         case .finished:
             if session.applied {
-                bar.done(help: "Back to the merit function and variables", action: session.reset)
+                bar.done(help: String(localized: "Back to the merit function and variables"), action: session.reset)
             } else {
                 bar.review(discard: session.reset, applyDisabled: session.result?.system == nil || session.result?.improved == false) {
                     session.apply(to: design, undoManager: undoManager)
@@ -562,7 +562,7 @@ struct SolvesPanel: View {
 
     var body: some View {
         let n = design.system.solves.count
-        JobPanelFrame(kind: .solves, subtitle: "\(n) solve\(n == 1 ? "" : "s") in \(design.system.name)") {
+        JobPanelFrame(kind: .solves, subtitle: n == 1 ? String(localized: "1 solve in \(design.system.name)") : String(localized: "\(n) solves in \(design.system.name)")) {
             if design.system.solves.isEmpty {
                 ContentUnavailableView(
                     "No Solves", systemImage: "function",
@@ -572,7 +572,7 @@ struct SolvesPanel: View {
                 case .setup, .running:
                     ProgressView("Solving…").frame(maxWidth: .infinity).padding(Space.xxl)
                 case .failed(let why):
-                    JobFailure(title: "Solving Failed", reason: why)
+                    JobFailure(title: String(localized: "Solving Failed"), reason: why)
                 case .finished:
                     report
                 }
@@ -582,7 +582,7 @@ struct SolvesPanel: View {
             if case .failed = session.state {
                 bar.failed(back: nil) { Task { await session.dryRun(in: workspace, fresh: true) } }
             } else if session.committed {
-                bar.done(help: "Back to the design's solves") { Task { await session.dryRun(in: workspace) } }
+                bar.done(help: String(localized: "Back to the design's solves")) { Task { await session.dryRun(in: workspace) } }
             } else {
                 bar.review(discard: nil, applyDisabled: session.state != .finished || session.changes == 0) {
                     Task { await session.commit(in: workspace, document: design, undoManager: undoManager) }
@@ -601,7 +601,7 @@ struct SolvesPanel: View {
     private var report: some View {
         VStack(alignment: .leading, spacing: Space.m) {
             if session.committed { AppliedNotice() }
-            Text(session.committed ? "The design now holds these solved values." : "Dry run: the values the solves would set. Nothing has changed yet.")
+            Text(session.committed ? String(localized: "The design now holds these solved values.") : String(localized: "Dry run: the values the solves would set. Nothing has changed yet."))
                 .hint(.callout)
             ForEach(session.outcomes) { o in
                 VStack(alignment: .leading, spacing: 1) {
@@ -623,7 +623,7 @@ struct SolvesPanel: View {
             }
             .textSelection(.enabled)
             ForEach(session.warnings, id: \.self) { w in
-                WarningNote(w)
+                WarningNote(EngineText.string(w))
             }
         }
     }

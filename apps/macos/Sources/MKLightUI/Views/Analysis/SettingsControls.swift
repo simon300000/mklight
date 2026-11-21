@@ -13,12 +13,12 @@ extension SettingsBar {
     static func arraySummary(_ f: SettingsField, _ v: JSONValue) -> String? {
         if f.name == "sensor_limit" {
             let n = FieldMapData.sensorLimit(v).count
-            return n == 0 ? "none" : n == 1 ? "1 point" : "\(n) points"
+            return n == 0 ? String(localized: "none") : n == 1 ? String(localized: "1 point") : String(localized: "\(n) points")
         }
         if f.name == "source", let kind = v["kind"]?.string {
             switch kind {
             case "pattern": return SettingsBar.title(v["pattern"] ?? .string("grid"))
-            case "buffer": return "image"
+            case "buffer": return String(localized: "image")
             default: return ((v["path"]?.string ?? "") as NSString).lastPathComponent
             }
         }
@@ -162,11 +162,11 @@ struct SettingPairField: View {
         HStack(spacing: Space.xs) {
             if isFieldPoint { Text("Hx").foregroundStyle(.secondary) }
             box(0)
-            Text(isFieldPoint ? "Hy" : isRange ? "to" : "×").foregroundStyle(.secondary)
+            Text(isFieldPoint ? "Hy" : isRange ? String(localized: "to") : "×").foregroundStyle(.secondary)
             box(1)
             if !field.unit.isEmpty { Text(field.unit).foregroundStyle(.secondary) }
         }
-        .help(field.description.isEmpty ? field.title : field.description)
+        .help(EngineText.string(field.description.isEmpty ? field.title : field.description))
         .onAppear(perform: sync)
         .onChange(of: value) { _, _ in sync() }
         .onChange(of: focused) { _, new in
@@ -178,7 +178,7 @@ struct SettingPairField: View {
     }
 
     private func box(_ index: Int) -> some View {
-        TextField(nullable ? "auto" : index == 0 ? "x" : "y", text: $edit.boxes[index].text)
+        TextField(nullable ? String(localized: "auto") : index == 0 ? "x" : "y", text: $edit.boxes[index].text)
             .textFieldStyle(.roundedBorder)
             .numeric()
             .multilineTextAlignment(.trailing)
@@ -235,19 +235,22 @@ struct TableSettingControl: View {
     static func emptyTitle(_ f: SettingsField) -> String {
         if let r = f.description.range(of: #"empty = ([^;(.]+)"#, options: .regularExpression) {
             let t = f.description[r].dropFirst("empty = ".count).trimmingCharacters(in: .whitespaces)
-            if !t.isEmpty { return t.prefix(1).uppercased() + t.dropFirst() }
+            if !t.isEmpty {
+                let s = t.prefix(1).uppercased() + t.dropFirst()
+                return EngineText.translation(s) ?? s
+            }
         }
-        return f.nullable ? "Automatic" : "None"
+        return f.nullable ? String(localized: "Automatic") : String(localized: "None")
     }
 
     var body: some View {
         Button {
             open = true
         } label: {
-            Text(count == 0 ? Self.emptyTitle(field) : count == 1 ? "1 row" : "\(count) rows")
+            Text(count == 0 ? Self.emptyTitle(field) : count == 1 ? String(localized: "1 row") : String(localized: "\(count) rows"))
         }
         .buttonStyle(.borderless)
-        .help(field.description.isEmpty ? field.title : field.description)
+        .help(EngineText.string(field.description.isEmpty ? field.title : field.description))
         .accessibilityLabel(label)
         .popover(isPresented: $open) {
             TableSettingEditor(title: label, help: field.description, columns: columns, rowsAreArrays: rowsAreArrays, value: value, set: set)
@@ -344,7 +347,7 @@ struct TableSettingEditor: View {
         VStack(alignment: .leading, spacing: Space.m) {
             Text(title).font(.headline)
             if !help.isEmpty {
-                Text(help).hint()
+                Text(EngineText.string(help)).hint()
             }
             Grid(alignment: .leading, horizontalSpacing: Space.s, verticalSpacing: Space.xs) {
                 GridRow {
@@ -428,10 +431,11 @@ struct SensorLimitControl: View {
         Button {
             open = true
         } label: {
-            Text("Sensor limit: " + (rows.isEmpty ? "None" : rows.count == 1 ? String(format: "%.1f°", rows[0].1) : "\(rows.count) points"))
+            let n = rows.isEmpty ? String(localized: "None") : rows.count == 1 ? String(format: "%.1f°", rows[0].1) : String(localized: "\(rows.count) points")
+            Text("Sensor limit: \(n)")
         }
         .buttonStyle(.borderless)
-        .help(help)
+        .help(EngineText.string(help))
         .popover(isPresented: $open) {
             SensorLimitEditor(rows: rows, set: set).padding(Space.l).frame(width: 300)
         }
@@ -470,8 +474,8 @@ struct SensorLimitEditor: View {
                 .font(.caption).foregroundStyle(.secondary)
                 ForEach(rows) { r in
                     GridRow {
-                        field(\.radius, of: r, label: "Radius", format: Self.radius)
-                        field(\.angle, of: r, label: "Maximum angle", format: Self.angle)
+                        field(\.radius, of: r, label: String(localized: "Radius"), format: Self.radius)
+                        field(\.angle, of: r, label: String(localized: "Maximum angle"), format: Self.angle)
                         Button {
                             rows.removeAll { $0.id == r.id }
                             commit()
@@ -555,7 +559,7 @@ struct ImageSourceControl: View {
         if let file { return (file as NSString).lastPathComponent }
         let v = pane.value(field.name)
         switch v?["kind"]?.string {
-        case "buffer": return "Image buffer"
+        case "buffer": return String(localized: "Image buffer")
         case "path": return ((v?["path"]?.string ?? "") as NSString).lastPathComponent
         default:
             let p = v?["pattern"]?.string ?? "grid"
@@ -584,7 +588,7 @@ struct ImageSourceControl: View {
         }
         .menuStyle(.borderlessButton)
         .fixedSize()
-        .help(missing.map { "\($0) could not be read; the simulation uses the grid pattern. Choose the image again." } ?? field.description)
+        .help(missing.map { String(localized: "\($0) could not be read; the simulation uses the grid pattern. Choose the image again.") } ?? EngineText.string(field.description))
         .accessibilityLabel("Source")
         .accessibilityValue(title)
         .fileImporter(isPresented: $importing, allowedContentTypes: [.image]) { result in
@@ -621,23 +625,23 @@ struct ImageOpticsControl: View {
     var body: some View {
         FlowLayout(spacing: Space.m, lineSpacing: Space.xs) {
             SettingNumberField(
-                field: number("psf_size", integer: true, "PSF window samples per side (odd); 0 sizes it from the blur and diffraction."),
-                label: "PSF window", value: optics["psf_size"], auto: .zero, autoUsed: used("optics.psf_size")
+                field: number("psf_size", integer: true, String(localized: "PSF window samples per side (odd); 0 sizes it from the blur and diffraction.")),
+                label: String(localized: "PSF window"), value: optics["psf_size"], auto: .zero, autoUsed: used("optics.psf_size")
             ) { set("psf_size", $0) }
             SettingNumberField(
-                field: number("psf_spacing_mm", integer: false, "PSF sample spacing; empty uses the smallest λ·F/# over the patch divided by 2.5.", unit: "mm"),
-                label: "Spacing", value: optics["psf_spacing_mm"], auto: .null, autoUsed: used("optics.psf_spacing_mm")
+                field: number("psf_spacing_mm", integer: false, String(localized: "PSF sample spacing; empty uses the smallest λ·F/# over the patch divided by 2.5."), unit: "mm"),
+                label: String(localized: "Spacing"), value: optics["psf_spacing_mm"], auto: .null, autoUsed: used("optics.psf_spacing_mm")
             ) { set("psf_spacing_mm", $0) }
             SettingNumberField(
-                field: number("grid", integer: true, "Pupil grid samples per side; 0 chooses from the wavefront slope (64 to 1024)."),
-                label: "Pupil", value: pupil["grid"], auto: .zero, autoUsed: used("optics.pupil.grid")
+                field: number("grid", integer: true, String(localized: "Pupil grid samples per side; 0 chooses from the wavefront slope (64 to 1024).")),
+                label: String(localized: "Pupil"), value: pupil["grid"], auto: .zero, autoUsed: used("optics.pupil.grid")
             ) { setPupil("grid", $0) }
             SettingNumberField(
-                field: number("rays", integer: true, "Rays traced per pupil diameter."), label: "Rays", value: pupil["rays"]
+                field: number("rays", integer: true, String(localized: "Rays traced per pupil diameter.")), label: String(localized: "Rays"), value: pupil["rays"]
             ) { setPupil("rays", $0) }
             SettingNumberField(
-                field: number("field_grid", integer: true, "PSFs per side of the patch; the image is mapped between them."),
-                label: "PSF grid", value: optics["field_grid"]
+                field: number("field_grid", integer: true, String(localized: "PSFs per side of the patch; the image is mapped between them.")),
+                label: String(localized: "PSF grid"), value: optics["field_grid"]
             ) { set("field_grid", $0) }
         }
     }

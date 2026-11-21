@@ -50,10 +50,10 @@ struct DesignStatus: View {
 
     private func jobStatus(_ job: DesignJobKind) -> String {
         switch job {
-        case .optimize: window.optimize.trace.last.map { "Optimizing · \($0.iteration)" } ?? "Optimizing"
-        case .glass: window.glass.progress.map { "Glasses · \($0.combinations)" } ?? "Substituting glasses"
-        case .tolerance: "Tolerancing"
-        case .solves: "Solving"
+        case .optimize: window.optimize.trace.last.map { String(localized: "Optimizing · \($0.iteration)") } ?? String(localized: "Optimizing")
+        case .glass: window.glass.progress.map { String(localized: "Glasses · \($0.combinations)") } ?? String(localized: "Substituting glasses")
+        case .tolerance: String(localized: "Tolerancing")
+        case .solves: String(localized: "Solving")
         }
     }
 }
@@ -106,17 +106,17 @@ struct KeyNumbers: View {
                     .accessibilityLabel("Mock engine: synthetic results")
             }
             if anamorphic, let p = ParaxialXYData(json)?.primary {
-                number("EFL y", Fmt.value(p.eflY, unit: "mm"))
-                number("Squeeze", ParaxialXYData.squeezeText(p.squeeze, digits: 2))
+                number(String(localized: "EFL y"), Fmt.value(p.eflY, unit: "mm"))
+                number(String(localized: "Squeeze"), ParaxialXYData.squeezeText(p.squeeze, digits: 2))
             } else if let e = entries?.entry(["efl"]) {
-                number(anamorphic ? "EFL y" : "EFL", e.formatted)
+                number(anamorphic ? String(localized: "EFL y") : String(localized: "EFL"), e.formatted)
             }
             if let e = entries?.entry(["working_f_number", "image_f_number"]) { number("F/#", e.formatted) }
-            if let e = entries?.entry(["total_track"]) { number("TT", e.formatted) }
+            if let e = entries?.entry(["total_track"]) { number(String(localized: "TT", comment: "abbreviation of total track"), e.formatted) }
             if entries == nil && (!workspace.modelErrors.isEmpty || workspace.issues.contains { $0.severity == .error }) {
                 Text("Design has errors").foregroundStyle(.secondary)
             } else if entries == nil {
-                Text(system.name.isEmpty ? "Untitled" : system.name).foregroundStyle(.secondary)
+                Text(system.name.isEmpty ? String(localized: "Untitled") : system.name).foregroundStyle(.secondary)
             }
         }
         .opacity(workspace.summary.isStale ? 0.5 : 1)
@@ -150,7 +150,7 @@ struct StatusDetails: View {
                 if let entries {
                     // An anamorphic design's report is the y section's.
                     KeyValueGrid(rows: Self.keys.compactMap { k in
-                        entries.entry(k.1).map { (anamorphic && Self.ySection.contains(k.0) ? k.0 + " (y)" : k.0, $0.formatted) }
+                        entries.entry(k.1).map { (anamorphic && Self.ySection.contains(k.0) ? String(localized: "\(k.0) (y)") : k.0, $0.formatted) }
                     })
                 } else {
                     Text("No first-order data yet.").foregroundStyle(.secondary)
@@ -167,9 +167,9 @@ struct StatusDetails: View {
                     Label("Mock engine: results are synthetic. The engine library is not linked into this build.", systemImage: "exclamationmark.triangle.fill")
                         .foregroundStyle(.orange).font(.callout).fixedSize(horizontal: false, vertical: true)
                 }
-                KeyValueGrid(rows: [("Engine", "\(engine.info.name) \(engine.info.version)")]
-                    + (workspace.snapshot.map { [("Snapshot", $0.hash.short)] } ?? [])
-                    + (GPUPreparationMonitor.shared.summary.map { [("GPU kernels", $0)] } ?? []))
+                KeyValueGrid(rows: [(String(localized: "Engine"), "\(engine.info.name) \(engine.info.version)")]
+                    + (workspace.snapshot.map { [(String(localized: "Snapshot"), $0.hash.short)] } ?? [])
+                    + (GPUPreparationMonitor.shared.summary.map { [(String(localized: "GPU kernels"), $0)] } ?? []))
                 if let note = GPUPreparationMonitor.shared.note {
                     Text(note).hint()
                 }
@@ -183,7 +183,7 @@ struct StatusDetails: View {
             if !workspace.catalogWarnings.isEmpty {
                 Divider()
                 ForEach(workspace.catalogWarnings, id: \.self) { w in
-                    WarningNote(w)
+                    WarningNote(EngineText.string(w))
                 }
             }
         }
@@ -193,13 +193,17 @@ struct StatusDetails: View {
 
     /// The rows and the engine's `first_order` keys they show (the first one present).
     static let keys: [(String, [String])] = [
-        ("Effective focal length", ["efl"]), ("Back focal length", ["bfl"]), ("Working F/#", ["working_f_number", "image_f_number"]),
-        ("Entrance pupil diameter", ["entrance_pupil_diameter"]), ("Total track", ["total_track"]),
-        ("Image height", ["paraxial_image_height"]),
+        (String(localized: "Effective focal length"), ["efl"]), (String(localized: "Back focal length"), ["bfl"]),
+        (String(localized: "Working F/#"), ["working_f_number", "image_f_number"]),
+        (String(localized: "Entrance pupil diameter"), ["entrance_pupil_diameter"]), (String(localized: "Total track"), ["total_track"]),
+        (String(localized: "Image height"), ["paraxial_image_height"]),
     ]
 
     /// The rows that are the y section's for an anamorphic design.
-    static let ySection: Set<String> = ["Effective focal length", "Back focal length", "Working F/#", "Image height"]
+    static let ySection: Set<String> = [
+        String(localized: "Effective focal length"), String(localized: "Back focal length"), String(localized: "Working F/#"),
+        String(localized: "Image height"),
+    ]
 }
 
 /// The x and y first order of a design that is not rotationally symmetric,
@@ -222,11 +226,11 @@ struct AnamorphicSummary: View {
             VStack(alignment: .leading, spacing: Space.s) {
                 table(p, xy)
                 if detailed {
-                    Text(String(format: "At λ = %.4f µm (primary)", p.wavelengthUm))
+                    Text(String(localized: "At λ = \(p.wavelengthUm, specifier: "%.4f") µm (primary)"))
                         .font(.caption).foregroundStyle(.secondary).monospacedDigit()
                     if !p.doePower.isEmpty { DOEPowerGrid(row: p) }
                     ForEach(xy.warnings, id: \.self) { w in
-                        Label(w, systemImage: "exclamationmark.triangle")
+                        Label(EngineText.string(w), systemImage: "exclamationmark.triangle")
                             .font(.caption).foregroundStyle(.orange)
                             .fixedSize(horizontal: false, vertical: true)
                     }
@@ -261,14 +265,14 @@ struct AnamorphicSummary: View {
             .font(.caption)
             .foregroundStyle(.secondary)
             .accessibilityHidden(true)
-            xyRow("EFL", "Effective focal length", p.eflX, p.eflY)
-            xyRow("BFL", "Back focal length", p.bflX, p.bflY)
+            xyRow(String(localized: "EFL"), String(localized: "Effective focal length"), p.eflX, p.eflY)
+            xyRow(String(localized: "BFL"), String(localized: "Back focal length"), p.bflX, p.bflY)
             GridRow {
                 Text("Squeeze").foregroundStyle(.secondary)
                 Text(ParaxialXYData.squeezeText(p.squeeze)).numeric().gridCellColumns(2).gridColumnAlignment(.trailing)
                     .frame(maxWidth: .infinity, alignment: .trailing)
             }
-            .help("Squeeze: " + (xy.squeezeDefinition ?? "signed EFL y / EFL x"))
+            .help(String(localized: "Squeeze: \(xy.squeezeDefinition.map(EngineText.string) ?? String(localized: "signed EFL y / EFL x"))"))
             .accessibilityElement(children: .ignore)
             .accessibilityLabel("Squeeze, EFL y over EFL x")
             .accessibilityValue(ParaxialXYData.squeezeText(p.squeeze))
@@ -345,7 +349,7 @@ struct XYWavelengthTable: View {
                     Text(ParaxialXYData.squeezeText(r.squeeze))
                 }
                 .accessibilityElement(children: .ignore)
-                .accessibilityLabel(String(format: "%.4f micrometers", r.wavelengthUm))
+                .accessibilityLabel(String(localized: "\(r.wavelengthUm, specifier: "%.4f") micrometers"))
                 .accessibilityValue(
                     "EFL x \(Fmt.short(r.eflX)), y \(Fmt.short(r.eflY)) millimeters; BFL x \(Fmt.short(r.bflX)), y \(Fmt.short(r.bflY)); squeeze \(ParaxialXYData.squeezeText(r.squeeze))"
                 )

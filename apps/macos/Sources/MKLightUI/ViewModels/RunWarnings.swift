@@ -39,7 +39,7 @@ public enum RunWarnings {
                 groups[key] = g
             } else {
                 order.append(key)
-                groups[key] = WarningGroup(message: capitalised(message), scopes: scope.map { [$0] } ?? [], remedy: remedy(message))
+                groups[key] = WarningGroup(message: EngineText.translation(message) ?? capitalised(message), scopes: scope.map { [$0] } ?? [], remedy: remedy(message))
             }
         }
         return order.compactMap { groups[$0] }
@@ -49,7 +49,7 @@ public enum RunWarnings {
     public static func summary(_ warnings: [String]) -> String {
         let g = group(warnings)
         guard let first = g.first else { return "" }
-        return first.line + (g.count > 1 ? " (and \(g.count - 1) more)" : "")
+        return g.count > 1 ? String(localized: "\(first.line) (and \(g.count - 1) more)") : first.line
     }
 
     /// `field 2, wavelength 1: text` → (`Field 3 · λ2`, `text`); also the
@@ -61,15 +61,15 @@ public enum RunWarnings {
         let parts = head.split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }
         var scope: [String] = []
         if head.hasPrefix("field (") {
-            return ("field " + head.dropFirst("field ".count).replacingOccurrences(of: "-", with: "−"), rest)
+            return (String(localized: "field \(head.dropFirst("field ".count).replacingOccurrences(of: "-", with: "−"))"), rest)
         }
         for p in parts {
             let words = p.split(separator: " ")
             guard words.count == 2, let k = Int(words[1]) else { return (nil, t) }
             switch words[0] {
-            case "field": scope.append("Field \(k + 1)")
+            case "field": scope.append(String(localized: "Field \(k + 1)"))
             case "wavelength": scope.append("λ\(k + 1)")
-            case "surface": scope.append("Surface \(k)")
+            case "surface": scope.append(String(localized: "Surface \(k)"))
             default: return (nil, t)
             }
         }

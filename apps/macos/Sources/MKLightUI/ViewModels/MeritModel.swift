@@ -87,13 +87,13 @@ public struct MeritOperand: Identifiable, Hashable, Sendable {
     public func localIssues(fieldCount: Int, wavelengthCount: Int) -> [String] {
         var out: [String] = []
         guard let d = descriptor else { return [] }
-        if d.singleField && field["field"]?.string == "all" { out.append("Needs one field, not all fields.") }
-        if let i = field["index"]?.int, field["field"]?.string == "index", i >= fieldCount { out.append("Field \(i + 1) does not exist.") }
+        if d.singleField && field["field"]?.string == "all" { out.append(String(localized: "Needs one field, not all fields.")) }
+        if let i = field["index"]?.int, field["field"]?.string == "index", i >= fieldCount { out.append(String(localized: "Field \(i + 1) does not exist.")) }
         if let i = wavelength["index"]?.int, wavelength["wavelength"]?.string == "index", i >= wavelengthCount {
-            out.append("Wavelength \(i + 1) does not exist.")
+            out.append(String(localized: "Wavelength \(i + 1) does not exist."))
         }
-        for p in d.params where p.required && (kind[p.key] == nil || kind[p.key] == .null) { out.append("\(p.title) is required.") }
-        if !weight.isFinite || weight < 0 { out.append("The weight must be zero or positive.") }
+        for p in d.params where p.required && (kind[p.key] == nil || kind[p.key] == .null) { out.append(String(localized: "\(EngineText.string(p.title)) is required.")) }
+        if !weight.isFinite || weight < 0 { out.append(String(localized: "The weight must be zero or positive.")) }
         return out
     }
 }
@@ -265,7 +265,7 @@ public enum OperandCatalog {
     public static var addable: [OperandDescriptor] { all.filter { !["param_value", "tolerance_sensitivity"].contains($0.type) } }
 
     public static func title(_ type: String) -> String {
-        descriptor(type)?.title ?? type.replacingOccurrences(of: "_", with: " ").capitalized
+        descriptor(type).map { EngineText.string($0.title) } ?? type.replacingOccurrences(of: "_", with: " ").capitalized
     }
 
     /// Descriptors matching a search, by category.
@@ -293,8 +293,8 @@ public struct DefaultMeritSettings: Hashable, Sendable {
         public var id: String { rawValue }
         public var title: String {
             switch self {
-            case .rmsSpot: "RMS spot radius"
-            case .wavefront: "RMS wavefront"
+            case .rmsSpot: String(localized: "RMS spot radius")
+            case .wavefront: String(localized: "RMS wavefront")
             case .mtf: "MTF"
             }
         }
@@ -398,15 +398,17 @@ public struct DefaultMeritSettings: Hashable, Sendable {
     public var summary: String {
         var s: String
         switch criterion {
-        case .rmsSpot: s = "RMS spot radius"
-        case .wavefront: s = "RMS wavefront"
+        case .rmsSpot: s = String(localized: "RMS spot radius")
+        case .wavefront: s = String(localized: "RMS wavefront")
         case .mtf:
-            s = "MTF ≥ \(Fmt.short(mtfTarget)) at " + mtfFrequencies.map { Fmt.short($0) }.joined(separator: ", ") + " cyc/mm"
-            if worstField { s += ", weakest field" }
+            let target = Fmt.short(mtfTarget), freqs = mtfFrequencies.map { Fmt.short($0) }.joined(separator: ", ")
+            s = worstField
+                ? String(localized: "MTF ≥ \(target) at \(freqs) cyc/mm, weakest field")
+                : String(localized: "MTF ≥ \(target) at \(freqs) cyc/mm")
         }
-        s += " · \(rings) rings × \(arms) arms"
-        if thickness { s += " · thickness limits" }
-        if let squeezeTarget { s += " · squeeze \(Fmt.short(squeezeTarget))" }
+        s += " · " + String(localized: "\(rings) rings × \(arms) arms")
+        if thickness { s += " · " + String(localized: "thickness limits") }
+        if let squeezeTarget { s += " · " + String(localized: "squeeze \(Fmt.short(squeezeTarget))") }
         return s
     }
 }

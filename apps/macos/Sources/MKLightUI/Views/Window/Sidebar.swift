@@ -104,7 +104,7 @@ struct AnalysisSidebar: View {
             if open { Circle().fill(.secondary).frame(width: 5, height: 5).accessibilityLabel("open") }
         }
         .tag(Self.tag(panel))
-        .help(panel == .lensData ? "Show the lens data (⌥⌘E)" : "Show the layout viewport (⌥⌘L)")
+        .help(panel == .lensData ? String(localized: "Show the lens data (⌥⌘E)") : String(localized: "Show the layout viewport (⌥⌘L)"))
         .contextMenu {
             let title = session.title(of: panel)
             if open { Button("Hide \(title)") { session.close(panel) } } else { Button("Show \(title)") { session.show(panel) } }
@@ -123,7 +123,7 @@ struct AnalysisSidebar: View {
                 Circle().fill(.secondary).frame(width: 5, height: 5).accessibilityLabel("open")
             }
         }
-        .help(d.available ? d.description : (d.unavailableReason ?? "Not available in this engine build"))
+        .help(d.available ? EngineText.string(d.description) : (d.unavailableReason.map(EngineText.string) ?? String(localized: "Not available in this engine build")))
         .contextMenu {
             Button("Open in New Pane") { workspace.addPane(d.name) }.disabled(!d.available)
             if let open { Button("Close Pane") { workspace.removePane(open) } }
@@ -151,8 +151,9 @@ struct IssuesButton: View {
                     .monospacedDigit()
             }
         }
-        .accessibilityLabel(issues.isEmpty ? "No issues" : "\(issues.count) issue\(issues.count == 1 ? "" : "s")")
-        .help(issues.isEmpty ? "The engine found no problems in the design" : "Show the design's validation issues (⌃⌘E)")
+        .accessibilityLabel(
+            issues.isEmpty ? String(localized: "No issues") : issues.count == 1 ? String(localized: "1 issue") : String(localized: "\(issues.count) issues"))
+        .help(issues.isEmpty ? String(localized: "The engine found no problems in the design") : String(localized: "Show the design's validation issues (⌃⌘E)"))
         .popover(isPresented: $window.showIssues, arrowEdge: .bottom) {
             IssuesList(workspace: workspace, window: window).frame(width: 420)
         }
@@ -190,7 +191,8 @@ struct IssuesList: View {
                                     .frame(maxWidth: .infinity, alignment: .leading)
                             }
                             .buttonStyle(.plain)
-                            .help(issue.surface != nil ? "Select surface \(issue.surface!)" : issue.field != nil ? "Show field \(issue.field! + 1)" : "")
+                            .help(
+                                issue.surface.map { String(localized: "Select surface \($0)") } ?? issue.field.map { String(localized: "Show field \($0 + 1)") } ?? "")
                         }
                     }
                     .padding(Space.l)
@@ -204,7 +206,9 @@ struct IssuesList: View {
     private var summary: String {
         let e = workspace.issues.filter { $0.severity == .error }.count
         let w = workspace.issues.filter { $0.severity == .warning }.count
-        return [e > 0 ? "\(e) error\(e == 1 ? "" : "s")" : nil, w > 0 ? "\(w) warning\(w == 1 ? "" : "s")" : nil]
+        let errors = e == 1 ? String(localized: "1 error") : String(localized: "\(e) errors")
+        let warnings = w == 1 ? String(localized: "1 warning") : String(localized: "\(w) warnings")
+        return [e > 0 ? errors : nil, w > 0 ? warnings : nil]
             .compactMap { $0 }.joined(separator: ", ")
     }
 
@@ -229,9 +233,9 @@ struct IssueRow: View {
 
     var body: some View {
         HStack(alignment: .firstTextBaseline, spacing: Space.m) {
-            Image(systemName: icon).foregroundStyle(color).accessibilityLabel(issue.severity.rawValue)
+            Image(systemName: icon).foregroundStyle(color).accessibilityLabel(severityName)
             VStack(alignment: .leading, spacing: 2) {
-                Text(issue.message).fixedSize(horizontal: false, vertical: true)
+                Text(message).fixedSize(horizontal: false, vertical: true)
                 HStack(spacing: Space.s) {
                     if !issue.code.isEmpty { Text(issue.code).monospaced() }
                     if let s = issue.surface { Text("Surface \(s)") }
@@ -243,6 +247,21 @@ struct IssueRow: View {
         }
         .padding(.vertical, 2)
         .contentShape(Rectangle())
+    }
+
+    private var message: String {
+        var values: [String: String] = [:]
+        if let s = issue.surface { values["surface"] = "\(s)" }
+        if let f = issue.field { values["field"] = "\(f)" }
+        return EngineText.diagnostic(code: issue.code, message: issue.message, values: values)
+    }
+
+    private var severityName: String {
+        switch issue.severity {
+        case .error: String(localized: "error")
+        case .warning: String(localized: "warning")
+        case .info: String(localized: "info")
+        }
     }
 
     private var icon: String {

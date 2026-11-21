@@ -70,12 +70,12 @@ public enum SurfaceTypeGroup: String, CaseIterable, Sendable, Identifiable {
     public var id: String { rawValue }
     public var title: String {
         switch self {
-        case .spherical: "Spherical"
-        case .aspheric: "Aspheric"
-        case .freeform: "Freeform"
-        case .anamorphic: "Anamorphic"
-        case .diffractive: "Diffractive"
-        case .special: "Special"
+        case .spherical: String(localized: "Spherical")
+        case .aspheric: String(localized: "Aspheric")
+        case .freeform: String(localized: "Freeform")
+        case .anamorphic: String(localized: "Anamorphic")
+        case .diffractive: String(localized: "Diffractive")
+        case .special: String(localized: "Special")
         }
     }
 }
@@ -131,19 +131,19 @@ public enum SurfaceTypeChoice: Hashable, Sendable, Identifiable {
 public enum SurfaceTypes {
     // MARK: Building blocks
 
-    static func radius(_ key: String = "curvature", _ title: String = "Radius", path: (@Sendable (SurfaceID) -> ParamPath)?) -> ShapeParam {
+    static func radius(_ key: String = "curvature", _ title: String = String(localized: "Radius"), path: (@Sendable (SurfaceID) -> ParamPath)?) -> ShapeParam {
         ShapeParam(
             key: key, title: title, unit: "mm", display: .radiusOfCurvature,
-            help: "Radius of curvature; ∞ for a plane. Stored as curvature c = 1/R.", path: path)
+            help: String(localized: "Radius of curvature; ∞ for a plane. Stored as curvature c = 1/R."), path: path)
     }
     static let radius = radius(path: { .curvature(surface: $0) })
     static let conic = ShapeParam(
-        key: "conic", title: "Conic", unit: "", help: "Conic constant k: 0 sphere, −1 paraboloid, < −1 hyperboloid.",
+        key: "conic", title: String(localized: "Conic"), unit: "", help: String(localized: "Conic constant k: 0 sphere, −1 paraboloid, < −1 hyperboloid."),
         path: { .conic(surface: $0) })
     static func normRadius(_ key: String = "norm_radius") -> ShapeParam {
         ShapeParam(
-            key: key, title: "Norm radius", unit: "mm",
-            help: "Normalization radius r_norm: the polynomial is defined for r ≤ r_norm. Usually the clear semi-diameter.",
+            key: key, title: String(localized: "Norm radius"), unit: "mm",
+            help: String(localized: "Normalization radius r_norm: the polynomial is defined for r ≤ r_norm. Usually the clear semi-diameter."),
             path: { .shapeParam(surface: $0, parameter: .normRadius) })
     }
 
@@ -165,7 +165,7 @@ public enum SurfaceTypes {
     /// Even axis polynomial of a toroid or biconic: `A₄ x⁴`, `B₆ y⁶`, …
     static func axisList(_ axis: String, set: CoefficientSet, letter: String) -> CoefficientList {
         CoefficientList(
-            key: set.rawValue, title: "\(axis.uppercased()) Polynomial", term: { k, _ in "\(letter)\(sub(2 * k + 4))" },
+            key: set.rawValue, title: String(localized: "\(axis.uppercased()) Polynomial"), term: { k, _ in "\(letter)\(sub(2 * k + 4))" },
             meaning: { k, _ in axis + superscript(2 * k + 4) }, unit: { mmPower(-(2 * $0 + 3)) },
             path: shapeCoefficient(set), maxCount: limit(set))
     }
@@ -176,20 +176,20 @@ public enum SurfaceTypes {
         let axis = t.m > 0 ? " x" : t.m < 0 ? " y" : ""
         let name: String? =
             switch (t.n, m) {
-            case (0, 0): "piston"
-            case (1, 1): "tilt"
-            case (2, 0): "defocus"
-            case (2, 2): "astigmatism"
-            case (3, 1): "coma"
-            case (3, 3): "trefoil"
-            case (4, 0): "spherical"
-            case (4, 2): "2nd astigmatism"
-            case (4, 4): "tetrafoil"
-            case (5, 1): "2nd coma"
-            case (5, 3): "2nd trefoil"
-            case (5, 5): "pentafoil"
-            case (6, 0): "2nd spherical"
-            case (8, 0): "3rd spherical"
+            case (0, 0): String(localized: "piston")
+            case (1, 1): String(localized: "tilt")
+            case (2, 0): String(localized: "defocus")
+            case (2, 2): String(localized: "astigmatism")
+            case (3, 1): String(localized: "coma")
+            case (3, 3): String(localized: "trefoil")
+            case (4, 0): String(localized: "spherical")
+            case (4, 2): String(localized: "2nd astigmatism")
+            case (4, 4): String(localized: "tetrafoil")
+            case (5, 1): String(localized: "2nd coma")
+            case (5, 3): String(localized: "2nd trefoil")
+            case (5, 5): String(localized: "pentafoil")
+            case (6, 0): String(localized: "2nd spherical")
+            case (8, 0): String(localized: "3rd spherical")
             default: nil
             }
         if let name { return name + (m == 0 ? "" : (t.n == 1 || t.n == 3 || t.n == 5 ? axis : t.m > 0 ? " 0°" : " 45°")) }
@@ -200,92 +200,92 @@ public enum SurfaceTypes {
 
     public static let all: [SurfaceTypeDescriptor] = [
         SurfaceTypeDescriptor(
-            id: "plane", kind: .plane, title: "Plane", symbol: "rectangle.portrait", group: .spherical,
-            summary: "A flat surface.", sections: []),
+            id: "plane", kind: .plane, title: String(localized: "Plane"), symbol: "rectangle.portrait", group: .spherical,
+            summary: String(localized: "A flat surface."), sections: []),
         SurfaceTypeDescriptor(
-            id: "conic", kind: .conic, title: "Sphere / Conic", symbol: "circle.lefthalf.filled", group: .spherical,
-            summary: "Sphere or conic of revolution.",
-            sections: [ParamSection(title: "Shape", params: [radius, conic])]),
+            id: "conic", kind: .conic, title: String(localized: "Sphere / Conic"), symbol: "circle.lefthalf.filled", group: .spherical,
+            summary: String(localized: "Sphere or conic of revolution."),
+            sections: [ParamSection(title: String(localized: "Shape"), params: [radius, conic])]),
         SurfaceTypeDescriptor(
-            id: "even_asphere", kind: .evenAsphere, title: "Even Asphere", symbol: "waveform.path", group: .aspheric,
-            summary: "Conic plus even polynomial terms A₄r⁴ + A₆r⁶ + …",
+            id: "even_asphere", kind: .evenAsphere, title: String(localized: "Even Asphere"), symbol: "waveform.path", group: .aspheric,
+            summary: String(localized: "Conic plus even polynomial terms A₄r⁴ + A₆r⁶ + …"),
             sections: [
-                ParamSection(title: "Base Conic", params: [radius, conic]),
+                ParamSection(title: String(localized: "Base Conic"), params: [radius, conic]),
                 ParamSection(
-                    title: "Polynomial",
+                    title: String(localized: "Polynomial"),
                     coefficients: CoefficientList(
-                        key: "coefficients", title: "Coefficients", term: { k, _ in "A\(sub(2 * k + 4))" },
+                        key: "coefficients", title: String(localized: "Coefficients"), term: { k, _ in "A\(sub(2 * k + 4))" },
                         meaning: { k, _ in "r" + superscript(2 * k + 4) }, unit: { mmPower(-(2 * $0 + 3)) },
                         path: { .asphere(surface: $0, index: $1) }, maxCount: { _ in 10 })),
             ]),
         SurfaceTypeDescriptor(
-            id: "odd_asphere", kind: .oddAsphere, title: "Odd Asphere", symbol: "waveform.path.ecg", group: .aspheric,
-            summary: "Conic plus all powers of r: β₁r + β₂r² + β₃r³ + … A nonzero β₁ is a cone at the vertex.",
+            id: "odd_asphere", kind: .oddAsphere, title: String(localized: "Odd Asphere"), symbol: "waveform.path.ecg", group: .aspheric,
+            summary: String(localized: "Conic plus all powers of r: β₁r + β₂r² + β₃r³ + … A nonzero β₁ is a cone at the vertex."),
             sections: [
-                ParamSection(title: "Base Conic", params: [radius, conic]),
+                ParamSection(title: String(localized: "Base Conic"), params: [radius, conic]),
                 ParamSection(
-                    title: "Polynomial",
+                    title: String(localized: "Polynomial"),
                     coefficients: CoefficientList(
-                        key: "coefficients", title: "Coefficients", term: { k, _ in "β\(sub(k + 1))" },
+                        key: "coefficients", title: String(localized: "Coefficients"), term: { k, _ in "β\(sub(k + 1))" },
                         meaning: { k, _ in k == 0 ? "r" : "r" + superscript(k + 1) }, unit: { mmPower(-$0) },
                         path: shapeCoefficient(.odd), maxCount: limit(.odd)),
-                    footer: "The paraxial curvature is c + 2β₂; β₁ has no first-order meaning."),
+                    footer: String(localized: "The paraxial curvature is c + 2β₂; β₁ has no first-order meaning.")),
             ]),
         SurfaceTypeDescriptor(
-            id: "q_con", kind: .qCon, title: "Q-Type (Conic)", symbol: "q.circle", group: .aspheric,
-            summary: "Forbes conic-based asphere: conic plus u⁴ Σ aₘ Qₘᶜᵒⁿ(u²), u = r/r_norm. Keeps the vertex curvature.",
+            id: "q_con", kind: .qCon, title: String(localized: "Q-Type (Conic)"), symbol: "q.circle", group: .aspheric,
+            summary: String(localized: "Forbes conic-based asphere: conic plus u⁴ Σ aₘ Qₘᶜᵒⁿ(u²), u = r/r_norm. Keeps the vertex curvature."),
             sections: [
-                ParamSection(title: "Base Conic", params: [radius, conic, normRadius()]),
+                ParamSection(title: String(localized: "Base Conic"), params: [radius, conic, normRadius()]),
                 ParamSection(
-                    title: "Q Polynomial",
+                    title: String(localized: "Q Polynomial"),
                     coefficients: CoefficientList(
-                        key: "coefficients", title: "Coefficients", term: { k, _ in "a\(sub(k))" },
+                        key: "coefficients", title: String(localized: "Coefficients"), term: { k, _ in "a\(sub(k))" },
                         meaning: { k, _ in "u⁴Q\(sub(k))ᶜᵒⁿ" }, unit: { _ in "mm" }, path: shapeCoefficient(.q),
                         maxCount: limit(.q))),
             ]),
         SurfaceTypeDescriptor(
-            id: "q_bfs", kind: .qBfs, title: "Q-Type (Best-Fit Sphere)", symbol: "q.square", group: .aspheric,
-            summary: "Forbes slope-orthogonal departure from a best-fit sphere: u²(1−u²) Σ aₘ Qₘᵇᶠˢ(u²) / √(1−c²r²).",
+            id: "q_bfs", kind: .qBfs, title: String(localized: "Q-Type (Best-Fit Sphere)"), symbol: "q.square", group: .aspheric,
+            summary: String(localized: "Forbes slope-orthogonal departure from a best-fit sphere: u²(1−u²) Σ aₘ Qₘᵇᶠˢ(u²) / √(1−c²r²)."),
             sections: [
-                ParamSection(title: "Best-Fit Sphere", params: [radius, normRadius()]),
+                ParamSection(title: String(localized: "Best-Fit Sphere"), params: [radius, normRadius()]),
                 ParamSection(
-                    title: "Q Polynomial",
+                    title: String(localized: "Q Polynomial"),
                     coefficients: CoefficientList(
-                        key: "coefficients", title: "Coefficients", term: { k, _ in "a\(sub(k))" },
+                        key: "coefficients", title: String(localized: "Coefficients"), term: { k, _ in "a\(sub(k))" },
                         meaning: { k, _ in "Q\(sub(k))ᵇᶠˢ" }, unit: { _ in "mm" }, path: shapeCoefficient(.q),
                         maxCount: limit(.q)),
-                    footer: "Vertex curvature c_bfs + 2Σaₘ Qₘ(0)/r_norm²."),
+                    footer: String(localized: "Vertex curvature c_bfs + 2Σaₘ Qₘ(0)/r_norm².")),
             ]),
         SurfaceTypeDescriptor(
-            id: "xy_polynomial", kind: .xyPolynomial, title: "XY Polynomial", symbol: "square.grid.3x3", group: .freeform,
-            summary: "Freeform: conic plus Σ C(xᵐyⁿ) Xᵐ Yⁿ with X = x/r_norm, Y = y/r_norm; degrees 1 to 10.",
+            id: "xy_polynomial", kind: .xyPolynomial, title: String(localized: "XY Polynomial"), symbol: "square.grid.3x3", group: .freeform,
+            summary: String(localized: "Freeform: conic plus Σ C(xᵐyⁿ) Xᵐ Yⁿ with X = x/r_norm, Y = y/r_norm; degrees 1 to 10."),
             sections: [
-                ParamSection(title: "Base Conic", params: [radius, conic, normRadius()]),
+                ParamSection(title: String(localized: "Base Conic"), params: [radius, conic, normRadius()]),
                 ParamSection(
-                    title: "XY Terms",
+                    title: String(localized: "XY Terms"),
                     coefficients: CoefficientList(
-                        key: "coefficients", title: "Coefficients",
+                        key: "coefficients", title: String(localized: "Coefficients"),
                         term: { k, _ in XYTerm(index: k).map { "C(\($0.monomial))" } ?? "C\(k)" },
-                        meaning: { k, _ in XYTerm(index: k).map { "degree \($0.degree)" } ?? "" }, unit: { _ in "mm" },
+                        meaning: { k, _ in XYTerm(index: k).map { String(localized: "degree \($0.degree)") } ?? "" }, unit: { _ in "mm" },
                         path: shapeCoefficient(.xy), maxCount: limit(.xy), sparse: true)),
             ],
             preview: .freeform),
         SurfaceTypeDescriptor(
-            id: "zernike_sag", kind: .zernikeSag, title: "Zernike Sag", symbol: "circle.hexagongrid", group: .freeform,
-            summary: "Freeform: conic plus Σ cⱼ Zⱼ(ρ, θ), ρ = r/r_norm, θ from +x. Sag coefficients in mm, piston and tilt kept.",
+            id: "zernike_sag", kind: .zernikeSag, title: String(localized: "Zernike Sag"), symbol: "circle.hexagongrid", group: .freeform,
+            summary: String(localized: "Freeform: conic plus Σ cⱼ Zⱼ(ρ, θ), ρ = r/r_norm, θ from +x. Sag coefficients in mm, piston and tilt kept."),
             sections: [
                 ParamSection(
-                    title: "Base Conic", params: [radius, conic, normRadius()],
+                    title: String(localized: "Base Conic"), params: [radius, conic, normRadius()],
                     choices: [
                         ShapeChoice(
-                            key: "ordering", title: "Ordering",
-                            options: [("fringe", "Fringe (37 terms)"), ("standard", "Standard / Noll (45 terms)")],
-                            help: "Fringe terms are unnormalized; Standard (Noll) terms are normalized.")
+                            key: "ordering", title: String(localized: "Ordering"),
+                            options: [("fringe", String(localized: "Fringe (37 terms)")), ("standard", String(localized: "Standard / Noll (45 terms)"))],
+                            help: String(localized: "Fringe terms are unnormalized; Standard (Noll) terms are normalized."))
                     ]),
                 ParamSection(
-                    title: "Zernike Terms",
+                    title: String(localized: "Zernike Terms"),
                     coefficients: CoefficientList(
-                        key: "coefficients", title: "Coefficients", term: { k, _ in "Z\(sub(k + 1))" },
+                        key: "coefficients", title: String(localized: "Coefficients"), term: { k, _ in "Z\(sub(k + 1))" },
                         meaning: { k, shape in
                             guard case .zernikeSag(_, _, _, let o, _) = shape, let t = ZernikeTerm(j: k + 1, ordering: o) else { return "" }
                             return zernikeName(t)
@@ -294,102 +294,102 @@ public enum SurfaceTypes {
             ],
             preview: .freeform),
         SurfaceTypeDescriptor(
-            id: "toroid", kind: .toroid, title: "Toroid", symbol: "capsule", group: .anamorphic,
-            summary: "The y profile (conic plus even terms) rotated about an axis parallel to y at the distance R_x.",
+            id: "toroid", kind: .toroid, title: String(localized: "Toroid"), symbol: "capsule", group: .anamorphic,
+            summary: String(localized: "The y profile (conic plus even terms) rotated about an axis parallel to y at the distance R_x."),
             sections: [
                 ParamSection(
-                    title: "Y Profile",
+                    title: String(localized: "Y Profile"),
                     params: [
-                        radius("curvature_y", "Radius y", path: { .curvature(surface: $0) }),
+                        radius("curvature_y", String(localized: "Radius y"), path: { .curvature(surface: $0) }),
                         ShapeParam(
-                            key: "conic_y", title: "Conic y", unit: "", help: "Conic constant of the y profile.",
+                            key: "conic_y", title: String(localized: "Conic y"), unit: "", help: String(localized: "Conic constant of the y profile."),
                             path: { .shapeParam(surface: $0, parameter: .conicY) }),
                     ],
                     coefficients: axisList("y", set: .yAsphere, letter: "B")),
                 ParamSection(
-                    title: "Rotation",
-                    params: [radius("curvature_x", "Radius x", path: { .shapeParam(surface: $0, parameter: .curvatureX) })],
-                    footer: "Radius x is the distance from the vertex to the axis of rotation; ∞ makes a y cylinder."),
+                    title: String(localized: "Rotation"),
+                    params: [radius("curvature_x", String(localized: "Radius x"), path: { .shapeParam(surface: $0, parameter: .curvatureX) })],
+                    footer: String(localized: "Radius x is the distance from the vertex to the axis of rotation; ∞ makes a y cylinder.")),
             ],
             preview: .anamorphic),
         SurfaceTypeDescriptor(
-            id: "biconic", kind: .biconic, title: "Biconic", symbol: "oval", group: .anamorphic,
-            summary: "Independent conics in x and y with even axis polynomials. A cylinder is a biconic with one plane axis.",
+            id: "biconic", kind: .biconic, title: String(localized: "Biconic"), symbol: "oval", group: .anamorphic,
+            summary: String(localized: "Independent conics in x and y with even axis polynomials. A cylinder is a biconic with one plane axis."),
             sections: [
                 ParamSection(
-                    title: "X Section",
+                    title: String(localized: "X Section"),
                     params: [
-                        radius("curvature_x", "Radius x", path: { .shapeParam(surface: $0, parameter: .curvatureX) }),
+                        radius("curvature_x", String(localized: "Radius x"), path: { .shapeParam(surface: $0, parameter: .curvatureX) }),
                         ShapeParam(
-                            key: "conic_x", title: "Conic x", unit: "", help: "Conic constant in x.",
+                            key: "conic_x", title: String(localized: "Conic x"), unit: "", help: String(localized: "Conic constant in x."),
                             path: { .shapeParam(surface: $0, parameter: .conicX) }),
                     ],
                     coefficients: axisList("x", set: .xAsphere, letter: "A")),
                 ParamSection(
-                    title: "Y Section",
+                    title: String(localized: "Y Section"),
                     params: [
-                        radius("curvature_y", "Radius y", path: { .curvature(surface: $0) }),
+                        radius("curvature_y", String(localized: "Radius y"), path: { .curvature(surface: $0) }),
                         ShapeParam(
-                            key: "conic_y", title: "Conic y", unit: "", help: "Conic constant in y.",
+                            key: "conic_y", title: String(localized: "Conic y"), unit: "", help: String(localized: "Conic constant in y."),
                             path: { .shapeParam(surface: $0, parameter: .conicY) }),
                     ],
                     coefficients: axisList("y", set: .yAsphere, letter: "B")),
             ],
             preview: .anamorphic),
         SurfaceTypeDescriptor(
-            id: "diffractive", kind: .diffractive, title: "Diffractive", symbol: "rainbow", group: .diffractive,
-            summary: "A fixed-period phase Φ = Σ Aᵢ ρ²ⁱ (order +1, radians) on a plane, conic or even-asphere base.",
+            id: "diffractive", kind: .diffractive, title: String(localized: "Diffractive"), symbol: "rainbow", group: .diffractive,
+            summary: String(localized: "A fixed-period phase Φ = Σ Aᵢ ρ²ⁱ (order +1, radians) on a plane, conic or even-asphere base."),
             sections: [
                 ParamSection(
-                    title: "Base Shape", params: [radius("base.curvature", path: { .curvature(surface: $0) }), conicAt("base.conic")],
+                    title: String(localized: "Base Shape"), params: [radius("base.curvature", path: { .curvature(surface: $0) }), conicAt("base.conic")],
                     applies: { if case .diffractive(let b, _) = $0 { return b.kind != .plane }; return false }),
                 ParamSection(
-                    title: "Base Polynomial",
+                    title: String(localized: "Base Polynomial"),
                     coefficients: CoefficientList(
-                        key: "base.coefficients", title: "Coefficients", term: { k, _ in "A\(sub(2 * k + 4))" },
+                        key: "base.coefficients", title: String(localized: "Coefficients"), term: { k, _ in "A\(sub(2 * k + 4))" },
                         meaning: { k, _ in "r" + superscript(2 * k + 4) }, unit: { mmPower(-(2 * $0 + 3)) },
                         path: { .asphere(surface: $0, index: $1) }, maxCount: { _ in 10 }),
                     applies: { if case .diffractive(let b, _) = $0 { return b.kind == .evenAsphere }; return false }),
                 ParamSection(
-                    title: "Phase",
+                    title: String(localized: "Phase"),
                     params: [normRadius("phase.norm_radius")],
                     coefficients: CoefficientList(
-                        key: "phase.coefficients", title: "Coefficients", term: { k, _ in "A\(sub(k + 1))" },
+                        key: "phase.coefficients", title: String(localized: "Coefficients"), term: { k, _ in "A\(sub(k + 1))" },
                         meaning: { k, _ in "ρ" + superscript(2 * (k + 1)) }, unit: { _ in "rad" },
                         path: shapeCoefficient(.phase), maxCount: limit(.phase)),
-                    footer: "A focusing phase has negative A₁. Coefficients describe order +1 and stay fixed when the wavelength or order changes."),
+                    footer: String(localized: "A focusing phase has negative A₁. Coefficients describe order +1 and stay fixed when the wavelength or order changes.")),
                 ParamSection(
-                    title: "Orders",
+                    title: String(localized: "Orders"),
                     params: [
                         ShapeParam(
-                            key: "phase.design_order", title: "Design order", unit: "", display: .integer,
-                            help: "The order the structure is designed for (nonzero). Metadata: it does not rescale the phase."),
+                            key: "phase.design_order", title: String(localized: "Design order"), unit: "", display: .integer,
+                            help: String(localized: "The order the structure is designed for (nonzero). Metadata: it does not rescale the phase.")),
                         ShapeParam(
-                            key: "phase.design_wavelength_um", title: "Design λ", unit: "µm",
-                            help: "Design wavelength λ₀. Metadata: it does not rescale the phase."),
+                            key: "phase.design_wavelength_um", title: String(localized: "Design λ"), unit: "µm",
+                            help: String(localized: "Design wavelength λ₀. Metadata: it does not rescale the phase.")),
                         ShapeParam(
-                            key: "phase.trace_order", title: "Trace order", unit: "", display: .integer,
-                            help: "The order rays follow; 0 is ordinary refraction or reflection."),
+                            key: "phase.trace_order", title: String(localized: "Trace order"), unit: "", display: .integer,
+                            help: String(localized: "The order rays follow; 0 is ordinary refraction or reflection.")),
                     ],
-                    footer: "Orders are discrete and never optimization variables."),
+                    footer: String(localized: "Orders are discrete and never optimization variables.")),
             ],
             preview: .diffractive, orderEfficiency: true),
         SurfaceTypeDescriptor(
-            id: "paraxial", kind: .paraxial, title: "Ideal Lens", symbol: "lines.measurement.horizontal", group: .special,
-            summary: "A thin, aberration-free lens of the given focal length.",
+            id: "paraxial", kind: .paraxial, title: String(localized: "Ideal Lens"), symbol: "lines.measurement.horizontal", group: .special,
+            summary: String(localized: "A thin, aberration-free lens of the given focal length."),
             sections: [
                 ParamSection(
-                    title: "Ideal Lens",
+                    title: String(localized: "Ideal Lens"),
                     params: [
                         ShapeParam(
-                            key: "focal_length", title: "Focal length", unit: "mm", help: "Focal length of the ideal lens.",
+                            key: "focal_length", title: String(localized: "Focal length"), unit: "mm", help: String(localized: "Focal length of the ideal lens."),
                             path: { .paraxialFocalLength(surface: $0) })
                     ])
             ],
             preview: .idealLens),
         SurfaceTypeDescriptor(
-            id: "coordinate_break", kind: .coordinateBreak, title: "Coordinate Break", symbol: "move.3d", group: .special,
-            summary: "Changes the coordinate frame only: decenters, then tilts (or the reverse).", sections: [],
+            id: "coordinate_break", kind: .coordinateBreak, title: String(localized: "Coordinate Break"), symbol: "move.3d", group: .special,
+            summary: String(localized: "Changes the coordinate frame only: decenters, then tilts (or the reverse)."), sections: [],
             placementFirst: true, preview: .coordinateBreak),
     ]
 
@@ -417,8 +417,8 @@ public enum SurfaceTypes {
     public static func title(of choice: SurfaceTypeChoice) -> String {
         switch choice {
         case .kind(let k): descriptor(for: k).title
-        case .cylinder(.x): "Cylinder (power in x)"
-        case .cylinder(.y): "Cylinder (power in y)"
+        case .cylinder(.x): String(localized: "Cylinder (power in x)")
+        case .cylinder(.y): String(localized: "Cylinder (power in y)")
         }
     }
 

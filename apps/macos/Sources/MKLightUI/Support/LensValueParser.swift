@@ -16,11 +16,11 @@ public enum LensValueParser {
         public var description: String {
             switch self {
             case .outOfRange(let why): why
-            case .notANumber(let s): "'\(s)' is not a number"
-            case .mustBePositive: "Value must be greater than zero"
-            case .mustBeFinite: "Value must be finite"
-            case .invalidMaterial(let s): "'\(s)' is not a material (glass name, AIR, MIRROR, nd/vd, n=…, CATALOG:NAME)"
-            case .mustBeWhole: "An order is a whole number"
+            case .notANumber(let s): String(localized: "'\(s)' is not a number")
+            case .mustBePositive: String(localized: "Value must be greater than zero")
+            case .mustBeFinite: String(localized: "Value must be finite")
+            case .invalidMaterial(let s): String(localized: "'\(s)' is not a material (glass name, AIR, MIRROR, nd/vd, n=…, CATALOG:NAME)")
+            case .mustBeWhole: String(localized: "An order is a whole number")
             }
         }
     }

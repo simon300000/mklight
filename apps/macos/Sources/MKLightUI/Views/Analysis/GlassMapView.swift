@@ -95,9 +95,9 @@ struct GlassMapChart: View {
 
     private var accessibilityValue: String {
         let marked = highlighted.compactMap { h in glasses.first { $0.id == h.id }.map { "\($0.name) \(h.label)" } }
-        var t = marked.isEmpty ? "" : "Marked: " + marked.joined(separator: "; ")
+        var t = marked.isEmpty ? "" : String(localized: "Marked: \(marked.joined(separator: "; "))")
         if let s = selection, let g = glasses.first(where: { $0.id == s }) {
-            t += (t.isEmpty ? "" : ". ") + "Selected \(g.name)"
+            t += (t.isEmpty ? "" : ". ") + String(localized: "Selected \(g.name)")
         }
         return t
     }
@@ -241,7 +241,7 @@ struct GlassCard: View {
     var body: some View {
         VStack(alignment: .leading, spacing: compact ? 1 : Space.xs) {
             Text(glass.displayName).font(compact ? .caption.weight(.semibold) : .headline)
-            Text([glass.catalog ?? (glass.kind == .model ? "Model glass" : ""), glass.kind == .offset ? "melt offset" : "",
+            Text([glass.catalog ?? (glass.kind == .model ? String(localized: "Model glass") : ""), glass.kind == .offset ? String(localized: "melt offset") : "",
                   glass.status == .unknown ? "" : glass.status.label]
                 .filter { !$0.isEmpty }.joined(separator: " · "))
                 .font(.caption2).foregroundStyle(.secondary)
@@ -256,7 +256,7 @@ struct GlassCard: View {
                     row(Text("ΔP") + GlassMapPlane.sub("g,F"), glass.pgf.isFinite ? String(format: "%+.4f", glass.deltaPgF) : "—")
                     if glass.status != .unknown { row(Text("Status"), glass.status.label) }
                     if !glass.surfaces.isEmpty { row(Text("Surfaces"), glass.surfaceLabel) }
-                    if glass.excludeSubstitution == true { row(Text("Substitution"), "Excluded") }
+                    if glass.excludeSubstitution == true { row(Text("Substitution"), String(localized: "Excluded")) }
                 }
             }
             .font(compact ? .caption2 : .callout)
@@ -288,7 +288,7 @@ struct GlassStatusLegend: View {
                     } else {
                         Circle().fill(c).frame(width: 6, height: 6)
                     }
-                    Text(statuses == [.unknown] ? "Catalog glass" : s.label)
+                    Text(statuses == [.unknown] ? String(localized: "Catalog glass") : s.label)
                 }
             }
             HStack(spacing: 4) {

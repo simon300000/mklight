@@ -164,7 +164,7 @@ struct ColorBar: View {
         .font(.caption2.monospacedDigit())
         .foregroundStyle(.secondary)
         .accessibilityElement(children: .ignore)
-        .accessibilityLabel("Color scale from \(label(low)) to \(label(range.upperBound))" + (isLog ? ", logarithmic" : ""))
+        .accessibilityLabel(isLog ? String(localized: "Color scale from \(label(low)) to \(label(range.upperBound)), logarithmic") : String(localized: "Color scale from \(label(low)) to \(label(range.upperBound))"))
     }
 
     private var isLog: Bool { scale == .sequential(log: true) }
@@ -355,7 +355,7 @@ struct LineChart: View {
         .chartXScale(domain: xDomain ?? autoDomain(\.0))
         .chartYScale(domain: yDomain ?? autoDomain(\.1))
         .chartLegend(.hidden)
-        .accessibilityLabel(yLabel + " versus " + xLabel)
+        .accessibilityLabel(String(localized: "\(yLabel) versus \(xLabel)"))
     }
 
     /// Splits a series at non-finite values.

@@ -10,6 +10,18 @@ public struct GlassCandidates: Hashable, Sendable {
     public enum Rule: String, Hashable, Sendable { case nearest, window }
     public static let allStatuses = ["preferred", "standard", "melt", "special", "obsolete"]
 
+    /// A catalogue status as shown ("Preferred").
+    public static func statusTitle(_ status: String) -> String {
+        switch status {
+        case "preferred": String(localized: "Preferred")
+        case "standard": String(localized: "Standard")
+        case "melt": String(localized: "Melt")
+        case "special": String(localized: "Special")
+        case "obsolete": String(localized: "Obsolete")
+        default: status.capitalized
+        }
+    }
+
     /// Catalogues to draw from; empty: every loaded catalogue.
     public var catalogs: [String] = []
     public var statuses: Set<String> = ["standard", "preferred", "melt"]
@@ -56,14 +68,14 @@ public struct GlassCandidates: Hashable, Sendable {
     public var summary: String {
         var parts: [String] = []
         switch rule {
-        case .nearest: parts.append("\(nearest) nearest")
+        case .nearest: parts.append(String(localized: "\(nearest) nearest"))
         case .window: parts.append("n_d ±\(Fmt.short(windowNd)), V_d ±\(Fmt.short(windowVd))")
         }
-        parts.append(catalogs.isEmpty ? "all catalogs" : catalogs.joined(separator: ", "))
-        if statuses != ["standard", "preferred", "melt"] { parts.append(Self.allStatuses.filter(statuses.contains).joined(separator: ", ")) }
+        parts.append(catalogs.isEmpty ? String(localized: "all catalogs") : catalogs.joined(separator: ", "))
+        if statuses != ["standard", "preferred", "melt"] { parts.append(Self.allStatuses.filter(statuses.contains).map { Self.statusTitle($0).lowercased() }.joined(separator: ", ")) }
         if !include.isEmpty { parts.append("+\(include.count)") }
         if !exclude.isEmpty { parts.append("−\(exclude.count)") }
-        if [minTransmission, maxRelativeCost, maxClimateClass, maxStainClass].contains(where: { $0 != nil }) { parts.append("limits") }
+        if [minTransmission, maxRelativeCost, maxClimateClass, maxStainClass].contains(where: { $0 != nil }) { parts.append(String(localized: "limits")) }
         return parts.joined(separator: " · ")
     }
 
@@ -223,11 +235,11 @@ public final class GlassSubstitutionSession {
     public enum Algorithm: String, CaseIterable, Sendable, Identifiable {
         case tabu, hammer
         public var id: String { rawValue }
-        public var title: String { self == .tabu ? "Quick (tabu search)" : "Thorough (global search)" }
+        public var title: String { self == .tabu ? String(localized: "Quick (tabu search)") : String(localized: "Thorough (global search)") }
         public var detail: String {
             self == .tabu
-                ? "Tries glass combinations, each re-optimized from the current shape."
-                : "Hops over glasses and shape together to escape local minima; slower."
+                ? String(localized: "Tries glass combinations, each re-optimized from the current shape.")
+                : String(localized: "Hops over glasses and shape together to escape local minima; slower.")
         }
     }
 
@@ -314,7 +326,7 @@ public final class GlassSubstitutionSession {
         result = nil
         selectedRank = nil
         applied = false
-        state = .running(JobProgress(fraction: 0, stage: "Preparing candidates"))
+        state = .running(JobProgress(fraction: 0, stage: String(localized: "Preparing candidates")))
         Task { @MainActor [weak self] in
             for await p in job.progress {
                 guard let self, self.job === job, case .running = self.state else { return }
@@ -330,7 +342,7 @@ public final class GlassSubstitutionSession {
                 let out = try await job.result()
                 guard let self, self.job === job else { return }
                 guard let r = GlassSubstitutionResult(json: out.json) else {
-                    self.state = .failed("The engine returned no glass combinations.")
+                    self.state = .failed(String(localized: "The engine returned no glass combinations."))
                     return
                 }
                 self.result = r
@@ -369,13 +381,13 @@ public final class GlassSubstitutionSession {
             workspace.preview(nil)
             return
         }
-        workspace.preview(s, title: "Candidate \(c.rank)")
+        workspace.preview(s, title: String(localized: "Candidate \(c.rank)"))
     }
 
     /// Applies the previewed combination's design as one undoable step.
     public func apply(to document: DesignDocument, workspace: Workspace, undoManager: UndoManager?) {
         guard let s = selectedCombination?.system, !applied else { return }
-        document.replace(system: s, actionName: "Apply Glass Substitution", undoManager: undoManager)
+        document.replace(system: s, actionName: String(localized: "Apply Glass Substitution"), undoManager: undoManager)
         applied = true
         workspace.preview(nil)
     }

@@ -34,7 +34,7 @@ struct SpotDiagramView: View {
                         }
                     }
                     if grid.airy.isFinite {
-                        LegendItem(color: .secondary, label: "Airy disk \(Fmt.length(grid.airy))", dashed: true)
+                        LegendItem(color: .secondary, label: String(localized: "Airy disk \(Fmt.length(grid.airy))"), dashed: true)
                     }
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
@@ -65,15 +65,15 @@ private struct ScaleNote: View {
     }
 
     private var text: String {
-        var s =
+        var parts =
             scale == .grid || grid.rows.count < 2
-            ? "Box half-width \(Fmt.length(grid.halfWidths(.grid).first ?? .nan)), common to all cells"
-            : "Box half-width per field, shown by each row"
-        s += grid.reference == "centroid" ? " · about the centroid" : " · about the chief ray"
+            ? [String(localized: "Box half-width \(Fmt.length(grid.halfWidths(.grid).first ?? .nan)), common to all cells")]
+            : [String(localized: "Box half-width per field, shown by each row")]
+        parts.append(grid.reference == "centroid" ? String(localized: "about the centroid") : String(localized: "about the chief ray"))
         if grid.planes.count < grid.sampledPlanes {
-            s += " · \(grid.planes.count) of \(grid.sampledPlanes) planes shown"
+            parts.append(String(localized: "\(grid.planes.count) of \(grid.sampledPlanes) planes shown"))
         }
-        return s
+        return parts.joined(separator: " · ")
     }
 }
 
@@ -101,7 +101,7 @@ struct FanView: View {
         fields = list.enumerated().map { k, f in
             let i = f["field"]?.int ?? k
             return FieldFan(
-                id: i, label: "Field \(i + 1) · " + context.fieldLabel(f["field_value"]?.nfArray),
+                id: i, label: String(localized: "Field \(i + 1) · \(context.fieldLabel(f["field_value"]?.nfArray))"),
                 tangential: curves(f["tangential"]), sagittal: curves(f["sagittal"]))
         }
     }
@@ -125,8 +125,8 @@ struct FanView: View {
                             VStack(alignment: .leading, spacing: Space.xxs) {
                                 Text(f.label).font(.caption.weight(.semibold)).lineLimit(1)
                                 HStack(spacing: Space.l) {
-                                    PlotCell(title: "Tangential") { chart(f.tangential, x: "Py", y: opd ? "W (waves)" : "εy (µm)") }
-                                    PlotCell(title: "Sagittal") { chart(f.sagittal, x: "Px", y: opd ? "W (waves)" : "εx (µm)") }
+                                    PlotCell(title: String(localized: "Tangential")) { chart(f.tangential, x: "Py", y: opd ? "W (waves)" : "εy (µm)") }
+                                    PlotCell(title: String(localized: "Sagittal")) { chart(f.sagittal, x: "Px", y: opd ? "W (waves)" : "εx (µm)") }
                                 }
                             }
                             .frame(height: h)
@@ -173,24 +173,24 @@ struct FieldCurvatureView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: Space.s) {
             WavelengthLegend(wavelengths: curves.map(\.wavelength), um: wavelengthsUm) {
-                LegendItem(color: .secondary, label: "Tangential")
-                LegendItem(color: .secondary, label: "Sagittal", dashed: true)
+                LegendItem(color: .secondary, label: String(localized: "Tangential"))
+                LegendItem(color: .secondary, label: String(localized: "Sagittal"), dashed: true)
             }
             HStack(spacing: Space.l) {
-                PlotCell(title: "Field Curvature") {
+                PlotCell(title: String(localized: "Field Curvature")) {
                     LineChart(
                         series: curves.flatMap { c in
                             [
                                 Series(id: "t\(c.wavelength)", label: "T", color: color(c.wavelength), points: zip(c.t, field).map { ($0, $1) }),
                                 Series(id: "s\(c.wavelength)", label: "S", color: color(c.wavelength), points: zip(c.s, field).map { ($0, $1) }, dashed: true),
                             ]
-                        }, xLabel: "Focus shift (mm)", yLabel: "Field (\(fieldUnit))", zeroLine: false)
+                        }, xLabel: String(localized: "Focus shift (mm)"), yLabel: String(localized: "Field (\(fieldUnit))"), zeroLine: false)
                 }
-                PlotCell(title: "Distortion") {
+                PlotCell(title: String(localized: "Distortion")) {
                     LineChart(
                         series: curves.map { c in
                             Series(id: "d\(c.wavelength)", label: "", color: color(c.wavelength), points: zip(c.d, field).map { ($0, $1) })
-                        }, xLabel: "Distortion (%)", yLabel: "Field (\(fieldUnit))", zeroLine: false)
+                        }, xLabel: String(localized: "Distortion (%)"), yLabel: String(localized: "Field (\(fieldUnit))"), zeroLine: false)
                 }
             }
         }
@@ -222,8 +222,8 @@ struct GridDistortionView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: Space.s) {
             FlowLayout(spacing: Space.l, lineSpacing: Space.xs) {
-                LegendItem(color: .secondary.opacity(0.5), label: "Paraxial grid", dashed: true)
-                LegendItem(color: .primary, label: "Real chief rays")
+                LegendItem(color: .secondary.opacity(0.5), label: String(localized: "Paraxial grid"), dashed: true)
+                LegendItem(color: .primary, label: String(localized: "Real chief rays"))
                 Text("Max \(String(format: "%.3f", maxDistortion)) %").font(.caption).foregroundStyle(.secondary).numeric().fixedSize()
             }
             Canvas { ctx, size in
@@ -261,8 +261,10 @@ struct GridDistortionView: View {
 
 struct SeidelView: View {
     struct Bar: Identifiable { var id: String { "\(surface)-\(term)" }; var surface: String; var term: String; var value: Double }
-    static let terms = [("s1", "S_I spherical"), ("s2", "S_II coma"), ("s3", "S_III astigmatism"), ("s4", "S_IV Petzval"), ("s5", "S_V distortion")]
-    static let colour = [("cl", "C_L axial"), ("ct", "C_T lateral")]
+    static let terms = [("s1", String(localized: "S_I spherical")), ("s2", String(localized: "S_II coma")), ("s3", String(localized: "S_III astigmatism")),
+        ("s4", String(localized: "S_IV Petzval")), ("s5", String(localized: "S_V distortion")),
+    ]
+    static let colour = [("cl", String(localized: "C_L axial")), ("ct", String(localized: "C_T lateral"))]
     let surfaces: [[String: Double]]
     let surfaceIndex: [Int]
     let sums: [String: Double]
@@ -327,7 +329,7 @@ struct SeidelView: View {
 
     @ViewBuilder var body: some View {
         if let notApplicable {
-            ContentUnavailableView("Seidel Coefficients Do Not Apply", systemImage: "circle.slash", description: Text(notApplicable))
+            ContentUnavailableView("Seidel Coefficients Do Not Apply", systemImage: "circle.slash", description: Text(EngineText.string(notApplicable)))
         } else {
             coefficients
         }
@@ -401,7 +403,7 @@ struct LongitudinalView: View {
             LineChart(
                 series: curves.map { w, a in
                     Series(id: "\(w)", label: "", color: Palette.wavelengthColor(um.indices.contains(w) ? um[w] : 0.55), points: zip(a, pupil).map { ($0, $1) })
-                }, xLabel: "Longitudinal aberration (mm)", yLabel: "Pupil zone", yDomain: 0...1, zeroLine: false)
+                }, xLabel: String(localized: "Longitudinal aberration (mm)"), yLabel: String(localized: "Pupil zone"), yDomain: 0...1, zeroLine: false)
         }
         .padding(Space.m)
     }
@@ -421,7 +423,7 @@ struct ChromaticFocalShiftView: View {
     var body: some View {
         LineChart(
             series: [Series(id: "shift", label: "", color: Palette.fieldColor(0), points: zip(shift.map { $0 * 1000 }, um).map { ($0, $1) })],
-            xLabel: "Focal shift (µm)", yLabel: "Wavelength (µm)", zeroLine: false)
+            xLabel: String(localized: "Focal shift (µm)"), yLabel: String(localized: "Wavelength (µm)"), zeroLine: false)
             .padding(Space.m)
     }
 }
@@ -446,7 +448,7 @@ struct LateralColourView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: Space.s) {
             WavelengthLegend(wavelengths: curves.map(\.0), um: um) {
-                if airy.isFinite { LegendItem(color: .secondary, label: "± Airy radius", dashed: true) }
+                if airy.isFinite { LegendItem(color: .secondary, label: String(localized: "± Airy radius"), dashed: true) }
             }
             Chart {
                 if airy.isFinite {
@@ -490,14 +492,14 @@ struct RelativeIlluminationView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: Space.s) {
             HStack(spacing: Space.l) {
-                LegendItem(color: Palette.fieldColor(0), label: "Relative illumination")
-                if !vignetting.isEmpty { LegendItem(color: Palette.fieldColor(1), label: "Vignetted fraction", dashed: true) }
+                LegendItem(color: Palette.fieldColor(0), label: String(localized: "Relative illumination"))
+                if !vignetting.isEmpty { LegendItem(color: Palette.fieldColor(1), label: String(localized: "Vignetted fraction"), dashed: true) }
             }
             LineChart(
                 series: [
                     Series(id: "ri", label: "", color: Palette.fieldColor(0), points: zip(field, ri).map { ($0, $1) }),
                     Series(id: "v", label: "", color: Palette.fieldColor(1), points: zip(field, vignetting).map { ($0, $1) }, dashed: true),
-                ], xLabel: "Field (\(unit))", yLabel: "Fraction", yDomain: 0...1.05, zeroLine: false)
+                ], xLabel: String(localized: "Field (\(unit))"), yLabel: String(localized: "Fraction"), yDomain: 0...1.05, zeroLine: false)
         }
         .padding(Space.m)
     }
@@ -538,8 +540,8 @@ struct FootprintView: View {
         VStack(alignment: .leading, spacing: Space.s) {
             HStack(spacing: Space.l) {
                 Text("Surface \(surface)").font(.caption.weight(.semibold))
-                if semiDiameter.isFinite { LegendItem(color: .secondary, label: "Clear aperture \(Fmt.short(semiDiameter)) mm", dashed: true) }
-                if !clipped.isEmpty { LegendItem(color: Color(.sRGB, red: 0.89, green: 0.29, blue: 0.28), label: "\(clipped.count) clipped") }
+                if semiDiameter.isFinite { LegendItem(color: .secondary, label: String(localized: "Clear aperture \(Fmt.short(semiDiameter)) mm"), dashed: true) }
+                if !clipped.isEmpty { LegendItem(color: Color(.sRGB, red: 0.89, green: 0.29, blue: 0.28), label: String(localized: "\(clipped.count) clipped")) }
             }
             Canvas { ctx, size in
                 let all = points.map { max(abs($0.0), abs($0.1)) } + clipped.map { max(abs($0.0), abs($0.1)) }
@@ -585,7 +587,7 @@ struct EncircledEnergyView: View {
             guard !enc.isEmpty, enc.count == shared.count else { return nil }
             let i = f["field"]?.int ?? k
             return Curve(
-                field: i, label: "Field \(i + 1) · " + context.fieldLabel(f["field_value"]?.nfArray), radius: shared, encircled: enc,
+                field: i, label: String(localized: "Field \(i + 1) · \(context.fieldLabel(f["field_value"]?.nfArray))"), radius: shared, encircled: enc,
                 limit: output.buffer(ref: f["diffraction_limit"])?.doubles ?? [], r80: (f["r80"] ?? f["r80_mm"])?.nf ?? .nan)
         }
         if curves.isEmpty { return nil }
@@ -594,15 +596,15 @@ struct EncircledEnergyView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: Space.s) {
             FlowLayout(spacing: Space.m) {
-                ForEach(curves, id: \.field) { c in LegendItem(color: Palette.fieldColor(c.field), label: c.label + " · r80 \(units.length(c.r80))") }
-                if curves.contains(where: { !$0.limit.isEmpty }) { LegendItem(color: .secondary, label: "Diffraction limit", dashed: true) }
+                ForEach(curves, id: \.field) { c in LegendItem(color: Palette.fieldColor(c.field), label: String(localized: "\(c.label) · r80 \(units.length(c.r80))")) }
+                if curves.contains(where: { !$0.limit.isEmpty }) { LegendItem(color: .secondary, label: String(localized: "Diffraction limit"), dashed: true) }
             }
             LineChart(
                 series: curves.map { c in
                     Series(id: "\(c.field)", label: c.label, color: Palette.fieldColor(c.field), points: zip(c.radius.map { $0 * 1000 }, c.encircled).map { ($0, $1) })
                 } + curves.prefix(1).filter { !$0.limit.isEmpty }.map { c in
                     Series(id: "limit", label: "", color: .secondary, points: zip(c.radius.map { $0 * 1000 }, c.limit).map { ($0, $1) }, dashed: true)
-                }, xLabel: "Radius (\(units.micro))", yLabel: "Encircled energy", yDomain: 0...1.02, zeroLine: false)
+                }, xLabel: String(localized: "Radius (\(units.micro))"), yLabel: String(localized: "Encircled energy"), yDomain: 0...1.02, zeroLine: false)
         }
         .padding(Space.m)
     }
@@ -630,20 +632,20 @@ struct MTFView: View {
         if let list = j["curves"]?.array {  // geometric_mtf
             for c in list {
                 let f = c["field"]?.int ?? 0
-                var cur = out[f] ?? Curve(field: f, label: "Field \(f + 1)", tangential: [], sagittal: [])
+                var cur = out[f] ?? Curve(field: f, label: String(localized: "Field \(f + 1)"), tangential: [], sagittal: [])
                 let m = c["modulation"]?.nfArray ?? []
                 if c["orientation"]?.string == "sagittal" { cur.sagittal = m } else { cur.tangential = m }
                 out[f] = cur
             }
             let values = j["field_values"]?.array ?? []
             for (k, f) in out.keys.sorted().enumerated() where values.indices.contains(k) {
-                out[f]?.label = "Field \(f + 1) · " + context.fieldLabel(values[k].nfArray)
+                out[f]?.label = String(localized: "Field \(f + 1) · \(context.fieldLabel(values[k].nfArray))")
             }
         } else if let list = j["fields"]?.array {  // wave mtf
             for (k, f) in list.enumerated() {
                 let i = f["field"]?.int ?? k
                 out[i] = Curve(
-                    field: i, label: "Field \(i + 1) · " + context.fieldLabel(f["field_value"]?.nfArray),
+                    field: i, label: String(localized: "Field \(i + 1) · \(context.fieldLabel(f["field_value"]?.nfArray))"),
                     tangential: output.buffer(ref: f["tangential"])?.doubles ?? f["tangential"]?.nfArray ?? [],
                     sagittal: output.buffer(ref: f["sagittal"])?.doubles ?? f["sagittal"]?.nfArray ?? [])
                 if lim.isEmpty { lim = output.buffer(ref: f["diffraction_limit"])?.doubles ?? [] }
@@ -661,8 +663,8 @@ struct MTFView: View {
         VStack(alignment: .leading, spacing: Space.s) {
             FlowLayout(spacing: Space.m) {
                 ForEach(curves, id: \.field) { c in LegendItem(color: Palette.fieldColor(c.field), label: c.label) }
-                LegendItem(color: .secondary, label: "T solid, S dashed")
-                if !limit.isEmpty { LegendItem(color: .primary.opacity(0.5), label: "Diffraction limit") }
+                LegendItem(color: .secondary, label: String(localized: "T solid, S dashed"))
+                if !limit.isEmpty { LegendItem(color: .primary.opacity(0.5), label: String(localized: "Diffraction limit")) }
             }
             LineChart(
                 series: (limit.isEmpty ? [] : [Series(id: "limit", label: "", color: .primary.opacity(0.45), points: zip(frequencies, limit).map { ($0, $1) })])
@@ -672,8 +674,8 @@ struct MTFView: View {
                             Series(id: "s\(c.field)", label: "", color: Palette.fieldColor(c.field), points: zip(frequencies, c.sagittal).map { ($0, $1) }, dashed: true),
                         ]
                     },
-                xLabel: "Spatial frequency (\(units.frequency))", yLabel: "Modulation", xDomain: 0...(frequencies.last ?? 1), yDomain: 0...1.02,
-                zeroLine: false, markers: nyquist.map { [(x: $0, label: "Nyquist")] } ?? [])
+                xLabel: String(localized: "Spatial frequency (\(units.frequency))"), yLabel: String(localized: "Modulation"), xDomain: 0...(frequencies.last ?? 1), yDomain: 0...1.02,
+                zeroLine: false, markers: nyquist.map { [(x: $0, label: String(localized: "Nyquist"))] } ?? [])
         }
         .padding(Space.m)
     }
@@ -700,13 +702,13 @@ struct BestFocusView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: Space.l) {
             KeyValueGrid(rows: [
-                ("Best defocus", Fmt.length(defocus)), ("RMS at best focus", Fmt.length(merit)),
-                ("RMS at the image surface", Fmt.length(meritAtZero)),
+                (String(localized: "Best defocus"), Fmt.length(defocus)), (String(localized: "RMS at best focus"), Fmt.length(merit)),
+                (String(localized: "RMS at the image surface"), Fmt.length(meritAtZero)),
             ])
             if throughFocus.count > 2 {
                 LineChart(
                     series: [Series(id: "tf", label: "", color: Palette.fieldColor(0), points: throughFocus.map { ($0.0, $0.1 * 1000) })],
-                    xLabel: "Defocus (mm)", yLabel: "RMS radius (µm)", zeroLine: false, markers: [(x: defocus, label: "Best")])
+                    xLabel: String(localized: "Defocus (mm)"), yLabel: String(localized: "RMS radius (µm)"), zeroLine: false, markers: [(x: defocus, label: String(localized: "Best"))])
             } else {
                 Text("Set Through Focus Samples to plot the merit against defocus.").font(.caption).foregroundStyle(.secondary)
                 Spacer()

@@ -24,11 +24,11 @@ public struct ImportReport: Identifiable, Sendable, Hashable {
 
         public var title: String {
             switch self {
-            case .problems: "Problems"
-            case .glasses: "Glasses"
-            case .surfaces: "Surfaces"
-            case .dropped: "Not Imported"
-            case .assumed: "Assumed or Approximated"
+            case .problems: String(localized: "Problems")
+            case .glasses: String(localized: "Glasses")
+            case .surfaces: String(localized: "Surfaces")
+            case .dropped: String(localized: "Not Imported")
+            case .assumed: String(localized: "Assumed or Approximated")
             }
         }
 
@@ -88,7 +88,7 @@ public struct ImportReport: Identifiable, Sendable, Hashable {
 
     /// "6 surfaces · .zmx · UTF-16"
     public var summary: String {
-        let surfaces = lensSurfaces == 1 ? "1 surface" : "\(lensSurfaces) surfaces"
+        let surfaces = lensSurfaces == 1 ? String(localized: "1 surface") : String(localized: "\(lensSurfaces) surfaces")
         return [surfaces, "." + format.fileExtension, Self.encodingName(encoding)].joined(separator: " · ")
     }
 
@@ -96,8 +96,8 @@ public struct ImportReport: Identifiable, Sendable, Hashable {
     public var headline: String {
         let n = warnings.count
         return n == 1
-            ? "1 item could not be imported exactly. Review it before relying on the design."
-            : "\(n) items could not be imported exactly. Review them before relying on the design."
+            ? String(localized: "1 item could not be imported exactly. Review it before relying on the design.")
+            : String(localized: "\(n) items could not be imported exactly. Review them before relying on the design.")
     }
 
     static func encodingName(_ e: String) -> String {
@@ -112,18 +112,19 @@ public struct ImportReport: Identifiable, Sendable, Hashable {
     /// The engine's message as a sentence (it starts in lower case).
     public static func sentence(_ w: ImportWarning) -> String {
         guard let first = w.message.first else { return w.message }
+        if let t = EngineText.translation(w.message) { return t }
         return first.uppercased() + w.message.dropFirst()
     }
 
     /// "Surface 3 · Line 42", or nil for warnings about the whole file.
     public static func location(_ w: ImportWarning) -> String? {
-        let parts = [w.surface.map { "Surface \($0)" }, w.line.map { "Line \($0)" }].compactMap { $0 }
+        let parts = [w.surface.map { String(localized: "Surface \($0)") }, w.line.map { String(localized: "Line \($0)") }].compactMap { $0 }
         return parts.isEmpty ? nil : parts.joined(separator: " · ")
     }
 
     /// The report as plain text, for the pasteboard.
     public var plainText: String {
-        var lines = ["Imported \(fileName) (\(summary))"]
+        var lines = [String(localized: "Imported \(fileName) (\(summary))")]
         for g in groups {
             lines.append("")
             lines.append("\(g.category.title):")

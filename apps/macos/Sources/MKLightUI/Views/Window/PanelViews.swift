@@ -109,7 +109,7 @@ struct PanelSplitView: View {
             .padding(horizontal ? .horizontal : .vertical, -3)
             .zIndex(1)
             .accessibilityElement()
-            .accessibilityLabel(horizontal ? "Vertical divider" : "Horizontal divider")
+            .accessibilityLabel(horizontal ? String(localized: "Vertical divider") : String(localized: "Horizontal divider"))
             .accessibilityValue("\(Int((split.fractions.indices.contains(k) ? split.fractions[k] : 0) * 100)) percent")
             .accessibilityAdjustableAction { dir in
                 guard split.fractions.indices.contains(k + 1) else { return }
@@ -215,6 +215,7 @@ private struct PanelTab: View {
     var body: some View {
         let selected = group.current == panel
         let title = session.title(of: panel)
+        let closeText = panel.paneID == nil ? String(localized: "Hide \(title)") : String(localized: "Close \(title)")
         HStack(spacing: Space.xs) {
             Image(systemName: session.symbol(of: panel))
                 .font(.caption)
@@ -236,8 +237,8 @@ private struct PanelTab: View {
             // Hidden, it takes no clicks: a click near a background tab's
             // end selects the tab instead of closing it.
             .allowsHitTesting(hovering || selected)
-            .help(panel.paneID == nil ? "Hide \(title)" : "Close \(title)")
-            .accessibilityLabel(panel.paneID == nil ? "Hide \(title)" : "Close \(title)")
+            .help(closeText)
+            .accessibilityLabel(closeText)
         }
         .padding(.leading, Space.m)
         .padding(.trailing, Space.xs)
@@ -261,7 +262,7 @@ private struct PanelTab: View {
         .accessibilityLabel(title)
         .accessibilityAddTraits(selected ? [.isSelected, .isButton] : .isButton)
         .accessibilityAction(.default, select)
-        .accessibilityAction(named: panel.paneID == nil ? "Hide" : "Close") { session.close(panel) }
+        .accessibilityAction(named: panel.paneID == nil ? String(localized: "Hide") : String(localized: "Close")) { session.close(panel) }
     }
 
     private func select() {
@@ -344,7 +345,7 @@ struct PanelHeaderTitle: View {
                     .font(.headline)
                     .lineLimit(1)
                     .fixedSize()
-                    .help(help + "\nDrag to move it, or out of the window to open it in a window of its own.")
+                    .help(String(localized: "\(help)\nDrag to move it, or out of the window to open it in a window of its own."))
                     .accessibilityAddTraits(.isHeader)
                     .panelHandle(panel)
             }
@@ -410,7 +411,7 @@ private struct GroupDropHighlight: View {
         let all = CGRect(origin: .zero, size: s)
         switch drag.target {
         case .tab(let g, _) where g == groupID:
-            return (all.insetBy(dx: 4, dy: 4), "Add as Tab", "rectangle.stack")
+            return (all.insetBy(dx: 4, dy: 4), String(localized: "Add as Tab"), "rectangle.stack")
         case .split(let g, let edge) where g == groupID:
             let r: CGRect =
                 switch edge {
@@ -419,7 +420,7 @@ private struct GroupDropHighlight: View {
                 case .top: CGRect(x: 0, y: 0, width: s.width, height: s.height / 2)
                 case .bottom: CGRect(x: 0, y: s.height / 2, width: s.width, height: s.height / 2)
                 }
-            return (r.insetBy(dx: 4, dy: 4), "Split", edge.axis == .horizontal ? "rectangle.split.2x1" : "rectangle.split.1x2")
+            return (r.insetBy(dx: 4, dy: 4), String(localized: "Split"), edge.axis == .horizontal ? "rectangle.split.2x1" : "rectangle.split.1x2")
         default:
             return nil
         }
@@ -443,7 +444,7 @@ private struct WindowEdgeHighlight: View {
                     case .top: CGRect(x: 0, y: 0, width: s.width, height: s.height * 0.22)
                     case .bottom: CGRect(x: 0, y: s.height * 0.78, width: s.width, height: s.height * 0.22)
                     }
-                DropZoneShape(label: edge.axis == .horizontal ? "Full-Height Column" : "Full-Width Row", symbol: "rectangle.inset.filled")
+                DropZoneShape(label: edge.axis == .horizontal ? String(localized: "Full-Height Column") : String(localized: "Full-Width Row"), symbol: "rectangle.inset.filled")
                     .frame(width: r.width - 8, height: r.height - 8)
                     .offset(x: r.minX + 4, y: r.minY + 4)
                     .transition(.opacity)
