@@ -69,32 +69,35 @@ public enum ToleranceReport {
     /// yield, the largest contributors and the compensators.
     public static func summary(_ r: ToleranceResult, rows: [ToleranceRow], system: OpticalSystem, title: String) -> String {
         let d = r.display
-        var lines = ["Tolerance analysis: \(title)", "Criterion: \(d.title)\(d.unit.isEmpty ? "" : " (\(d.unit))")"]
-        if r.stopped { lines.append("Stopped early: statistics of the completed evaluations.") }
+        let crit = d.unit.isEmpty ? d.title : "\(d.title) (\(d.unit))"
+        var lines = [String(localized: "Tolerance analysis: \(title)"), String(localized: "Criterion: \(crit)")]
+        if r.stopped { lines.append(String(localized: "Stopped early: statistics of the completed evaluations.")) }
         if r.hasSensitivity {
-            lines.append("Nominal: \(d.format(d.value(r.nominal)))")
-            lines.append("Predicted mean (nominal + expected changes): \(d.format(d.value(r.predicted)))")
+            lines.append(String(localized: "Nominal: \(d.format(d.value(r.nominal)))"))
+            lines.append(String(localized: "Predicted mean (nominal + expected changes): \(d.format(d.value(r.predicted)))"))
         }
         if r.hasMonteCarlo {
-            lines.append("Monte Carlo: \(r.trials) trials, seed \(r.seed)\(r.failures > 0 ? ", \(r.failures) failed" : "")")
-            if let t = r.secondsPerTrial { lines.append("  \(Fmt.short(t)) s per trial") }
+            lines.append(r.failures > 0 ? String(localized: "Monte Carlo: \(r.trials) trials, seed \(r.seed), \(r.failures) failed") : String(localized: "Monte Carlo: \(r.trials) trials, seed \(r.seed)"))
+            if let t = r.secondsPerTrial { lines.append(String(localized: "  \(Fmt.short(t)) s per trial")) }
             for p in r.percentiles {
-                lines.append("  \(Fmt.short(p.percentile)) % of builds \(d.higherIsBetter ? "at least" : "at most"): \(d.format(d.value(p.value)))")
+                let v = d.format(d.value(p.value)), q = Fmt.short(p.percentile)
+                lines.append(d.higherIsBetter ? String(localized: "  \(q) % of builds at least: \(v)") : String(localized: "  \(q) % of builds at most: \(v)"))
             }
-            if let y = r.yield { lines.append("  Yield: \(Fmt.percent(y))") }
+            if let y = r.yield { lines.append(String(localized: "  Yield: \(Fmt.percent(y))")) }
         }
         if r.hasSensitivity {
-            lines.append("Largest contributors:")
+            lines.append(String(localized: "Largest contributors:"))
             for s in r.sensitivities.prefix(5) {
-                lines.append("  \(label(s, rows: rows, system: system)) \(limits(s, rows: rows)): \(Fmt.percent(r.share(s), digits: 0)) of the predicted change")
+                let l = "\(label(s, rows: rows, system: system)) \(limits(s, rows: rows))"
+                lines.append(String(localized: "  \(l): \(Fmt.percent(r.share(s), digits: 0)) of the predicted change"))
             }
         }
         for (j, c) in r.compensators.enumerated() {
             let t = ToleranceCompensator(c.param, range: c.range).title(in: system)
-            var s = "Compensator \(t)"
-            if let (lo, hi) = r.compensatorRange(j) { s += ": moved \(Fmt.short(lo)) to +\(Fmt.short(hi)) \(c.param.unit(in: system))" }
-            if let range = c.range { s += " of ±\(Fmt.short(range))" }
-            if r.compensatorStd.indices.contains(j) { s += "; Monte Carlo σ \(Fmt.short(r.compensatorStd[j]))" }
+            var s = String(localized: "Compensator \(t)")
+            if let (lo, hi) = r.compensatorRange(j) { s += String(localized: ": moved \(Fmt.short(lo)) to +\(Fmt.short(hi)) \(c.param.unit(in: system))") }
+            if let range = c.range { s += String(localized: " of ±\(Fmt.short(range))") }
+            if r.compensatorStd.indices.contains(j) { s += String(localized: "; Monte Carlo σ \(Fmt.short(r.compensatorStd[j]))") }
             lines.append(s)
         }
         return lines.joined(separator: "\n")

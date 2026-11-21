@@ -42,21 +42,21 @@ public enum ToleranceKind: String, CaseIterable, Sendable, Identifiable {
 
     public var title: String {
         switch self {
-        case .radius: "Radius"
-        case .irregularityAstigmatism: "Astig. irregularity"
-        case .irregularitySpherical: "Sph. irregularity"
-        case .thickness: "Thickness"
-        case .decenterX: "Surface decenter x"
-        case .decenterY: "Surface decenter y"
-        case .tiltX: "Surface tilt x"
-        case .tiltY: "Surface tilt y"
-        case .elementDecenterX: "Element decenter x"
-        case .elementDecenterY: "Element decenter y"
-        case .elementTiltX: "Element tilt x"
-        case .elementTiltY: "Element tilt y"
-        case .index: "Index"
-        case .abbe: "Abbe"
-        case .other: "Parameter"
+        case .radius: String(localized: "Radius")
+        case .irregularityAstigmatism: String(localized: "Astig. irregularity")
+        case .irregularitySpherical: String(localized: "Sph. irregularity")
+        case .thickness: String(localized: "Thickness")
+        case .decenterX: String(localized: "Surface decenter x")
+        case .decenterY: String(localized: "Surface decenter y")
+        case .tiltX: String(localized: "Surface tilt x")
+        case .tiltY: String(localized: "Surface tilt y")
+        case .elementDecenterX: String(localized: "Element decenter x")
+        case .elementDecenterY: String(localized: "Element decenter y")
+        case .elementTiltX: String(localized: "Element tilt x")
+        case .elementTiltY: String(localized: "Element tilt y")
+        case .index: String(localized: "Index")
+        case .abbe: String(localized: "Abbe")
+        case .other: String(localized: "Parameter")
         }
     }
 
@@ -64,12 +64,12 @@ public enum ToleranceKind: String, CaseIterable, Sendable, Identifiable {
     /// surface (`S3`) from an element (`L2`).
     public var shortTitle: String {
         switch self {
-        case .irregularityAstigmatism: "Irreg. astig."
-        case .irregularitySpherical: "Irreg. sph."
-        case .decenterX, .elementDecenterX: "Decenter x"
-        case .decenterY, .elementDecenterY: "Decenter y"
-        case .tiltX, .elementTiltX: "Tilt x"
-        case .tiltY, .elementTiltY: "Tilt y"
+        case .irregularityAstigmatism: String(localized: "Irreg. astig.")
+        case .irregularitySpherical: String(localized: "Irreg. sph.")
+        case .decenterX, .elementDecenterX: String(localized: "Decenter x")
+        case .decenterY, .elementDecenterY: String(localized: "Decenter y")
+        case .tiltX, .elementTiltX: String(localized: "Tilt x")
+        case .tiltY, .elementTiltY: String(localized: "Tilt y")
         default: title
         }
     }
@@ -171,15 +171,15 @@ public enum ToleranceUnit: String, Sendable, CaseIterable {
 
     public var title: String {
         switch self {
-        case .fringes: "Test fringes"
+        case .fringes: String(localized: "Test fringes")
         case .radiusMM: "ΔR (mm)"
-        case .percent: "Percent"
+        case .percent: String(localized: "Percent")
         case .mm: "mm"
-        case .arcmin: "Arc minutes"
-        case .degrees: "Degrees"
+        case .arcmin: String(localized: "Arc minutes")
+        case .degrees: String(localized: "Degrees")
         case .index: "Δn"
         case .abbe: "ΔV_d"
-        case .native: "Parameter units"
+        case .native: String(localized: "Parameter units")
         }
     }
 }
@@ -216,10 +216,10 @@ public enum ToleranceDistribution: Hashable, Sendable {
 
     public var title: String {
         switch self {
-        case .uniform: "Uniform"
-        case .normal(let k): "Normal (limits at ±\(Fmt.short(k)) σ)"
-        case .endPoint: "End points"
-        case .parabolic: "Parabolic (mostly near the limits)"
+        case .uniform: String(localized: "Uniform")
+        case .normal(let k): String(localized: "Normal (limits at ±\(Fmt.short(k)) σ)")
+        case .endPoint: String(localized: "End points")
+        case .parabolic: String(localized: "Parabolic (mostly near the limits)")
         }
     }
 
@@ -381,63 +381,63 @@ public struct ToleranceRow: Identifiable, Hashable, Sendable {
     /// The engine's limits `(minus, plus)` in parameter units, or why the
     /// row cannot be expanded.
     public func engineLimits(in c: ToleranceContext) -> Result<(Double, Double), ToleranceIssue> {
-        guard minus.isFinite, plus.isFinite, minus >= 0, plus >= 0 else { return .failure(.message("Limits must be zero or positive numbers.")) }
-        guard minus > 0 || plus > 0 else { return .failure(.message("Both limits are zero.")) }
+        guard minus.isFinite, plus.isFinite, minus >= 0, plus >= 0 else { return .failure(.message(String(localized: "Limits must be zero or positive numbers."))) }
+        guard minus > 0 || plus > 0 else { return .failure(.message(String(localized: "Both limits are zero."))) }
         let s = c.system
-        guard let i = s.surfaceIndex(of: surface) else { return .failure(.message("The surface no longer exists.")) }
+        guard let i = s.surfaceIndex(of: surface) else { return .failure(.message(String(localized: "The surface no longer exists."))) }
         let sf = s.surfaces[i]
         switch kind {
         case .radius:
             guard let curv = s.value(at: .curvature(surface: surface)) else {
-                return .failure(.message("Surface \(i) has no radius."))
+                return .failure(.message(String(localized: "Surface \(i) has no radius.")))
             }
             switch unit {
             case .fringes:
                 guard let h = c.semiDiameter(surface), h > 0 else {
-                    return .failure(.message("Fringes need the clear aperture of surface \(i); run the layout or set a semi-diameter."))
+                    return .failure(.message(String(localized: "Fringes need the clear aperture of surface \(i); run the layout or set a semi-diameter.")))
                 }
                 guard let k = Self.curvaturePerFringe(curv, semiDiameter: h, wavelengthUm: c.testWavelengthUm) else {
-                    return .failure(.message("The clear aperture of surface \(i) is wider than its sphere."))
+                    return .failure(.message(String(localized: "The clear aperture of surface \(i) is wider than its sphere.")))
                 }
                 return .success((minus * k, plus * k))
             case .radiusMM, .percent:
-                guard curv != 0 else { return .failure(.message("Surface \(i) is flat: give its power in fringes.")) }
+                guard curv != 0 else { return .failure(.message(String(localized: "Surface \(i) is flat: give its power in fringes."))) }
                 let r = 1 / curv
                 let dm = unit == .percent ? abs(r) * minus / 100 : minus, dp = unit == .percent ? abs(r) * plus / 100 : plus
                 // R in [R − ΔR−, R + ΔR+]: c in [1/(R + ΔR+), 1/(R − ΔR−)].
                 let lo = r + dp, hi = r - dm
                 guard lo != 0, hi != 0, (lo > 0) == (r > 0), (hi > 0) == (r > 0) else {
-                    return .failure(.message("ΔR must stay below |R| = \(Fmt.short(abs(r))) mm."))
+                    return .failure(.message(String(localized: "ΔR must stay below |R| = \(Fmt.short(abs(r))) mm.")))
                 }
                 return .success((curv - 1 / lo, 1 / hi - curv))
             default:
-                return .failure(.message("Radius tolerances are in fringes, mm or %."))
+                return .failure(.message(String(localized: "Radius tolerances are in fringes, mm or %.")))
             }
         case .thickness:
-            guard i < s.imageIndex else { return .failure(.message("The image surface has no thickness.")) }
+            guard i < s.imageIndex else { return .failure(.message(String(localized: "The image surface has no thickness."))) }
             return .success((minus, plus))
         case .decenterX, .decenterY:
-            guard i > 0, i < s.imageIndex else { return .failure(.message("Decenter a surface between the object and the image.")) }
+            guard i > 0, i < s.imageIndex else { return .failure(.message(String(localized: "Decenter a surface between the object and the image."))) }
             return .success((minus, plus))
         case .tiltX, .tiltY, .elementTiltX, .elementTiltY, .elementDecenterX, .elementDecenterY:
             if kind.isElement, let why = elementProblem(in: s, first: i) { return .failure(.message(why)) }
-            if !kind.isElement, i == 0 || i >= s.imageIndex { return .failure(.message("Tilt a surface between the object and the image.")) }
+            if !kind.isElement, i == 0 || i >= s.imageIndex { return .failure(.message(String(localized: "Tilt a surface between the object and the image."))) }
             let k = unit == .arcmin ? 1.0 / 60 : 1
             return .success((minus * k, plus * k))
         case .irregularityAstigmatism, .irregularitySpherical:
             guard i > 0, i < s.imageIndex, !sf.isCoordinateBreak, sf.shape.kind != .paraxial else {
-                return .failure(.message("Surface \(i) has no form to make irregular."))
+                return .failure(.message(String(localized: "Surface \(i) has no form to make irregular.")))
             }
             return .success((minus, plus))
         case .index, .abbe:
             guard Self.hasGlass(sf.material) else {
-                let name = sf.material.isAir ? "air" : sf.material.displayName
-                return .failure(.message("Surface \(i) is followed by \(name), not a glass with n_d and V_d."))
+                let name = sf.material.isAir ? String(localized: "air") : sf.material.displayName
+                return .failure(.message(String(localized: "Surface \(i) is followed by \(name), not a glass with n_d and V_d.")))
             }
             var lim = (minus, plus)
             if kind == .abbe && unit == .percent {
                 guard let vd = c.abbeNumber(surface), vd > 0 else {
-                    return .failure(.message("The Abbe number of \(sf.material.displayName) is not known yet: give the limit as ΔV_d, or wait for the glass data."))
+                    return .failure(.message(String(localized: "The Abbe number of \(sf.material.displayName) is not known yet: give the limit as ΔV_d, or wait for the glass data.")))
                 }
                 lim = (vd * minus / 100, vd * plus / 100)
             }
@@ -445,13 +445,13 @@ public struct ToleranceRow: Identifiable, Hashable, Sendable {
                 // A tolerance adds to the saved melt offset, which stays within the engine's bounds.
                 let (base, cap, what) = kind == .index ? (o.dnD, MaterialOffset.maxDnD, "Δn_d") : (o.dvD, MaterialOffset.maxDvD, "ΔV_d")
                 if abs(base - lim.0) > cap + 1e-12 || abs(base + lim.1) > cap + 1e-12 {
-                    return .failure(.message("With the melt offset (\(Fmt.short(base))), \(what) would pass ±\(Fmt.short(cap)), the engine's limit."))
+                    return .failure(.message(String(localized: "With the melt offset (\(Fmt.short(base))), \(what) would pass ±\(Fmt.short(cap)), the engine's limit.")))
                 }
             }
             return .success(lim)
         case .other:
             guard let p = param, p.resolves(in: s), s.value(at: p) != nil else {
-                return .failure(.message("The parameter no longer exists."))
+                return .failure(.message(String(localized: "The parameter no longer exists.")))
             }
             return .success((minus, plus))
         }
@@ -459,13 +459,13 @@ public struct ToleranceRow: Identifiable, Hashable, Sendable {
 
     /// Why an element row's range or pivot cannot be moved, if it cannot.
     private func elementProblem(in s: OpticalSystem, first i: Int) -> String? {
-        guard let l = s.surfaceIndex(of: last ?? surface) else { return "The element's last surface no longer exists." }
-        guard i > 0, l >= i, l < s.imageIndex else { return "An element moves surfaces between the object and the image, first to last." }
-        if let p = pivot, s.surfaceIndex(of: p) == nil { return "The pivot surface no longer exists." }
+        guard let l = s.surfaceIndex(of: last ?? surface) else { return String(localized: "The element's last surface no longer exists.") }
+        guard i > 0, l >= i, l < s.imageIndex else { return String(localized: "An element moves surfaces between the object and the image, first to last.") }
+        if let p = pivot, s.surfaceIndex(of: p) == nil { return String(localized: "The pivot surface no longer exists.") }
         if let e = s.surfaces[i].elementPlacement, e.last != (last ?? surface) || e.pivot != pivot {
             let el = s.surfaceIndex(of: e.last).map(String.init) ?? "?"
             let ep = s.surfaceIndex(of: e.pivot ?? surface).map(String.init) ?? "?"
-            return "The design already moves S\(i)–\(el) as an element about S\(ep): use that range and pivot."
+            return String(localized: "The design already moves S\(i)–\(el) as an element about S\(ep): use that range and pivot.")
         }
         return nil
     }
@@ -592,9 +592,9 @@ public struct ToleranceGenerator: Hashable, Sendable {
         public var id: String { rawValue }
         public var title: String {
             switch self {
-            case .commercial: "Commercial"
-            case .precision: "Precision"
-            case .highPrecision: "High precision"
+            case .commercial: String(localized: "Commercial")
+            case .precision: String(localized: "Precision")
+            case .highPrecision: String(localized: "High precision")
             }
         }
     }
@@ -761,13 +761,13 @@ public enum LensElements {
     /// The group a row belongs to: its element (an air space goes with the
     /// element before it), else the surface itself.
     public static func groupTitle(of row: ToleranceRow, in s: OpticalSystem, groups: [Group]) -> String {
-        guard let i = s.surfaceIndex(of: row.surface) else { return "Other" }
+        guard let i = s.surfaceIndex(of: row.surface) else { return String(localized: "Other") }
         if let g = groups.first(where: { $0.surfaces.contains(i) }) {
             // The thickness after an element's last surface is the air space after it.
-            if row.kind == .thickness, g.surfaces.last == i { return "Air after \(g.title)" }
+            if row.kind == .thickness, g.surfaces.last == i { return String(localized: "Air after \(g.title)") }
             return g.title
         }
-        return i == s.stop ? "Stop S\(i)" : "S\(i)"
+        return i == s.stop ? String(localized: "Stop S\(i)") : "S\(i)"
     }
 }
 
@@ -798,7 +798,7 @@ public struct ToleranceCompensator: Identifiable, Hashable, Sendable {
 
     /// "Back focus" or the parameter's label.
     public func title(in s: OpticalSystem) -> String {
-        Self.isBackFocus(param, in: s) ? "Back focus" : param.label(in: s)
+        Self.isBackFocus(param, in: s) ? String(localized: "Back focus") : param.label(in: s)
     }
 
     public var json: JSONValue {
@@ -822,14 +822,14 @@ public struct ToleranceCompensator: Identifiable, Hashable, Sendable {
         func fresh(_ ps: [ParamPath]) -> [ParamPath] { ps.filter { seen.insert(s.canonical($0)).inserted } }
         let bf = backFocus(s).map { [$0.param] } ?? []
         let air = (1..<max(s.imageIndex - 1, 1)).filter { s.surfaces[$0].material.isAir }.map { ParamPath.thickness(surface: s.surfaces[$0].id) }
-        var out: [(String, [ParamPath])] = [("Back focus", fresh(bf)), ("Air spaces", fresh(air)), ("Design variables", fresh(variables))]
+        var out: [(String, [ParamPath])] = [(String(localized: "Back focus"), fresh(bf)), (String(localized: "Air spaces"), fresh(air)), (String(localized: "Design variables"), fresh(variables))]
         var other: [ParamPath] = []
         for i in 1..<max(s.imageIndex, 1) {
             let id = s.surfaces[i].id
             other += [.decenterX(surface: id), .decenterY(surface: id), .tiltX(surface: id), .tiltY(surface: id), .thickness(surface: id)]
             if s.surfaces[i].shape.hasCurvature { other.append(.curvature(surface: id)) }
         }
-        out.append(("Surfaces", fresh(other.filter { s.value(at: $0) != nil })))
+        out.append((String(localized: "Surfaces"), fresh(other.filter { s.value(at: $0) != nil })))
         return out.filter { !$0.1.isEmpty }
     }
 }
@@ -845,10 +845,10 @@ public struct ToleranceCriterion: Hashable, Sendable {
         public var id: String { rawValue }
         public var title: String {
             switch self {
-            case .rmsSpot: "RMS spot radius"
-            case .wavefront: "RMS wavefront"
-            case .mtf: "MTF"
-            case .designMerit: "Optimizer's merit"
+            case .rmsSpot: String(localized: "RMS spot radius")
+            case .wavefront: String(localized: "RMS wavefront")
+            case .mtf: String(localized: "MTF")
+            case .designMerit: String(localized: "Optimizer's merit")
             }
         }
     }
@@ -928,10 +928,10 @@ public enum CriterionDisplay: Sendable, Equatable {
 
     public var title: String {
         switch self {
-        case .spot: "RMS spot"
-        case .wavefront: "RMS wavefront"
-        case .mtf: "MTF"
-        case .merit: "Merit"
+        case .spot: String(localized: "RMS spot")
+        case .wavefront: String(localized: "RMS wavefront")
+        case .mtf: String(localized: "MTF")
+        case .merit: String(localized: "Merit")
         }
     }
 
@@ -1000,9 +1000,9 @@ public struct ToleranceSettings: Hashable, Sendable {
         public var id: String { rawValue }
         public var title: String {
             switch self {
-            case .sensitivity: "Sensitivity"
-            case .monteCarlo: "Monte Carlo"
-            case .both: "Both"
+            case .sensitivity: String(localized: "Sensitivity")
+            case .monteCarlo: String(localized: "Monte Carlo")
+            case .both: String(localized: "Both")
             }
         }
     }
@@ -1171,9 +1171,9 @@ public struct ToleranceSettings: Hashable, Sendable {
         for (first, group) in Dictionary(grouping: elements, by: \.surface) {
             let ranges = Set(group.map { [$0.last ?? first, $0.pivot ?? first] })
             guard ranges.count > 1 else { continue }
-            let at = c.system.surfaceIndex(of: first).map { "S\($0)" } ?? "one surface"
+            let at = c.system.surfaceIndex(of: first).map { "S\($0)" } ?? String(localized: "one surface")
             for r in group {
-                out[r.id] = .message("Element tolerances starting at \(at) move one group: give them the same last surface and pivot.")
+                out[r.id] = .message(String(localized: "Element tolerances starting at \(at) move one group: give them the same last surface and pivot."))
             }
         }
         return out
