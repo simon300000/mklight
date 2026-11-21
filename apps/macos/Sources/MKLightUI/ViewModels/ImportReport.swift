@@ -88,7 +88,7 @@ public struct ImportReport: Identifiable, Sendable, Hashable {
 
     /// "6 surfaces · .zmx · UTF-16"
     public var summary: String {
-        let surfaces = lensSurfaces == 1 ? String(localized: "1 surface") : String(localized: "\(lensSurfaces) surfaces")
+        let surfaces = lensSurfaces == 1 ? String(localized: "1 surface") : String(localized: "\(lensSurfaces) surfaces", locale: NumberDisplay.locale)
         return [surfaces, "." + format.fileExtension, Self.encodingName(encoding)].joined(separator: " · ")
     }
 
@@ -97,7 +97,7 @@ public struct ImportReport: Identifiable, Sendable, Hashable {
         let n = warnings.count
         return n == 1
             ? String(localized: "1 item could not be imported exactly. Review it before relying on the design.")
-            : String(localized: "\(n) items could not be imported exactly. Review them before relying on the design.")
+            : String(localized: "\(n) items could not be imported exactly. Review them before relying on the design.", locale: NumberDisplay.locale)
     }
 
     static func encodingName(_ e: String) -> String {
@@ -118,13 +118,13 @@ public struct ImportReport: Identifiable, Sendable, Hashable {
 
     /// "Surface 3 · Line 42", or nil for warnings about the whole file.
     public static func location(_ w: ImportWarning) -> String? {
-        let parts = [w.surface.map { String(localized: "Surface \($0)") }, w.line.map { String(localized: "Line \($0)") }].compactMap { $0 }
+        let parts = [w.surface.map { String(localized: "Surface \($0)", locale: NumberDisplay.locale) }, w.line.map { String(localized: "Line \($0)", locale: NumberDisplay.locale) }].compactMap { $0 }
         return parts.isEmpty ? nil : parts.joined(separator: " · ")
     }
 
     /// The report as plain text, for the pasteboard.
     public var plainText: String {
-        var lines = [String(localized: "Imported \(fileName) (\(summary))")]
+        var lines = [String(localized: "Imported \(fileName) (\(summary))", locale: NumberDisplay.locale)]
         for g in groups {
             lines.append("")
             lines.append("\(g.category.title):")

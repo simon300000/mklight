@@ -1,6 +1,7 @@
 import Foundation
 import MKLightEngine
 import Observation
+import MKLightModel
 
 /// Prepares the GPU's compute kernels when the app opens and follows the
 /// engine's progress for the window status. Metal compiles each kernel once
@@ -78,15 +79,15 @@ final class GPUPreparationMonitor {
         case .idle:
             nil
         case .preparing(_, let done, let total):
-            total > 0 ? String(localized: "Preparing (\(done) of \(total))") : String(localized: "Preparing")
+            total > 0 ? String(localized: "Preparing (\(done) of \(total))", locale: NumberDisplay.locale) : String(localized: "Preparing")
         case .ready(_, let kernels, let fromCache, let seconds, _):
             fromCache == kernels
-                ? String(localized: "Ready (\(kernels), loaded from cache)")
-                : String(localized: "Ready (\(kernels), prepared in \(String(format: "%.1f", seconds)) s)")
+                ? String(localized: "Ready (\(kernels), loaded from cache)", locale: NumberDisplay.locale)
+                : String(localized: "Ready (\(kernels), prepared in \(String(format: "%.1f", seconds)) s)", locale: NumberDisplay.locale)
         case .unavailable(let reason):
-            String(localized: "No GPU: \(EngineText.string(reason))")
+            String(localized: "No GPU: \(EngineText.string(reason))", locale: NumberDisplay.locale)
         case .failed(_, let message):
-            String(localized: "Compiled on first use (\(EngineText.string(message)))")
+            String(localized: "Compiled on first use (\(EngineText.string(message)))", locale: NumberDisplay.locale)
         }
     }
 
@@ -94,6 +95,6 @@ final class GPUPreparationMonitor {
     /// the saved ones could not be read or written.
     var note: String? {
         guard case .ready(_, _, _, _, let warning?) = state else { return nil }
-        return String(localized: "Kernel cache unavailable: the next launch compiles again (\(EngineText.string(warning)))")
+        return String(localized: "Kernel cache unavailable: the next launch compiles again (\(EngineText.string(warning)))", locale: NumberDisplay.locale)
     }
 }

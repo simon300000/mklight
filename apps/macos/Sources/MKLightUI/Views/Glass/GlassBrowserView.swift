@@ -47,7 +47,7 @@ struct GlassBrowserView: View {
                 .navigationSplitViewColumnWidth(min: 270, ideal: 300, max: 420)
         }
         .navigationTitle(scopeTitle)
-        .navigationSubtitle(model.designTitle.map { String(localized: "Glasses of \($0)") } ?? String(localized: "No design open"))
+        .navigationSubtitle(model.designTitle.map { String(localized: "Glasses of \($0)", locale: NumberDisplay.locale) } ?? String(localized: "No design open"))
         .searchable(text: $model.search, placement: .toolbar, prompt: "Glass name")
         .toolbar { toolbar }
         .overlay(alignment: .bottom) { footer }
@@ -100,7 +100,7 @@ struct GlassBrowserView: View {
                     do {
                         try model.library.deleteUserCatalog(n)
                         model.scope = .all
-                        model.message = String(localized: "Moved \(n) to the Trash.")
+                        model.message = String(localized: "Moved \(n) to the Trash.", locale: NumberDisplay.locale)
                     } catch { model.message = error.localizedDescription }
                 }
             }
@@ -115,7 +115,7 @@ struct GlassBrowserView: View {
                 if let g = model.pendingDeletion { model.delete(g) }
             }
         } message: {
-            Text(model.pendingDeletion.map { String(localized: "The glass is removed from \($0.catalog). Designs that use it will not find it. This cannot be undone.") }
+            Text(model.pendingDeletion.map { String(localized: "The glass is removed from \($0.catalog). Designs that use it will not find it. This cannot be undone.", locale: NumberDisplay.locale) }
                 ?? String(localized: "The glass is removed from its catalog. Designs that use it will not find it. This cannot be undone."))
         }
         .onAppear(perform: applyLaunchOptions)
@@ -162,7 +162,7 @@ struct GlassBrowserView: View {
     private func export(_ catalog: String) {
         guard let e = model.agfExport(of: catalog) else { return }
         exporting = AGFFile(name: catalog + ".agf", text: e.text)
-        if !e.warnings.isEmpty { model.message = String(localized: "Not exported: \(e.warnings.joined(separator: "; "))") }
+        if !e.warnings.isEmpty { model.message = String(localized: "Not exported: \(e.warnings.joined(separator: "; "))", locale: NumberDisplay.locale) }
     }
 
     @ToolbarContentBuilder private var toolbar: some ToolbarContent {
@@ -315,7 +315,7 @@ private struct GlassCatalogSidebar: View {
             HStack {
                 Text(title ?? c.name).lineLimit(1)
                 Spacer()
-                Text("\(c.glassCount)").foregroundStyle(.secondary).monospacedDigit()
+                Text(String(localized: "\(c.glassCount)", locale: NumberDisplay.locale)).foregroundStyle(.secondary).monospacedDigit()
             }
         } icon: {
             Image(systemName: symbol)
@@ -396,7 +396,7 @@ struct GlassTable: View {
         }
         .safeAreaInset(edge: .bottom, spacing: 0) {
             HStack {
-                Text("\(rows.count) of \(glassCountText(model.rows.count))")
+                Text(String(localized: "\(rows.count) of \(glassCountText(model.rows.count))", locale: NumberDisplay.locale))
                 Spacer()
                 Text("Double-click a glass to use it for the selected surface")
             }
@@ -484,7 +484,7 @@ private struct CatalogWarningsButton: View {
     @State private var shown = false
 
     var body: some View {
-        Button(warnings.count == 1 ? String(localized: "1 Warning") : String(localized: "\(warnings.count) Warnings"), systemImage: "exclamationmark.triangle") {
+        Button(warnings.count == 1 ? String(localized: "1 Warning") : String(localized: "\(warnings.count) Warnings", locale: NumberDisplay.locale), systemImage: "exclamationmark.triangle") {
             shown = true
         }
         .help("What reading the catalog file reported: skipped, replaced or inconsistent glasses")
@@ -582,7 +582,7 @@ private struct GlassRowMenu: View {
     }
 
     private var useTitle: String {
-        model.assignment.index.map { String(localized: "Use for Surface \($0)") } ?? String(localized: "Use for Selected Surface")
+        model.assignment.index.map { String(localized: "Use for Surface \($0)", locale: NumberDisplay.locale) } ?? String(localized: "Use for Selected Surface")
     }
 }
 
@@ -658,7 +658,7 @@ private struct GlassDetailView: View {
             Button {
                 model.useSelected()
             } label: {
-                Label(assignment.index.map { String(localized: "Use for Surface \($0)") } ?? String(localized: "Use for Surface"), systemImage: "arrow.down.left.circle")
+                Label(assignment.index.map { String(localized: "Use for Surface \($0)", locale: NumberDisplay.locale) } ?? String(localized: "Use for Surface"), systemImage: "arrow.down.left.circle")
                     .frame(maxWidth: .infinity)
             }
             .buttonStyle(.glassProminent)
@@ -690,7 +690,7 @@ private struct GlassDetailView: View {
                     get: { model.library.override(catalog: row.catalog, name: row.name)?.status },
                     set: { model.setStatus($0, for: row) })
                 ) {
-                    Text("Catalog (\(d.catalogStatus.title))").tag(GlassStatus?.none)
+                    Text(String(localized: "Catalog (\(d.catalogStatus.title))", locale: NumberDisplay.locale)).tag(GlassStatus?.none)
                     Divider()
                     ForEach(GlassStatus.choices) { s in Text(s.title).tag(GlassStatus?.some(s)) }
                 }
@@ -742,7 +742,9 @@ private struct GlassDetailView: View {
             .chartYScale(domain: .automatic(includesZero: false))
             .chartXAxisLabel("λ (µm)")
             .frame(height: 140)
-            .accessibilityLabel("Refractive index against wavelength")
+            .accessibilityLabel(String(localized: "Refractive index against wavelength"))
+            // Numbers as in every language (decimal point, no grouping).
+            .environment(\.locale, NumberDisplay.locale)
         }
     }
 
@@ -750,9 +752,9 @@ private struct GlassDetailView: View {
         GroupBox("Dispersion") {
             VStack(alignment: .leading, spacing: Space.s) {
                 if let m = d.model {
-                    Text("Model glass: nd \(Self.fmt(m.nd, 5)), Vd \(Self.fmt(m.vd, 2)), ΔPg,F \(GlassTable.signedText(m.dpgf))")
+                    Text(String(localized: "Model glass: nd \(Self.fmt(m.nd, 5)), Vd \(Self.fmt(m.vd, 2)), ΔPg,F \(GlassTable.signedText(m.dpgf))", locale: NumberDisplay.locale))
                 } else {
-                    Text(d.formula.map { String(localized: "Formula \($0): \(d.formulaName)") } ?? d.formulaName)
+                    Text(d.formula.map { String(localized: "Formula \($0): \(d.formulaName)", locale: NumberDisplay.locale) } ?? d.formulaName)
                 }
                 if d.model == nil, !d.coefficients.isEmpty, let f = d.formula {
                     let names = GlassEditorModel.coefficientNames(f)
@@ -817,8 +819,8 @@ struct CatalogChangesSheet: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: Space.l) {
-            Text("\(changes.catalog) Reloaded").font(.title3.weight(.semibold))
-            Text(changes.isEmpty ? String(localized: "The file has the same glasses as before (\(changes.unchanged)).") : String(localized: "\(changes.localizedSummary); \(changes.unchanged) unchanged."))
+            Text(String(localized: "\(changes.catalog) Reloaded", locale: NumberDisplay.locale)).font(.title3.weight(.semibold))
+            Text(changes.isEmpty ? String(localized: "The file has the same glasses as before (\(changes.unchanged)).", locale: NumberDisplay.locale) : String(localized: "\(changes.localizedSummary); \(changes.unchanged) unchanged.", locale: NumberDisplay.locale))
                 .foregroundStyle(.secondary)
             if !changes.isEmpty {
                 List {

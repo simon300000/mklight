@@ -42,7 +42,7 @@ public enum RunRoute {
         default:
             return nil
         }
-        return d["repeated"]?.bool == true ? String(localized: "\(line); kept from the first identical request") : line
+        return d["repeated"]?.bool == true ? String(localized: "\(line); kept from the first identical request", locale: NumberDisplay.locale) : line
     }
 
     /// The tier of a run that was not design tier; `nil` for design tier.
@@ -69,13 +69,13 @@ public enum RunRoute {
             let title: String =
                 switch a.outcome {
                 case "failed":
-                    took.map { String(localized: "\(name) failed after \($0); completed on the CPU") }
-                        ?? String(localized: "\(name) failed; completed on the CPU")
-                case "skipped": String(localized: "\(name) not tried: the same input already failed on it")
+                    took.map { String(localized: "\(name) failed after \($0); completed on the CPU", locale: NumberDisplay.locale) }
+                        ?? String(localized: "\(name) failed; completed on the CPU", locale: NumberDisplay.locale)
+                case "skipped": String(localized: "\(name) not tried: the same input already failed on it", locale: NumberDisplay.locale)
                 case "reference_completion":
-                    took.map { String(localized: "\(name) path completed the result on the CPU (\($0))") }
-                        ?? String(localized: "\(name) path completed the result on the CPU")
-                default: String(localized: "\(name) not used (\(a.outcome.replacingOccurrences(of: "_", with: " ")))")
+                    took.map { String(localized: "\(name) path completed the result on the CPU (\($0))", locale: NumberDisplay.locale) }
+                        ?? String(localized: "\(name) path completed the result on the CPU", locale: NumberDisplay.locale)
+                default: String(localized: "\(name) not used (\(a.outcome.replacingOccurrences(of: "_", with: " ")))", locale: NumberDisplay.locale)
                 }
             return Attempt(id: k, title: title, reason: EngineText.string(a.reason))
         }
@@ -98,7 +98,7 @@ public enum RunRoute {
     /// ` (GPU predicted 12 ms, CPU 31 ms)`, or nothing without both times.
     private static func predicted(_ d: [String: JSONValue]) -> String {
         guard let (gpu, cpu) = times(d) else { return "" }
-        return String(localized: " (GPU predicted \(duration(gpu)), CPU \(duration(cpu)))")
+        return String(localized: " (GPU predicted \(duration(gpu)), CPU \(duration(cpu)))", locale: NumberDisplay.locale)
     }
 
     /// `Fmt.duration`, with a time that rounds to nothing as `<1 ms`.

@@ -109,12 +109,12 @@ public enum EngineError: Error, Sendable, Hashable, LocalizedError {
     public var errorDescription: String? {
         switch self {
         case .cancelled: String(localized: "Cancelled")
-        case .invalidModel(let issues): String(localized: "Invalid model: \(issues.map(EngineText.message).joined(separator: "; "))")
-        case .invalidSettings(let issues): String(localized: "Invalid analysis settings: \(issues.map(EngineText.message).joined(separator: "; "))")
-        case .unsupported(let s): String(localized: "Unsupported: \(EngineText.message(s))")
+        case .invalidModel(let issues): String(localized: "Invalid model: \(issues.map(EngineText.message).joined(separator: "; "))", locale: NumberDisplay.locale)
+        case .invalidSettings(let issues): String(localized: "Invalid analysis settings: \(issues.map(EngineText.message).joined(separator: "; "))", locale: NumberDisplay.locale)
+        case .unsupported(let s): String(localized: "Unsupported: \(EngineText.message(s))", locale: NumberDisplay.locale)
         case .failed(let s): EngineText.message(s)
-        case .engine(let code, let s): s.isEmpty ? String(localized: "Engine error: \(code.description)") : EngineText.message(s)
-        case .libraryUnavailable(let s): String(localized: "Engine library unavailable: \(s)")
+        case .engine(let code, let s): s.isEmpty ? String(localized: "Engine error: \(code.description)", locale: NumberDisplay.locale) : EngineText.message(s)
+        case .libraryUnavailable(let s): String(localized: "Engine library unavailable: \(s)", locale: NumberDisplay.locale)
         }
     }
 
@@ -271,15 +271,15 @@ extension EngineClient {
     public func catalogs() async -> [CatalogInfo] { [] }
 
     public func loadCatalog(at url: URL) async throws -> CatalogInfo {
-        throw EngineError.unsupported(String(localized: "\(info.name) cannot load glass catalogs"))
+        throw EngineError.unsupported(String(localized: "\(info.name) cannot load glass catalogs", locale: NumberDisplay.locale))
     }
 
     public func removeCatalog(named name: String) async throws {
-        throw EngineError.unsupported(String(localized: "\(info.name) cannot remove glass catalogs"))
+        throw EngineError.unsupported(String(localized: "\(info.name) cannot remove glass catalogs", locale: NumberDisplay.locale))
     }
 
     public func reloadCatalog(named name: String) async throws -> CatalogChanges {
-        throw EngineError.unsupported(String(localized: "\(info.name) cannot reload glass catalogs"))
+        throw EngineError.unsupported(String(localized: "\(info.name) cannot reload glass catalogs", locale: NumberDisplay.locale))
     }
 
     public func setLibraryCatalogs(_ files: [URL]) async -> LibrarySync { LibrarySync() }
@@ -289,26 +289,26 @@ extension EngineClient {
     public func glassRows(in catalog: String?) async throws -> [GlassRow] { [] }
 
     public func glassDetails(catalog: String?, name: String) async throws -> GlassDetails {
-        throw EngineError.unsupported(String(localized: "\(info.name) has no glass data"))
+        throw EngineError.unsupported(String(localized: "\(info.name) has no glass data", locale: NumberDisplay.locale))
     }
 
     public func libraryCatalogsInUse() async -> [CatalogReference] { [] }
 
     public func glass(from spec: JSONValue) throws -> JSONValue {
-        throw EngineError.unsupported(String(localized: "\(info.name) cannot make glasses"))
+        throw EngineError.unsupported(String(localized: "\(info.name) cannot make glasses", locale: NumberDisplay.locale))
     }
 
     public func agf(of catalog: JSONValue) throws -> AGFExport {
-        throw EngineError.unsupported(String(localized: "\(info.name) cannot write AGF catalogs"))
+        throw EngineError.unsupported(String(localized: "\(info.name) cannot write AGF catalogs", locale: NumberDisplay.locale))
     }
 
     public func importPrescription(_ data: Data, format: PrescriptionFormat) throws -> PrescriptionImport {
-        throw EngineError.unsupported(String(localized: "\(info.name) cannot import lens prescription files"))
+        throw EngineError.unsupported(String(localized: "\(info.name) cannot import lens prescription files", locale: NumberDisplay.locale))
     }
 
     public func importPrescription(at url: URL) async throws -> PrescriptionImport {
         guard let format = PrescriptionFormat(fileExtension: url.pathExtension) else {
-            throw EngineError.unsupported(String(localized: "\(url.lastPathComponent) is not a lens prescription file"))
+            throw EngineError.unsupported(String(localized: "\(url.lastPathComponent) is not a lens prescription file", locale: NumberDisplay.locale))
         }
         return try importPrescription(try Data(contentsOf: url), format: format)
     }

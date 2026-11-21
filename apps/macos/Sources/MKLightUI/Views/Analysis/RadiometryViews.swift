@@ -109,7 +109,7 @@ struct SensorMapView: View {
             MapLayout(aspect: CGFloat((m.grid.xRange.upperBound - m.grid.xRange.lowerBound) / max(m.grid.yRange.upperBound - m.grid.yRange.lowerBound, 1e-9))) {
                 HeatMapImage(grid: m.grid, scale: .sequential(log: log))
                     .overlay(Rectangle().strokeBorder(.separator))
-                    .accessibilityLabel("\(m.title) map")
+                    .accessibilityLabel(String(localized: "\(m.title) map", locale: NumberDisplay.locale))
             } bar: {
                 ColorBar(scale: .sequential(log: log), range: m.grid.range, unit: unit)
             } side: {
@@ -219,7 +219,7 @@ struct PolarizationView: View {
                             ctx.fill(Path(CGRect(x: q.x - cell / 2, y: q.y - cell / 2, width: cell, height: cell)), with: .color(Color(.sRGB, red: rgb.x, green: rgb.y, blue: rgb.z)))
                         }
                     }
-                    .accessibilityLabel(String(localized: "\(quantity.title) over the pupil"))
+                    .accessibilityLabel(String(localized: "\(quantity.title) over the pupil", locale: NumberDisplay.locale))
             } bar: {
                 ColorBar(scale: .perceptual, range: range, unit: quantity == .retardance ? "rad" : "")
             } side: {
@@ -255,7 +255,7 @@ struct TransmissionView: View {
                 ForEach(fields, id: \.self) { f in
                     LegendItem(
                         color: Palette.fieldColor(f),
-                        label: (fieldLabels.indices.contains(f) ? fieldLabels[f] : String(localized: "Field \(f + 1)"))
+                        label: (fieldLabels.indices.contains(f) ? fieldLabels[f] : String(localized: "Field \(f + 1)", locale: NumberDisplay.locale))
                             + (polychromatic.indices.contains(f) ? " · " + Fmt.percent(polychromatic[f]) : ""))
                 }
             }
@@ -266,9 +266,11 @@ struct TransmissionView: View {
                     }, xLabel: String(localized: "Wavelength (µm)"), yLabel: String(localized: "Transmission"), yDomain: 0...1.02, zeroLine: false)
             } else {
                 Chart(points, id: \.field) { p in
-                    BarMark(x: .value("Field", "\(p.field + 1)"), y: .value("Transmission", p.t)).foregroundStyle(Palette.fieldColor(p.field)).cornerRadius(3)
+                    BarMark(x: .value(String(localized: "Field"), "\(p.field + 1)"), y: .value(String(localized: "Transmission"), p.t)).foregroundStyle(Palette.fieldColor(p.field)).cornerRadius(3)
                 }
                 .chartYScale(domain: 0...1)
+                // Numbers as in every language (decimal point, no grouping).
+                .environment(\.locale, NumberDisplay.locale)
             }
         }
         .padding(Space.m)

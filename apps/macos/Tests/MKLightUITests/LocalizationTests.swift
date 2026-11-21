@@ -2,6 +2,7 @@ import Foundation
 import Testing
 
 @testable import MKLightEngine
+@testable import MKLightModel
 
 /// The string catalog and the engine text catalogs (docs/APP.md, "Languages").
 @Suite struct LocalizationTests {
@@ -98,6 +99,63 @@ import Testing
         }
         for zh in ["zh", "zh-CN", "zh-SG", "zh-Hans", "zh-Hans-CN", "zh-Hans-HK"] { #expect(resolved(zh) == "zh-Hans", "\(zh)") }
         for other in ["zh-Hant", "zh-TW", "zh-HK", "zh-Hant-TW", "en-GB", "de"] { #expect(resolved(other) == "en", "\(other)") }
+    }
+
+    /// Numbers read the same in every language: decimal point, no grouping.
+    @Test func numbersDoNotChangeWithTheLanguage() {
+        let x = 12345.6
+        for language in ["en"] + Self.languages {
+            let text = NumberDisplay.textLocale(language: language)
+            // The views' locale carries the language (SwiftUI's string lookup)...
+            #expect(Bundle.preferredLocalizations(from: ["en"] + Self.languages, forPreferences: [text.identifier]).first == language)
+            // ...and the numbers keep the app's one format.
+            #expect(x.formatted(.number.locale(NumberDisplay.locale)) == "12345.6", "\(language)")
+            #expect(12345.formatted(.number.grouping(.never).locale(text)) == "12345", "\(language)")
+            #expect(NumberDisplay.format(x, decimals: 1) == "12345.6")
+            // Localized text formats its numbers with the number locale.
+            #expect(String(localized: "\(x, specifier: "%.1f") mm", locale: NumberDisplay.locale) == "12345.6 mm")
+            #expect(String(localized: "\(12345) trials", locale: NumberDisplay.locale) == "12345 trials")
+        }
+    }
+
+    /// `String(localized:)` formats its arguments with `Locale.current`, the
+    /// system region (`12.345,6` in Germany): every interpolated one passes
+    /// the number locale.
+    @Test func interpolatedStringsUseTheNumberLocale() throws {
+        let sources = Self.repo.appending(path: "apps/macos/Sources")
+        let files = FileManager.default.enumerator(at: sources, includingPropertiesForKeys: nil)?
+            .compactMap { $0 as? URL }.filter { $0.pathExtension == "swift" } ?? []
+        var missing: [String] = []
+        for f in files {
+            let text = try String(contentsOf: f, encoding: .utf8)
+            for call in text.ranges(of: "String(localized: \"") {
+                // The literal: from its quote to the closing one, skipping interpolations.
+                var i = text.index(before: call.upperBound)
+                var depth = 0
+                var interpolated = false
+                i = text.index(after: i)
+                while i < text.endIndex {
+                    let c = text[i]
+                    if depth == 0 && c == "\"" { break }
+                    if c == "\\", text.index(after: i) < text.endIndex, text[text.index(after: i)] == "(" {
+                        interpolated = true
+                        depth += 1
+                        i = text.index(i, offsetBy: 2)
+                        continue
+                    }
+                    if depth > 0 && c == "(" { depth += 1 }
+                    if depth > 0 && c == ")" { depth -= 1 }
+                    if c == "\\" { i = text.index(after: i) }
+                    i = text.index(after: i)
+                }
+                guard interpolated, i < text.endIndex else { continue }
+                let rest = text[text.index(after: i)...].prefix(40)
+                if !rest.hasPrefix(", locale: NumberDisplay.locale") {
+                    missing.append("\(f.lastPathComponent):\(text[..<call.lowerBound].count(where: { $0 == "\n" }) + 1)")
+                }
+            }
+        }
+        #expect(missing.isEmpty, "\(missing.joined(separator: ", "))")
     }
 
     // MARK: Engine text

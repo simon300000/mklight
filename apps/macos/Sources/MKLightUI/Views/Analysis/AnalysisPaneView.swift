@@ -392,7 +392,7 @@ struct PaneHeader: View {
     private var subtitle: String {
         if let p = pane.progress { return p.stage.isEmpty ? String(localized: "Computing…") : EngineText.message(p.stage) }
         let s = SettingsBar.summary(pane, descriptor)
-        if pane.isStale { return s.isEmpty ? String(localized: "Out of date") : String(localized: "Out of date · \(s)") }
+        if pane.isStale { return s.isEmpty ? String(localized: "Out of date") : String(localized: "Out of date · \(s)", locale: NumberDisplay.locale) }
         if !s.isEmpty { return s }
         return String(localized: "Default settings")
     }
@@ -441,7 +441,7 @@ struct SettingsPanel: View {
         .padding(.horizontal, Space.m)
         .padding(.bottom, Space.xs)
         .accessibilityElement(children: .contain)
-        .accessibilityLabel("\(AnalysisCatalog.title(of: pane.analysis)) settings")
+        .accessibilityLabel(String(localized: "\(AnalysisCatalog.title(of: pane.analysis)) settings", locale: NumberDisplay.locale))
     }
 }
 
@@ -516,10 +516,10 @@ struct PaneFooter: View {
     /// The warnings themselves on hover; else what the badge is.
     private var badgeHelp: String {
         var parts: [String] = []
-        if let why = output.backend?.fallbackReason { parts.append(String(localized: "Ran on the CPU: \(EngineText.message(why))")) }
+        if let why = output.backend?.fallbackReason { parts.append(String(localized: "Ran on the CPU: \(EngineText.message(why))", locale: NumberDisplay.locale)) }
         let groups = RunWarnings.group(output.runInfo.warnings)
         parts += groups.prefix(3).map(\.line)
-        if groups.count > 3 { parts.append(String(localized: "… \(groups.count - 3) more")) }
+        if groups.count > 3 { parts.append(String(localized: "… \(groups.count - 3) more", locale: NumberDisplay.locale)) }
         return parts.isEmpty ? String(localized: "How this result was computed") : parts.joined(separator: "\n") + "\n" + String(localized: "Click for details.")
     }
 
@@ -556,7 +556,7 @@ struct BackendBadge: View {
             if !groups.isEmpty {
                 HStack(spacing: 2) {
                     Image(systemName: "exclamationmark.triangle.fill")
-                    if groups.count > 1 { Text("\(groups.count)") }
+                    if groups.count > 1 { Text(String(localized: "\(groups.count)", locale: NumberDisplay.locale)) }
                 }
                 .foregroundStyle(.orange)
             }
@@ -578,11 +578,11 @@ struct BackendBadge: View {
     }
 
     private func accessibilityText(_ groups: [WarningGroup]) -> String {
-        var t = String(localized: "Computed on \(output.backend?.summary ?? output.runInfo.backend) in \(duration)")
-        if let why = output.backend?.fallbackReason { t += ". " + String(localized: "Ran on the CPU: \(EngineText.message(why))") }
+        var t = String(localized: "Computed on \(output.backend?.summary ?? output.runInfo.backend) in \(duration)", locale: NumberDisplay.locale)
+        if let why = output.backend?.fallbackReason { t += ". " + String(localized: "Ran on the CPU: \(EngineText.message(why))", locale: NumberDisplay.locale) }
         if !groups.isEmpty {
             let lines = groups.map(\.line).joined(separator: ". ")
-            t += ". " + (groups.count == 1 ? String(localized: "1 warning: \(lines)") : String(localized: "\(groups.count) warnings: \(lines)"))
+            t += ". " + (groups.count == 1 ? String(localized: "1 warning: \(lines)", locale: NumberDisplay.locale) : String(localized: "\(groups.count) warnings: \(lines)", locale: NumberDisplay.locale))
         }
         return t
     }
@@ -622,7 +622,7 @@ struct RunDetails: View {
             let attempts = RunRoute.attempts(info.failedAttempts)
             if !attempts.isEmpty {
                 Divider()
-                Text(attempts.count == 1 ? String(localized: "Attempt Not Used") : String(localized: "\(attempts.count) Attempts Not Used")).font(.subheadline.weight(.medium))
+                Text(attempts.count == 1 ? String(localized: "Attempt Not Used") : String(localized: "\(attempts.count) Attempts Not Used", locale: NumberDisplay.locale)).font(.subheadline.weight(.medium))
                 ForEach(attempts) { a in
                     VStack(alignment: .leading, spacing: 3) {
                         Label {
@@ -641,7 +641,7 @@ struct RunDetails: View {
             if !info.warnings.isEmpty {
                 Divider()
                 let groups = RunWarnings.group(info.warnings)
-                Text(groups.count == 1 ? String(localized: "Warning") : String(localized: "\(groups.count) Warnings")).font(.subheadline.weight(.medium))
+                Text(groups.count == 1 ? String(localized: "Warning") : String(localized: "\(groups.count) Warnings", locale: NumberDisplay.locale)).font(.subheadline.weight(.medium))
                 ForEach(groups) { g in
                     VStack(alignment: .leading, spacing: 3) {
                         Label {
@@ -666,7 +666,7 @@ struct RunDetails: View {
                     .accessibilityElement(children: .combine)
                 }
                 if info.warnings.count > groups.count {
-                    DisclosureGroup("All \(info.warnings.count) messages from the engine", isExpanded: $showAll) {
+                    DisclosureGroup(String(localized: "All \(info.warnings.count) messages from the engine", locale: NumberDisplay.locale), isExpanded: $showAll) {
                         VStack(alignment: .leading, spacing: 2) {
                             ForEach(Array(info.warnings.enumerated()), id: \.offset) { _, w in
                                 Text(EngineText.message(w)).font(.caption.monospaced()).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
@@ -711,8 +711,8 @@ struct RunDetails: View {
         case .pupilSampling:
             guard var pupil = (optics?["pupil"] ?? value("pupil"))?.object, let grid = pupil["grid"]?.int, grid > 0 else { return nil }
             pupil["grid"] = .integer(0)
-            let title = String(localized: "Sample the Pupil Automatically (grid \(grid) → auto)")
-            let help = String(localized: "The pupil grid is set to \(grid). Automatic sampling picks a grid fine enough for the wavefront's slope (64 to 1024), then runs again.")
+            let title = String(localized: "Sample the Pupil Automatically (grid \(grid) → auto)", locale: NumberDisplay.locale)
+            let help = String(localized: "The pupil grid is set to \(grid). Automatic sampling picks a grid fine enough for the wavefront's slope (64 to 1024), then runs again.", locale: NumberDisplay.locale)
             if var o = optics {
                 o["pupil"] = .object(pupil)
                 return Remedy(title: title, help: help, key: "optics", value: .object(o))
@@ -723,14 +723,14 @@ struct RunDetails: View {
                 guard let size = o["psf_size"]?.int, size > 0 else { return nil }
                 o["psf_size"] = .integer(0)
                 return Remedy(
-                    title: String(localized: "Size the PSF Window Automatically (\(size) → auto)"),
-                    help: String(localized: "The PSF window is set to \(size) samples. The automatic window holds the blur and its diffraction wings, then runs again."),
+                    title: String(localized: "Size the PSF Window Automatically (\(size) → auto)", locale: NumberDisplay.locale),
+                    help: String(localized: "The PSF window is set to \(size) samples. The automatic window holds the blur and its diffraction wings, then runs again.", locale: NumberDisplay.locale),
                     key: "optics", value: .object(o))
             }
             guard let size = value("grid_size")?.int, size > 0 else { return nil }
             return Remedy(
-                title: String(localized: "Size the Image Grid Automatically (\(size) → auto)"),
-                help: String(localized: "The image grid is set to \(size). The automatic grid holds the blur and its diffraction wings, then runs again."),
+                title: String(localized: "Size the Image Grid Automatically (\(size) → auto)", locale: NumberDisplay.locale),
+                help: String(localized: "The image grid is set to \(size). The automatic grid holds the blur and its diffraction wings, then runs again.", locale: NumberDisplay.locale),
                 key: "grid_size", value: .integer(0))
         }
     }

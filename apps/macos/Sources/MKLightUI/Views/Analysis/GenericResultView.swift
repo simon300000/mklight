@@ -120,7 +120,7 @@ struct RecordTable: View {
             }
             .textSelection(.enabled)
         }
-        if rows.count > 200 { Text("\(rows.count - 200) more rows").font(.caption).foregroundStyle(.secondary) }
+        if rows.count > 200 { Text(String(localized: "\(rows.count - 200) more rows", locale: NumberDisplay.locale)).font(.caption).foregroundStyle(.secondary) }
     }
 }
 
@@ -146,7 +146,7 @@ struct BufferPreview: View {
             } else if buffer.count > 0, buffer.count <= 2_000_000 {
                 let f = buffer.doubles.filter(\.isFinite)
                 if let lo = f.min(), let hi = f.max() {
-                    Text("range \(Fmt.short(lo)) … \(Fmt.short(hi)), \(buffer.count - f.count) without a value")
+                    Text(String(localized: "range \(Fmt.short(lo)) … \(Fmt.short(hi)), \(buffer.count - f.count) without a value", locale: NumberDisplay.locale))
                         .font(.caption).foregroundStyle(.secondary)
                 }
             }
@@ -165,7 +165,7 @@ struct JSONOutline: View {
                 ForEach(o.keys.sorted(), id: \.self) { k in node(k, o[k]!) }
             case .array(let a):
                 ForEach(Array(a.prefix(100).enumerated()), id: \.offset) { i, v in node("[\(i)]", v) }
-                if a.count > 100 { Text("… \(a.count - 100) more").foregroundStyle(.secondary) }
+                if a.count > 100 { Text(String(localized: "… \(a.count - 100) more", locale: NumberDisplay.locale)).foregroundStyle(.secondary) }
             default:
                 Text(value.displayText)
             }

@@ -34,7 +34,7 @@ public enum GlassStatus: Hashable, Sendable, Codable, Identifiable {
         case .obsolete: String(localized: "Obsolete")
         case .special: String(localized: "Special")
         case .melt: String(localized: "Melt")
-        case .other(let c): String(localized: "Status \(c)")
+        case .other(let c): String(localized: "Status \(c)", locale: NumberDisplay.locale)
         }
     }
 

@@ -133,7 +133,7 @@ struct SpotGrid: Sendable {
                     rms: rms, geo: geo, extent: count > 0 ? extent : (geo.isFinite ? geo : 0))
             }
             return Row(
-                id: index, title: String(localized: "Field \(index + 1)"), value: context.fieldLabel(f["field_value"]?.nfArray),
+                id: index, title: String(localized: "Field \(index + 1)", locale: NumberDisplay.locale), value: context.fieldLabel(f["field_value"]?.nfArray),
                 cells: cells, baseColumn: baseIndex ?? 0)
         }
     }
@@ -315,7 +315,7 @@ struct SpotGridView: View {
             Text(row.title).font(.caption.weight(.semibold)).lineLimit(1)
             Text(row.value).font(.caption2).foregroundStyle(.secondary).lineLimit(2).minimumScaleFactor(0.8)
             if scale == .field {
-                Text("±\(Fmt.length(halfWidth))").font(.caption2.monospacedDigit()).foregroundStyle(.tertiary)
+                Text(String(localized: "±\(Fmt.length(halfWidth))", locale: NumberDisplay.locale)).font(.caption2.monospacedDigit()).foregroundStyle(.tertiary)
                     .lineLimit(1).minimumScaleFactor(0.7)
             }
         }
@@ -339,10 +339,10 @@ struct SpotCellView: View {
             Canvas { ctx, sz in draw(&ctx, sz) }
                 .frame(width: size, height: size)
                 .accessibilityLabel(
-                    "\(label), defocus \(SpotGrid.planeLabel(cell.defocus)), spot RMS \(Fmt.length(cell.rms)), GEO \(Fmt.length(cell.geo))")
+                    String(localized: "\(label), defocus \(SpotGrid.planeLabel(cell.defocus)), spot RMS \(Fmt.length(cell.rms)), GEO \(Fmt.length(cell.geo))", locale: NumberDisplay.locale))
             ViewThatFits(in: .horizontal) {
-                if showsGeo { Text("RMS \(Fmt.length(cell.rms)) · GEO \(Fmt.length(cell.geo))").fixedSize() }
-                Text("RMS \(Fmt.length(cell.rms))").fixedSize()
+                if showsGeo { Text(String(localized: "RMS \(Fmt.length(cell.rms)) · GEO \(Fmt.length(cell.geo))", locale: NumberDisplay.locale)).fixedSize() }
+                Text(String(localized: "RMS \(Fmt.length(cell.rms))", locale: NumberDisplay.locale)).fixedSize()
                 Text(Fmt.length(cell.rms)).fixedSize()
                 Text(Fmt.length(cell.rms)).minimumScaleFactor(0.6)
             }

@@ -1,5 +1,6 @@
 import MetalKit
 import MKLightEngine
+import MKLightModel
 import SwiftUI
 
 #if canImport(AppKit)
@@ -93,7 +94,7 @@ enum ViewportBridge {
             input.renderer = r
             view.delegate = r
         } catch let e {
-            DispatchQueue.main.async { error.wrappedValue = String(localized: "The Metal viewport could not start: \(e.localizedDescription)") }
+            DispatchQueue.main.async { error.wrappedValue = String(localized: "The Metal viewport could not start: \(e.localizedDescription)", locale: NumberDisplay.locale) }
         }
         return view
     }

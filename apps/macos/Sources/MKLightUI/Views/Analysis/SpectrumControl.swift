@@ -60,7 +60,7 @@ public struct SpectrumControl: View {
                         .fixedSize(horizontal: false, vertical: true)
                 }
             } else {
-                Text("A spectrum this control cannot edit: \(JSONText.text(value))")
+                Text(String(localized: "A spectrum this control cannot edit: \(JSONText.text(value))", locale: NumberDisplay.locale))
                     .font(.caption.monospaced()).foregroundStyle(.secondary)
                     .lineLimit(3)
             }
@@ -233,13 +233,13 @@ public struct SpectrumControl: View {
                         HStack(spacing: Space.xs) {
                             Circle().fill(Palette.wavelengthColor(w.um)).frame(width: 7, height: 7)
                                 .accessibilityHidden(true)
-                            SpectrumNumberField(value: w.um, width: 64, label: String(localized: "Wavelength \(k + 1) in micrometers")) { v in
+                            SpectrumNumberField(value: w.um, width: 64, label: String(localized: "Wavelength \(k + 1) in micrometers", locale: NumberDisplay.locale)) { v in
                                 var l = list
                                 l[k].um = v
                                 write(.explicit(l))
                             }
                         }
-                        SpectrumNumberField(value: w.weight, width: 52, label: String(localized: "Weight of wavelength \(k + 1)")) { v in
+                        SpectrumNumberField(value: w.weight, width: 52, label: String(localized: "Weight of wavelength \(k + 1)", locale: NumberDisplay.locale)) { v in
                             var l = list
                             l[k].weight = v
                             write(.explicit(l))
@@ -254,7 +254,7 @@ public struct SpectrumControl: View {
                         .buttonStyle(.borderless)
                         .disabled(list.count <= 1)
                         .help("Remove this wavelength")
-                        .accessibilityLabel("Remove wavelength \(k + 1)")
+                        .accessibilityLabel(String(localized: "Remove wavelength \(k + 1)", locale: NumberDisplay.locale))
                     }
                 }
             }
@@ -274,20 +274,20 @@ public struct SpectrumControl: View {
 
     private func importReport(_ r: SpectrumCSV) -> some View {
         VStack(alignment: .leading, spacing: Space.xxs) {
-            Text(r.header == nil ? String(localized: "Imported \(r.table.count) rows in \(r.unit.rawValue)") : String(localized: "Imported \(r.table.count) rows in \(r.unit.rawValue), header skipped"))
+            Text(r.header == nil ? String(localized: "Imported \(r.table.count) rows in \(r.unit.rawValue)", locale: NumberDisplay.locale) : String(localized: "Imported \(r.table.count) rows in \(r.unit.rawValue), header skipped", locale: NumberDisplay.locale))
                 .font(.caption).foregroundStyle(.secondary)
             if !r.badRows.isEmpty {
                 DisclosureGroup {
                     VStack(alignment: .leading, spacing: 2) {
                         ForEach(r.badRows.prefix(20), id: \.line) { b in
-                            Text("Line \(b.line): \(b.reason) — \(b.text)").lineLimit(1).truncationMode(.tail)
+                            Text(String(localized: "Line \(b.line): \(b.reason) — \(b.text)", locale: NumberDisplay.locale)).lineLimit(1).truncationMode(.tail)
                         }
-                        if r.badRows.count > 20 { Text("… and \(r.badRows.count - 20) more") }
+                        if r.badRows.count > 20 { Text(String(localized: "… and \(r.badRows.count - 20) more", locale: NumberDisplay.locale)) }
                     }
                     .font(.caption.monospacedDigit())
                     .foregroundStyle(.secondary)
                 } label: {
-                    Label(r.badRows.count == 1 ? String(localized: "1 row skipped") : String(localized: "\(r.badRows.count) rows skipped"), systemImage: "exclamationmark.triangle.fill")
+                    Label(r.badRows.count == 1 ? String(localized: "1 row skipped") : String(localized: "\(r.badRows.count) rows skipped", locale: NumberDisplay.locale), systemImage: "exclamationmark.triangle.fill")
                         .font(.caption).foregroundStyle(.orange)
                 }
             }
@@ -413,17 +413,17 @@ struct SpectrumPreview: View {
             Chart {
                 if let curve {
                     ForEach(Array(curve.enumerated()), id: \.offset) { _, p in
-                        AreaMark(x: .value("λ", p.um), y: .value("Response", p.weight))
+                        AreaMark(x: .value("λ", p.um), y: .value(String(localized: "Response"), p.weight))
                             .foregroundStyle(Color.primary.opacity(0.07))
                             .interpolationMethod(.monotone)
                     }
                 }
                 ForEach(Array(samples.enumerated()), id: \.offset) { k, w in
-                    RuleMark(x: .value("λ", w.um), yStart: .value("Weight", 0), yEnd: .value("Weight", w.weight / peak))
+                    RuleMark(x: .value("λ", w.um), yStart: .value(String(localized: "Weight"), 0), yEnd: .value(String(localized: "Weight"), w.weight / peak))
                         .foregroundStyle(Palette.wavelengthColor(w.um))
                         .lineStyle(StrokeStyle(lineWidth: samples.count > 40 ? 1.5 : 3, lineCap: .butt))
                     if k == primary {
-                        PointMark(x: .value("λ", w.um), y: .value("Weight", w.weight / peak))
+                        PointMark(x: .value("λ", w.um), y: .value(String(localized: "Weight"), w.weight / peak))
                             .symbolSize(22)
                             .foregroundStyle(Palette.wavelengthColor(w.um))
                     }
@@ -440,10 +440,12 @@ struct SpectrumPreview: View {
                 }
             }
             .frame(height: 64)
+            // Numbers as in every language (decimal point, no grouping).
+            .environment(\.locale, NumberDisplay.locale)
             HStack(spacing: Space.xs) {
                 Text(source.caption)
                 Text("·")
-                Text("\(samples.count) λ")
+                Text(String(localized: "\(samples.count) λ", locale: NumberDisplay.locale))
                 if let primary {
                     Text("·")
                     Text(String(format: String(localized: "primary %.4f µm"), samples[primary].um))
@@ -455,7 +457,7 @@ struct SpectrumPreview: View {
             .lineLimit(1)
         }
         .accessibilityElement(children: .ignore)
-        .accessibilityLabel("Spectrum preview, \(source.caption.lowercased())")
+        .accessibilityLabel(String(localized: "Spectrum preview, \(source.caption.lowercased())", locale: NumberDisplay.locale))
         .accessibilityValue(accessibilityValue(primary))
     }
 

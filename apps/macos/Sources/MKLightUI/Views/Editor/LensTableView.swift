@@ -330,8 +330,8 @@ private struct LensTableHeader: View {
 
     private var subtitle: String {
         let n = system.surfaces.count - 2, v = design.variables.count
-        var s = String(localized: "\(n) surfaces · stop on \(system.stop) · mm")
-        if v > 0 { s += " · " + (v == 1 ? String(localized: "1 variable") : String(localized: "\(v) variables")) }
+        var s = String(localized: "\(n) surfaces · stop on \(system.stop) · mm", locale: NumberDisplay.locale)
+        if v > 0 { s += " · " + (v == 1 ? String(localized: "1 variable") : String(localized: "\(v) variables", locale: NumberDisplay.locale)) }
         return s
     }
 
@@ -398,10 +398,10 @@ private struct SurfaceLabel: View {
         }
         .accessibilityElement(children: .combine)
         .accessibilityLabel(
-            row.role == .stop ? String(localized: "Surface \(row.index), aperture stop")
+            row.role == .stop ? String(localized: "Surface \(row.index), aperture stop", locale: NumberDisplay.locale)
                 : row.role == .object ? String(localized: "surface.object", defaultValue: "Object", comment: "the object surface of a lens")
                 : row.role == .image ? String(localized: "surface.image", defaultValue: "Image", comment: "the image surface of a lens")
-                : String(localized: "Surface \(row.index)"))
+                : String(localized: "Surface \(row.index)", locale: NumberDisplay.locale))
     }
 }
 
@@ -485,7 +485,7 @@ private struct LensCell: View {
                     .truncationMode(.tail)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .help("Melt offset Δn_d / ΔV_d on the catalog glass; edit it in the inspector")
-                    .accessibilityLabel("offset \(note)")
+                    .accessibilityLabel(String(localized: "offset \(note)", locale: NumberDisplay.locale))
             }
             if let s = glassStatus, !isActive { GlassStatusDot(status: s) }
             if let m = row.markers[column] { MarkerBadge(marker: m) }
@@ -558,17 +558,17 @@ private struct LensCell: View {
     private func hintHelp(_ hint: String) -> String {
         let radius = column.base == .radius
         if row.isFlatSection(column) {
-            return radius ? String(localized: "The \(hint) section's radius: flat (this cylinder has power in the other section)")
-                : String(localized: "The \(hint) section's conic: flat (this cylinder has power in the other section)")
+            return radius ? String(localized: "The \(hint) section's radius: flat (this cylinder has power in the other section)", locale: NumberDisplay.locale)
+                : String(localized: "The \(hint) section's conic: flat (this cylinder has power in the other section)", locale: NumberDisplay.locale)
         }
-        return radius ? String(localized: "The \(hint) section's radius (the surface is anamorphic: y and x sections)")
-            : String(localized: "The \(hint) section's conic (the surface is anamorphic: y and x sections)")
+        return radius ? String(localized: "The \(hint) section's radius (the surface is anamorphic: y and x sections)", locale: NumberDisplay.locale)
+            : String(localized: "The \(hint) section's conic (the surface is anamorphic: y and x sections)", locale: NumberDisplay.locale)
     }
 
     /// The cell's name for VoiceOver: "Radius, x section".
     private var accessibilityTitle: String {
         guard let hint = row.hints[column] else { return column.title }
-        return String(localized: "\(column.base.title), \(hint) section")
+        return String(localized: "\(column.base.title), \(hint) section", locale: NumberDisplay.locale)
     }
 
     private var suggestions: [String] {
@@ -619,8 +619,8 @@ struct MarkerBadge: View {
                     .foregroundStyle(.secondary)
                     .frame(width: 13, height: 13)
                     .background(RoundedRectangle(cornerRadius: 3).fill(.quaternary))
-                    .help("Solve: \(s.title)")
-                    .accessibilityLabel("controlled by a \(s.title) solve")
+                    .help(String(localized: "Solve: \(s.title)", locale: NumberDisplay.locale))
+                    .accessibilityLabel(String(localized: "controlled by a \(s.title) solve", locale: NumberDisplay.locale))
             }
             if marker.isVariable && marker.solve != nil {
                 // A solve sets it: the optimizer leaves the variable out.
@@ -663,7 +663,7 @@ struct GlassStatusDot: View {
         Circle()
             .fill(Palette.color(GlassMapStatus(json: status.json).rgb(dark: colorScheme == .dark)))
             .frame(width: 7, height: 7)
-            .help("\(status.title) glass (Glass Catalogs sets statuses)")
-            .accessibilityLabel("\(status.title) glass")
+            .help(String(localized: "\(status.title) glass (Glass Catalogs sets statuses)", locale: NumberDisplay.locale))
+            .accessibilityLabel(String(localized: "\(status.title) glass", locale: NumberDisplay.locale))
     }
 }

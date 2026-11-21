@@ -73,11 +73,11 @@ extension MaterialOffset {
     /// Why `v` cannot be an offset component (`|Δn_d| ≤ 0.05`,
     /// `|ΔV_d| ≤ 10`, the engine's validation), if it cannot.
     public static func rejection(dnD v: Double) -> String? {
-        v.isFinite && abs(v) <= maxDnD ? nil : String(localized: "Δn_d must lie within ±\(Fmt.short(maxDnD))")
+        v.isFinite && abs(v) <= maxDnD ? nil : String(localized: "Δn_d must lie within ±\(Fmt.short(maxDnD))", locale: NumberDisplay.locale)
     }
 
     public static func rejection(dvD v: Double) -> String? {
-        v.isFinite && abs(v) <= maxDvD ? nil : String(localized: "ΔV_d must lie within ±\(Fmt.short(maxDvD))")
+        v.isFinite && abs(v) <= maxDvD ? nil : String(localized: "ΔV_d must lie within ±\(Fmt.short(maxDvD))", locale: NumberDisplay.locale)
     }
 }
 
@@ -128,8 +128,8 @@ extension GlassSubstitutionSession {
         let names = slots.map { "S\($0.index) \($0.material) \($0.offset?.compactText ?? "")" }
         let list = ListFormatter.localizedString(byJoining: names)
         return slots.count == 1
-            ? String(localized: "\(list) carries a melt offset. A replacement glass is installed without it, even the same glass: the offset belonged to the original melt.")
-            : String(localized: "\(list) carry melt offsets. A replacement glass is installed without them, even the same glass: the offset belonged to the original melt.")
+            ? String(localized: "\(list) carries a melt offset. A replacement glass is installed without it, even the same glass: the offset belonged to the original melt.", locale: NumberDisplay.locale)
+            : String(localized: "\(list) carry melt offsets. A replacement glass is installed without them, even the same glass: the offset belonged to the original melt.", locale: NumberDisplay.locale)
     }
 
     /// Material parameters substitution may not vary: the offsets and model

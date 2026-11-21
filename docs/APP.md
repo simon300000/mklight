@@ -890,11 +890,18 @@ docs/I18N.md.
   Only where it is shown: anything parsed or matched stays English. A
   translated diagnostic keeps the English message as detail.
 * **Not translated:** units and symbols, glass and catalog names, sample
-  design names, identifiers, keyboard shortcuts, user data, CSV headers,
+  design names (a design from a sample is untitled until saved, as in
+  English), identifiers, keyboard shortcuts, user data, CSV headers,
   and the engine text docs/I18N.md keeps English (run warnings, error
   messages, backend titles).
-* The views' locale is `NumberDisplay.locale`, US POSIX numbers in the
-  app's language: SwiftUI picks the strings by the environment's locale.
+* Numbers are the same in every language (decimal point, no grouping).
+  SwiftUI picks the strings by the environment's locale, so the views have
+  `NumberDisplay.textLocale` (the app's language), while the charts run
+  with `NumberDisplay.locale` (en_US_POSIX, their axis labels written as
+  strings) and every interpolated `String(localized:)` and SwiftUI label
+  passes `locale: NumberDisplay.locale` (`String(localized:)` would format
+  with the system region: `12.345,6` in Germany). `LocalizationTests`
+  checks both.
 * **Adding a string:** write it in English (`Text("…")`,
   `String(localized: "…")`, whole sentences with interpolation, never
   concatenated pieces), run `scripts/sync-strings.sh` (compiles a release

@@ -317,7 +317,7 @@ struct OptimizePanel: View {
             GroupBox {
                 VStack(alignment: .leading, spacing: Space.s) {
                     Picker("Vary", selection: $session.useDesignVariables) {
-                        Text("Design variables (\(design.variables.count))").tag(true)
+                        Text(String(localized: "Design variables (\(design.variables.count))", locale: NumberDisplay.locale)).tag(true)
                         Text("Every curvature and the back focus").tag(false)
                     }
                     .pickerStyle(.inline)
@@ -432,7 +432,7 @@ struct OptimizePanel: View {
                     Text(
                         r.evaluatedOn.hasPrefix("cpu")
                             ? String(localized: "Evaluated on the CPU f64 reference.")
-                            : String(localized: "Searched on \(r.evaluatedOn); merits reported on the CPU f64 reference.")
+                            : String(localized: "Searched on \(r.evaluatedOn); merits reported on the CPU f64 reference.", locale: NumberDisplay.locale)
                     )
                     .font(.caption).foregroundStyle(.secondary)
                 }
@@ -452,7 +452,7 @@ struct OptimizePanel: View {
     }
 
     private func statusText(_ r: OptimizeResult) -> String {
-        var s = String(localized: "\(r.iterations) iterations, \(r.evaluations) evaluations.") + " "
+        var s = String(localized: "\(r.iterations) iterations, \(r.evaluations) evaluations.", locale: NumberDisplay.locale) + " "
         if r.stopped { s += String(localized: "Stopped early: this is the best design found so far.") + " " }
         if !r.improved { s += String(localized: "No better design was found; the result equals the start.") + " " }
         if !r.feasible { s += String(localized: "Some constraints are not met.") + " " }
@@ -471,7 +471,7 @@ struct OptimizePanel: View {
             }
         case .running(let p):
             bar.running(
-                p, detail: session.trace.last.map { String(localized: "Iteration \($0.iteration)") } ?? "", canStop: session.canStop,
+                p, detail: session.trace.last.map { String(localized: "Iteration \($0.iteration)", locale: NumberDisplay.locale) } ?? "", canStop: session.canStop,
                 stopHelp: String(localized: "End now and keep the best design so far"), cancel: session.cancel, stop: session.stop)
         case .finished:
             if session.applied {
@@ -562,7 +562,7 @@ struct SolvesPanel: View {
 
     var body: some View {
         let n = design.system.solves.count
-        JobPanelFrame(kind: .solves, subtitle: n == 1 ? String(localized: "1 solve in \(design.system.name)") : String(localized: "\(n) solves in \(design.system.name)")) {
+        JobPanelFrame(kind: .solves, subtitle: n == 1 ? String(localized: "1 solve in \(design.system.name)", locale: NumberDisplay.locale) : String(localized: "\(n) solves in \(design.system.name)", locale: NumberDisplay.locale)) {
             if design.system.solves.isEmpty {
                 ContentUnavailableView(
                     "No Solves", systemImage: "function",
@@ -615,7 +615,7 @@ struct SolvesPanel: View {
                         Image(systemName: "arrow.right").font(.caption2).accessibilityLabel("to")
                         Text(Fmt.short(o.value)).fontWeight(o.previous != o.value ? .semibold : .regular)
                         Spacer()
-                        Text("residual \(Fmt.short(o.residual))").font(.caption).foregroundStyle(.secondary)
+                        Text(String(localized: "residual \(Fmt.short(o.residual))", locale: NumberDisplay.locale)).font(.caption).foregroundStyle(.secondary)
                     }
                     .font(.callout.monospacedDigit())
                 }

@@ -422,7 +422,7 @@ enum GlassMapStatus: Hashable, Sendable, CaseIterable {
         case .obsolete: String(localized: "Obsolete")
         case .special: String(localized: "Special")
         case .melt: String(localized: "Melt")
-        case .other(let n): String(localized: "Status \(n)")
+        case .other(let n): String(localized: "Status \(n)", locale: NumberDisplay.locale)
         case .unknown: String(localized: "Unknown")
         }
     }
@@ -480,8 +480,8 @@ struct GlassMapPoint: Identifiable, Hashable, Sendable {
     var displayName: String {
         switch kind {
         case .catalog: name
-        case .model: String(localized: "\(name) (model)")
-        case .offset: offset.map { "\(name) \($0.compactText)" } ?? String(localized: "\(name) (melt)")
+        case .model: String(localized: "\(name) (model)", locale: NumberDisplay.locale)
+        case .offset: offset.map { "\(name) \($0.compactText)" } ?? String(localized: "\(name) (melt)", locale: NumberDisplay.locale)
         }
     }
 
@@ -780,7 +780,7 @@ struct ImageSimulationData: Sendable {
 
     var sourceTitle: String {
         switch source {
-        case .pattern(let p): String(localized: "\(Self.patterns.first { $0.id == p }?.title ?? p) pattern")
+        case .pattern(let p): String(localized: "\(Self.patterns.first { $0.id == p }?.title ?? p) pattern", locale: NumberDisplay.locale)
         case .buffer: String(localized: "Imported image")
         case .path(let p): (p as NSString).lastPathComponent
         }

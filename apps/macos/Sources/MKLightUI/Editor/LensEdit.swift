@@ -28,7 +28,7 @@ public enum LensEdit: Equatable, Sendable {
         case .setMaterial: String(localized: "Change Material")
         case .setLabel: String(localized: "Change Label")
         case .setShapeKind, .setCylinder: String(localized: "Change Surface Type")
-        case .setShapeParameter(_, let p, _): String(localized: "Change \(p.title)")
+        case .setShapeParameter(_, let p, _): String(localized: "Change \(p.title)", locale: NumberDisplay.locale)
         case .setCoating: String(localized: "Change Coating")
         case .insert: String(localized: "Insert Surface")
         case .delete: String(localized: "Delete Surface")

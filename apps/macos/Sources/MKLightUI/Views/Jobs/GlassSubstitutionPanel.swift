@@ -47,7 +47,7 @@ struct GlassSubstitutionPanel: View {
 
     private var subtitle: String {
         let n = session.selected.count
-        return n == 0 ? String(localized: "Snap model glasses to real glasses") : n == 1 ? String(localized: "1 glass may change") : String(localized: "\(n) glasses may change")
+        return n == 0 ? String(localized: "Snap model glasses to real glasses") : n == 1 ? String(localized: "1 glass may change") : String(localized: "\(n) glasses may change", locale: NumberDisplay.locale)
     }
 
     private var phase: Int {
@@ -134,7 +134,7 @@ struct GlassSubstitutionPanel: View {
                             .hint(.callout)
                     } else {
                         Picker("Shape", selection: $session.useDesignVariables) {
-                            Text("Re-optimize the design variables (\(design.variables.filter { !$0.isPinned }.count))").tag(true)
+                            Text(String(localized: "Re-optimize the design variables (\(design.variables.filter { !$0.isPinned }.count))", locale: NumberDisplay.locale)).tag(true)
                             Text("Re-optimize every curvature and the back focus").tag(false)
                         }
                         .pickerStyle(.inline)
@@ -159,10 +159,10 @@ struct GlassSubstitutionPanel: View {
         let m = design.merit
         let n = m.operands.count, summary = m.defaults.summary
         switch (m.mode == .custom, m.holdEFL) {
-        case (true, true): return String(localized: "Custom merit, \(n) operands, focal length held.")
-        case (true, false): return String(localized: "Custom merit, \(n) operands.")
-        case (false, true): return String(localized: "Default merit: \(summary), focal length held.")
-        case (false, false): return String(localized: "Default merit: \(summary).")
+        case (true, true): return String(localized: "Custom merit, \(n) operands, focal length held.", locale: NumberDisplay.locale)
+        case (true, false): return String(localized: "Custom merit, \(n) operands.", locale: NumberDisplay.locale)
+        case (false, true): return String(localized: "Default merit: \(summary), focal length held.", locale: NumberDisplay.locale)
+        case (false, false): return String(localized: "Default merit: \(summary).", locale: NumberDisplay.locale)
         }
     }
 
@@ -173,7 +173,7 @@ struct GlassSubstitutionPanel: View {
             })) {
                 VStack(alignment: .leading, spacing: 0) {
                     HStack(spacing: Space.xs) {
-                        Text("S\(slot.index)").font(.callout.monospacedDigit()).foregroundStyle(.secondary)
+                        Text(String(localized: "S\(slot.index)", locale: NumberDisplay.locale)).font(.callout.monospacedDigit()).foregroundStyle(.secondary)
                         Text(slot.material).font(.callout.weight(.medium))
                         if slot.isModel { Text("model").font(.caption2).foregroundStyle(.secondary).padding(.horizontal, 4).background(.quaternary, in: Capsule()) }
                         if let o = slot.offset, !o.isZero {
@@ -206,7 +206,7 @@ struct GlassSubstitutionPanel: View {
                     Text("Best glasses so far").font(.caption).foregroundStyle(.secondary)
                     FlowLayout(spacing: Space.xs, lineSpacing: Space.xs) {
                         ForEach(Array(zip(selectedSlots, g)), id: \.0.id) { slot, name in
-                            Text("S\(slot.index) \(name)").font(.caption.monospacedDigit())
+                            Text(String(localized: "S\(slot.index) \(name)", locale: NumberDisplay.locale)).font(.caption.monospacedDigit())
                                 .padding(.horizontal, 6).padding(.vertical, 2)
                                 .background(.tint.opacity(0.12), in: Capsule())
                         }
@@ -247,7 +247,7 @@ struct GlassSubstitutionPanel: View {
         List(selection: Binding(get: { session.selectedRank }, set: { session.select($0, in: workspace) })) {
             ForEach(r.ranked) { c in
                 HStack(alignment: .firstTextBaseline, spacing: Space.s) {
-                    Text("\(c.rank)").font(.callout.monospacedDigit().weight(.semibold)).frame(width: 20, alignment: .trailing)
+                    Text(String(localized: "\(c.rank)", locale: NumberDisplay.locale)).font(.callout.monospacedDigit().weight(.semibold)).frame(width: 20, alignment: .trailing)
                     VStack(alignment: .leading, spacing: 1) {
                         Text(c.glasses.map(\.name).joined(separator: " · ")).font(.callout).lineLimit(1)
                         Text(changeSummary(c)).font(.caption).foregroundStyle(.secondary).lineLimit(1)
@@ -265,7 +265,7 @@ struct GlassSubstitutionPanel: View {
                 }
                 .tag(Optional(c.rank))
                 .accessibilityElement(children: .combine)
-                .accessibilityLabel("Rank \(c.rank), merit \(Fmt.short(c.merit)), glasses \(c.glasses.map(\.name).joined(separator: ", "))")
+                .accessibilityLabel(String(localized: "Rank \(c.rank), merit \(Fmt.short(c.merit)), glasses \(c.glasses.map(\.name).joined(separator: ", "))", locale: NumberDisplay.locale))
             }
         }
         .listStyle(.bordered)
@@ -276,7 +276,7 @@ struct GlassSubstitutionPanel: View {
 
     private func changeSummary(_ c: GlassCombination) -> String {
         let moved = c.movedChanges.count
-        var s = moved == 0 ? String(localized: "shape unchanged") : moved == 1 ? String(localized: "1 variable re-optimized") : String(localized: "\(moved) variables re-optimized")
+        var s = moved == 0 ? String(localized: "shape unchanged") : moved == 1 ? String(localized: "1 variable re-optimized") : String(localized: "\(moved) variables re-optimized", locale: NumberDisplay.locale)
         if c.cutShort { s += " · " + String(localized: "cut short") }
         return s
     }
@@ -286,7 +286,7 @@ struct GlassSubstitutionPanel: View {
     private func comparison(_ c: GlassCombination, start: Double) -> some View {
         VStack(alignment: .leading, spacing: Space.s) {
             HStack {
-                Text("Candidate \(c.rank)").font(.headline)
+                Text(String(localized: "Candidate \(c.rank)", locale: NumberDisplay.locale)).font(.headline)
                 Spacer()
                 if !session.applied { Text("Previewed in the window").font(.caption).foregroundStyle(.tint) }
             }
@@ -297,7 +297,7 @@ struct GlassSubstitutionPanel: View {
             Grid(alignment: .leading, horizontalSpacing: Space.s, verticalSpacing: 3) {
                 ForEach(c.glasses, id: \.surface) { g in
                     GridRow {
-                        Text("S\(design.system.surfaceIndex(of: g.surface).map(String.init) ?? "?")").foregroundStyle(.secondary).monospacedDigit()
+                        Text(String(localized: "S\(design.system.surfaceIndex(of: g.surface).map(String.init) ?? "?")", locale: NumberDisplay.locale)).foregroundStyle(.secondary).monospacedDigit()
                         Text(session.startGlasses[g.surface] ?? "—").lineLimit(1)
                         Image(systemName: "arrow.right").font(.caption2).foregroundStyle(.secondary).accessibilityLabel("to")
                         Text(g.name).fontWeight(.semibold).lineLimit(1)
@@ -308,13 +308,13 @@ struct GlassSubstitutionPanel: View {
             }
             .font(.callout)
             if !c.movedChanges.isEmpty {
-                DisclosureGroup("Shape changes (\(c.movedChanges.count))") {
+                DisclosureGroup(String(localized: "Shape changes (\(c.movedChanges.count))", locale: NumberDisplay.locale)) {
                     VStack(alignment: .leading, spacing: 2) {
                         ForEach(Array(c.movedChanges.enumerated()), id: \.offset) { _, ch in
                             HStack {
                                 Text(ch.param.map { $0.label(in: design.system) } ?? "?").lineLimit(1)
                                 Spacer()
-                                Text("\(Fmt.short(display(ch.start, ch.param))) → \(Fmt.short(display(ch.value, ch.param)))").monospacedDigit()
+                                Text(String(localized: "\(Fmt.short(display(ch.start, ch.param))) → \(Fmt.short(display(ch.value, ch.param)))", locale: NumberDisplay.locale)).monospacedDigit()
                             }
                             .font(.caption)
                         }
@@ -380,10 +380,10 @@ struct GlassSubstitutionPanel: View {
         let n = r.combinations
         var s: String
         switch (n == 1, r.failed > 0) {
-        case (true, true): s = String(localized: "1 combination re-optimized, \(r.failed) failed.")
+        case (true, true): s = String(localized: "1 combination re-optimized, \(r.failed) failed.", locale: NumberDisplay.locale)
         case (true, false): s = String(localized: "1 combination re-optimized.")
-        case (false, true): s = String(localized: "\(n) combinations re-optimized, \(r.failed) failed.")
-        case (false, false): s = String(localized: "\(n) combinations re-optimized.")
+        case (false, true): s = String(localized: "\(n) combinations re-optimized, \(r.failed) failed.", locale: NumberDisplay.locale)
+        case (false, false): s = String(localized: "\(n) combinations re-optimized.", locale: NumberDisplay.locale)
         }
         s += " "
         if r.stopped { s += String(localized: "Stopped early: the ranking so far.") + " " }
@@ -406,7 +406,7 @@ struct GlassSubstitutionPanel: View {
             }
         case .running(let p):
             bar.running(
-                p, detail: session.progress.map { String(localized: "\($0.combinations) combinations") } ?? String(localized: "Preparing"), canStop: session.canStop,
+                p, detail: session.progress.map { String(localized: "\($0.combinations) combinations", locale: NumberDisplay.locale) } ?? String(localized: "Preparing"), canStop: session.canStop,
                 stopHelp: String(localized: "End now and keep the combinations ranked so far"), cancel: session.cancel, stop: session.stop)
         case .finished:
             if session.applied {
@@ -454,10 +454,10 @@ private struct OverrideButton: View {
         }
         .buttonStyle(.borderless)
         .help("Candidates for this lens only")
-        .accessibilityLabel("Candidates for surface \(slot.index)")
+        .accessibilityLabel(String(localized: "Candidates for surface \(slot.index)", locale: NumberDisplay.locale))
         .popover(isPresented: $show) {
             VStack(alignment: .leading, spacing: Space.m) {
-                Text("Candidates for S\(slot.index) · \(slot.material)").font(.headline)
+                Text(String(localized: "Candidates for S\(slot.index) · \(slot.material)", locale: NumberDisplay.locale)).font(.headline)
                 Toggle("Own candidates for this lens", isOn: Binding(
                     get: { session.overrides[slot.id] != nil },
                     set: { session.overrides[slot.id] = $0 ? session.candidates : nil }))
@@ -488,7 +488,7 @@ struct CandidateForm: View {
                     Button("All loaded") { candidates.catalogs = [] }
                     Divider()
                     ForEach(catalogs) { c in
-                        Toggle("\(c.name) (\(c.glassCount))", isOn: Binding(
+                        Toggle(String(localized: "\(c.name) (\(c.glassCount))", locale: NumberDisplay.locale), isOn: Binding(
                             get: { candidates.catalogs.contains(c.name) },
                             set: { on in
                                 if on { candidates.catalogs.append(c.name) } else { candidates.catalogs.removeAll { $0 == c.name } }
@@ -515,7 +515,7 @@ struct CandidateForm: View {
             }
             switch candidates.rule {
             case .nearest:
-                Stepper("\(candidates.nearest) nearest to the current glass", value: $candidates.nearest, in: 1...200)
+                Stepper(String(localized: "\(candidates.nearest) nearest to the current glass", locale: NumberDisplay.locale), value: $candidates.nearest, in: 1...200)
                     .font(.callout.monospacedDigit())
             case .window:
                 HStack {
@@ -599,6 +599,6 @@ struct LayoutComparison: View {
             }
         }
         .accessibilityElement(children: .ignore)
-        .accessibilityLabel("\(title) layout")
+        .accessibilityLabel(String(localized: "\(title) layout", locale: NumberDisplay.locale))
     }
 }

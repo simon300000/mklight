@@ -27,7 +27,7 @@ struct DesignStatus: View {
                         Text(jobStatus(job)).monospacedDigit()
                     }
                 }
-                .help("Show the running \(job.title.lowercased()) job")
+                .help(String(localized: "Show the running \(job.title.lowercased()) job", locale: NumberDisplay.locale))
             }
             if jobs.isEmpty && workspace.isBusy {
                 ProgressView().controlSize(.mini).help("Computing").accessibilityLabel("Computing")
@@ -50,8 +50,8 @@ struct DesignStatus: View {
 
     private func jobStatus(_ job: DesignJobKind) -> String {
         switch job {
-        case .optimize: window.optimize.trace.last.map { String(localized: "Optimizing · \($0.iteration)") } ?? String(localized: "Optimizing")
-        case .glass: window.glass.progress.map { String(localized: "Glasses · \($0.combinations)") } ?? String(localized: "Substituting glasses")
+        case .optimize: window.optimize.trace.last.map { String(localized: "Optimizing · \($0.iteration)", locale: NumberDisplay.locale) } ?? String(localized: "Optimizing")
+        case .glass: window.glass.progress.map { String(localized: "Glasses · \($0.combinations)", locale: NumberDisplay.locale) } ?? String(localized: "Substituting glasses")
         case .tolerance: String(localized: "Tolerancing")
         case .solves: String(localized: "Solving")
         }
@@ -71,13 +71,13 @@ struct GPUPreparationBadge: View {
             let percent = Int((monitor.state.fraction * 100).rounded())
             HStack(spacing: Space.xs) {
                 ProgressView().controlSize(.mini)
-                Text("Preparing GPU \(percent)%").monospacedDigit().foregroundStyle(.secondary)
+                Text(String(localized: "Preparing GPU \(percent)%", locale: NumberDisplay.locale)).monospacedDigit().foregroundStyle(.secondary)
             }
             .fixedSize()
             .help("Compiling the GPU's compute kernels, once after installing or updating MKLight or macOS. A GPU analysis started now waits only for the kernels it needs.")
             .accessibilityElement(children: .ignore)
             .accessibilityLabel("Preparing GPU")
-            .accessibilityValue("\(percent) percent")
+            .accessibilityValue(String(localized: "\(percent) percent", locale: NumberDisplay.locale))
         case .finished:
             // Text, not a Label: in the toolbar a Label shows only its icon,
             // which would read as the issues button's checkmark.
@@ -150,7 +150,7 @@ struct StatusDetails: View {
                 if let entries {
                     // An anamorphic design's report is the y section's.
                     KeyValueGrid(rows: Self.keys.compactMap { k in
-                        entries.entry(k.1).map { (anamorphic && Self.ySection.contains(k.0) ? String(localized: "\(k.0) (y)") : k.0, $0.formatted) }
+                        entries.entry(k.1).map { (anamorphic && Self.ySection.contains(k.0) ? String(localized: "\(k.0) (y)", locale: NumberDisplay.locale) : k.0, $0.formatted) }
                     })
                 } else {
                     Text("No first-order data yet.").foregroundStyle(.secondary)
@@ -226,7 +226,7 @@ struct AnamorphicSummary: View {
             VStack(alignment: .leading, spacing: Space.s) {
                 table(p, xy)
                 if detailed {
-                    Text(String(localized: "At λ = \(p.wavelengthUm, specifier: "%.4f") µm (primary)"))
+                    Text(String(localized: "At λ = \(p.wavelengthUm, specifier: "%.4f") µm (primary)", locale: NumberDisplay.locale))
                         .font(.caption).foregroundStyle(.secondary).monospacedDigit()
                     if !p.doePower.isEmpty { DOEPowerGrid(row: p) }
                     ForEach(xy.warnings, id: \.self) { w in
@@ -238,7 +238,7 @@ struct AnamorphicSummary: View {
                         DisclosureGroup(isExpanded: $showOthers) {
                             XYWavelengthTable(rows: xy.others).padding(.top, Space.xs)
                         } label: {
-                            Text("Other wavelengths (\(xy.others.count))").font(.callout)
+                            Text(String(localized: "Other wavelengths (\(xy.others.count))", locale: NumberDisplay.locale)).font(.callout)
                         }
                     }
                 }
@@ -272,7 +272,7 @@ struct AnamorphicSummary: View {
                 Text(ParaxialXYData.squeezeText(p.squeeze)).numeric().gridCellColumns(2).gridColumnAlignment(.trailing)
                     .frame(maxWidth: .infinity, alignment: .trailing)
             }
-            .help(String(localized: "Squeeze: \(xy.squeezeDefinition.map(EngineText.string) ?? String(localized: "signed EFL y / EFL x"))"))
+            .help(String(localized: "Squeeze: \(xy.squeezeDefinition.map(EngineText.string) ?? String(localized: "signed EFL y / EFL x"))", locale: NumberDisplay.locale))
             .accessibilityElement(children: .ignore)
             .accessibilityLabel("Squeeze, EFL y over EFL x")
             .accessibilityValue(ParaxialXYData.squeezeText(p.squeeze))
@@ -296,7 +296,7 @@ struct AnamorphicSummary: View {
         }
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(spoken)
-        .accessibilityValue("x \(Fmt.value(x, unit: "mm")), y \(Fmt.value(y, unit: "mm"))")
+        .accessibilityValue(String(localized: "x \(Fmt.value(x, unit: "mm")), y \(Fmt.value(y, unit: "mm"))", locale: NumberDisplay.locale))
     }
 }
 
@@ -308,7 +308,7 @@ struct DOEPowerGrid: View {
         Grid(alignment: .leading, horizontalSpacing: Space.l, verticalSpacing: Space.xs) {
             ForEach(row.doePower, id: \.surface) { d in
                 GridRow {
-                    Text("DOE power, surface \(d.surface)").foregroundStyle(.secondary)
+                    Text(String(localized: "DOE power, surface \(d.surface)", locale: NumberDisplay.locale)).foregroundStyle(.secondary)
                     Text(Fmt.value(d.power, unit: "1/mm")).numeric().gridColumnAlignment(.trailing)
                 }
                 .accessibilityElement(children: .combine)
@@ -349,9 +349,9 @@ struct XYWavelengthTable: View {
                     Text(ParaxialXYData.squeezeText(r.squeeze))
                 }
                 .accessibilityElement(children: .ignore)
-                .accessibilityLabel(String(localized: "\(r.wavelengthUm, specifier: "%.4f") micrometers"))
+                .accessibilityLabel(String(localized: "\(r.wavelengthUm, specifier: "%.4f") micrometers", locale: NumberDisplay.locale))
                 .accessibilityValue(
-                    "EFL x \(Fmt.short(r.eflX)), y \(Fmt.short(r.eflY)) millimeters; BFL x \(Fmt.short(r.bflX)), y \(Fmt.short(r.bflY)); squeeze \(ParaxialXYData.squeezeText(r.squeeze))"
+                    String(localized: "EFL x \(Fmt.short(r.eflX)), y \(Fmt.short(r.eflY)) millimeters; BFL x \(Fmt.short(r.bflX)), y \(Fmt.short(r.bflY)); squeeze \(ParaxialXYData.squeezeText(r.squeeze))", locale: NumberDisplay.locale)
                 )
             }
         }

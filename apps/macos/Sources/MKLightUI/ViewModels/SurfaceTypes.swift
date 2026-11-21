@@ -165,7 +165,7 @@ public enum SurfaceTypes {
     /// Even axis polynomial of a toroid or biconic: `A₄ x⁴`, `B₆ y⁶`, …
     static func axisList(_ axis: String, set: CoefficientSet, letter: String) -> CoefficientList {
         CoefficientList(
-            key: set.rawValue, title: String(localized: "\(axis.uppercased()) Polynomial"), term: { k, _ in "\(letter)\(sub(2 * k + 4))" },
+            key: set.rawValue, title: String(localized: "\(axis.uppercased()) Polynomial", locale: NumberDisplay.locale), term: { k, _ in "\(letter)\(sub(2 * k + 4))" },
             meaning: { k, _ in axis + superscript(2 * k + 4) }, unit: { mmPower(-(2 * $0 + 3)) },
             path: shapeCoefficient(set), maxCount: limit(set))
     }
@@ -266,7 +266,7 @@ public enum SurfaceTypes {
                     coefficients: CoefficientList(
                         key: "coefficients", title: String(localized: "Coefficients"),
                         term: { k, _ in XYTerm(index: k).map { "C(\($0.monomial))" } ?? "C\(k)" },
-                        meaning: { k, _ in XYTerm(index: k).map { String(localized: "degree \($0.degree)") } ?? "" }, unit: { _ in "mm" },
+                        meaning: { k, _ in XYTerm(index: k).map { String(localized: "degree \($0.degree)", locale: NumberDisplay.locale) } ?? "" }, unit: { _ in "mm" },
                         path: shapeCoefficient(.xy), maxCount: limit(.xy), sparse: true)),
             ],
             preview: .freeform),

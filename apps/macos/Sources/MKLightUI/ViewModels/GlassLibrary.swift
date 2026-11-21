@@ -61,9 +61,9 @@ public final class GlassLibrary {
         public var errorDescription: String? {
             switch self {
             case .invalidName(let why): why
-            case .duplicateName(let n): String(localized: "There is already a catalog or glass named “\(n)”.")
-            case .unknownCatalog(let n): String(localized: "There is no user catalog named “\(n)”.")
-            case .unknownGlass(let n): String(localized: "There is no glass named “\(n)”.")
+            case .duplicateName(let n): String(localized: "There is already a catalog or glass named “\(n)”.", locale: NumberDisplay.locale)
+            case .unknownCatalog(let n): String(localized: "There is no user catalog named “\(n)”.", locale: NumberDisplay.locale)
+            case .unknownGlass(let n): String(localized: "There is no glass named “\(n)”.", locale: NumberDisplay.locale)
             }
         }
     }
@@ -332,7 +332,7 @@ public final class GlassLibrary {
             try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
             try MKLightJSON.encode(s, pretty: true).write(to: settingsURL, options: .atomic)
         } catch {
-            problems.append(String(localized: "The glass library could not be saved (\(error.localizedDescription))."))
+            problems.append(String(localized: "The glass library could not be saved (\(error.localizedDescription)).", locale: NumberDisplay.locale))
         }
     }
 
@@ -344,13 +344,13 @@ public final class GlassLibrary {
                 entries = s.catalogs
                 overrides = s.overrides
             } else {
-                problems.append(String(localized: "\(settingsURL.lastPathComponent) could not be read."))
+                problems.append(String(localized: "\(settingsURL.lastPathComponent) could not be read.", locale: NumberDisplay.locale))
             }
         }
         let files = (try? FileManager.default.contentsOfDirectory(at: userGlassesDirectory, includingPropertiesForKeys: nil)) ?? []
         userCatalogs = files.filter { $0.pathExtension.lowercased() == "json" }.compactMap { url in
             guard let data = try? Data(contentsOf: url), let v = try? JSONValue.parse(data) else {
-                problems.append(String(localized: "\(url.lastPathComponent) is not a glass catalog."))
+                problems.append(String(localized: "\(url.lastPathComponent) is not a glass catalog.", locale: NumberDisplay.locale))
                 return nil
             }
             let name = v["name"]?.string.flatMap { $0.isEmpty ? nil : $0 } ?? url.deletingPathExtension().lastPathComponent

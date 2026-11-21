@@ -110,7 +110,7 @@ struct PanelSplitView: View {
             .zIndex(1)
             .accessibilityElement()
             .accessibilityLabel(horizontal ? String(localized: "Vertical divider") : String(localized: "Horizontal divider"))
-            .accessibilityValue("\(Int((split.fractions.indices.contains(k) ? split.fractions[k] : 0) * 100)) percent")
+            .accessibilityValue(String(localized: "\(Int((split.fractions.indices.contains(k) ? split.fractions[k] : 0) * 100)) percent", locale: NumberDisplay.locale))
             .accessibilityAdjustableAction { dir in
                 guard split.fractions.indices.contains(k + 1) else { return }
                 let pair = split.fractions[k] + split.fractions[k + 1]
@@ -215,7 +215,7 @@ private struct PanelTab: View {
     var body: some View {
         let selected = group.current == panel
         let title = session.title(of: panel)
-        let closeText = panel.paneID == nil ? String(localized: "Hide \(title)") : String(localized: "Close \(title)")
+        let closeText = panel.paneID == nil ? String(localized: "Hide \(title)", locale: NumberDisplay.locale) : String(localized: "Close \(title)", locale: NumberDisplay.locale)
         HStack(spacing: Space.xs) {
             Image(systemName: session.symbol(of: panel))
                 .font(.caption)
@@ -318,7 +318,7 @@ struct PanelMenuItems: View {
         }
         Divider()
         if panel.paneID == nil {
-            Button("Hide \(session.title(of: panel))", systemImage: "eye.slash") { session.close(panel) }
+            Button(String(localized: "Hide \(session.title(of: panel))", locale: NumberDisplay.locale), systemImage: "eye.slash") { session.close(panel) }
         } else {
             Button("Close Pane", systemImage: "xmark", role: .destructive) { session.close(panel) }
         }
@@ -345,7 +345,7 @@ struct PanelHeaderTitle: View {
                     .font(.headline)
                     .lineLimit(1)
                     .fixedSize()
-                    .help(String(localized: "\(help)\nDrag to move it, or out of the window to open it in a window of its own."))
+                    .help(String(localized: "\(help)\nDrag to move it, or out of the window to open it in a window of its own.", locale: NumberDisplay.locale))
                     .accessibilityAddTraits(.isHeader)
                     .panelHandle(panel)
             }

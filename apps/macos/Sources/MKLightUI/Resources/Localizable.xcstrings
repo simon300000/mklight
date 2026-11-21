@@ -1969,6 +1969,9 @@
         }
       }
     },
+    "%lld: " : {
+      "shouldTranslate" : false
+    },
     "%lld: %@" : {
       "localizations" : {
         "en" : {

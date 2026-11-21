@@ -438,7 +438,7 @@ public final class Workspace {
             return
         }
         if !descriptors.isEmpty, descriptor(pane.analysis) == nil {
-            pane.phase = .unavailable(String(localized: "This engine has no analysis named “\(pane.analysis)”."))
+            pane.phase = .unavailable(String(localized: "This engine has no analysis named “\(pane.analysis)”.", locale: NumberDisplay.locale))
             return
         }
         pane.job?.cancel()
@@ -619,7 +619,7 @@ public final class Workspace {
                 try await documentEngine.setGlassOverrides(overrides)
                 changed = true
             } catch {
-                libraryWarnings.append(String(localized: "Glass status settings: \(error.localizedDescription)"))
+                libraryWarnings.append(String(localized: "Glass status settings: \(error.localizedDescription)", locale: NumberDisplay.locale))
             }
         }
         loadedLibrary = (revision, overrides)
@@ -724,11 +724,11 @@ public final class Workspace {
     static func missingCatalogWarning(_ ref: CatalogReference, error: String?) -> String {
         guard let error else {
             if let path = ref.path.map({ ($0 as NSString).abbreviatingWithTildeInPath }) {
-                return String(localized: "Glass catalog “\(ref.name)” was not found at \(path). Its glasses are unknown until you add the catalog to the library or the design.")
+                return String(localized: "Glass catalog “\(ref.name)” was not found at \(path). Its glasses are unknown until you add the catalog to the library or the design.", locale: NumberDisplay.locale)
             }
-            return String(localized: "Glass catalog “\(ref.name)” was not found. Its glasses are unknown until you add the catalog to the library or the design.")
+            return String(localized: "Glass catalog “\(ref.name)” was not found. Its glasses are unknown until you add the catalog to the library or the design.", locale: NumberDisplay.locale)
         }
-        return String(localized: "Glass catalog “\(ref.name)” could not be loaded (\(EngineText.message(error))).")
+        return String(localized: "Glass catalog “\(ref.name)” could not be loaded (\(EngineText.message(error))).", locale: NumberDisplay.locale)
     }
 
     /// Takes new snapshots after the session's glass library changed: of
@@ -756,7 +756,7 @@ public final class Workspace {
             throw EngineError.invalidModel(modelErrors.isEmpty ? [String(localized: "The design has not been checked by the engine yet.")] : modelErrors)
         }
         if let d = descriptor(analysis), !d.available {
-            throw EngineError.unsupported(d.unavailableReason ?? String(localized: "\(analysis) is not available"))
+            throw EngineError.unsupported(d.unavailableReason ?? String(localized: "\(analysis) is not available", locale: NumberDisplay.locale))
         }
         let job = documentEngine.submit(
             EngineAnalysisRequest(analysis: analysis, settings: settings, execution: ExecutionSettings(backend: backend), fresh: fresh),
@@ -779,7 +779,7 @@ public final class Workspace {
         }
         guard system != design.system else { return try submitJob(analysis, settings: settings, key: key, fresh: fresh) }
         if let d = descriptor(analysis), !d.available {
-            throw EngineError.unsupported(d.unavailableReason ?? String(localized: "\(analysis) is not available"))
+            throw EngineError.unsupported(d.unavailableReason ?? String(localized: "\(analysis) is not available", locale: NumberDisplay.locale))
         }
         let snap = try await documentEngine.openSnapshot(system)
         let job = documentEngine.submit(

@@ -52,13 +52,13 @@ struct LayoutPaneView: View {
         }
         .overlay(alignment: .top) {
             if let title = workspace.previewTitle {
-                Label("Previewing \(title) · not applied", systemImage: "eye")
+                Label(String(localized: "Previewing \(title) · not applied", locale: NumberDisplay.locale), systemImage: "eye")
                     .font(.callout.weight(.medium))
                     .padding(.horizontal, Space.l)
                     .padding(.vertical, Space.s)
                     .glassEffect(.regular.tint(.accentColor.opacity(0.25)), in: .capsule)
                     .padding(.top, 56)
-                    .accessibilityLabel("Previewing \(title). The design has not changed.")
+                    .accessibilityLabel(String(localized: "Previewing \(title). The design has not changed.", locale: NumberDisplay.locale))
                     .transition(.opacity)
             }
         }
@@ -139,7 +139,7 @@ private struct LayoutViewport: View {
         let rays = scene.polylines.filter { $0.kind == .ray }.count
         let length = scene.bounds.max.z - scene.bounds.min.z
         let view = mode == .orbit3D ? String(localized: "3D view") : mode == .sectionXZ ? String(localized: "x–z section") : String(localized: "meridional section")
-        return String(localized: "Layout, \(view), \(system.surfaces.count - 2) surfaces, \(rays) rays, \(Fmt.short(length)) millimeters long")
+        return String(localized: "Layout, \(view), \(system.surfaces.count - 2) surfaces, \(rays) rays, \(Fmt.short(length)) millimeters long", locale: NumberDisplay.locale)
     }
 }
 
@@ -236,7 +236,7 @@ private struct LayoutControls: View {
                         Divider()
                         Menu("Rays per Field") {
                             ForEach([3, 5, 7, 11, 15], id: \.self) { n in
-                                Button("\(n)") { pane.set("rays_per_field", .integer(Int64(n))) }
+                                Button(String(localized: "\(n)", locale: NumberDisplay.locale)) { pane.set("rays_per_field", .integer(Int64(n))) }
                             }
                         }
                         Menu("Wavelengths") {
@@ -277,7 +277,7 @@ private struct LayoutControls: View {
                             }
                             .pickerStyle(.inline)
                         } label: {
-                            Label("Stretch ×\(Int(window.camera.stretch))", systemImage: "arrow.up.and.down")
+                            Label(String(localized: "Stretch ×\(Int(window.camera.stretch))", locale: NumberDisplay.locale), systemImage: "arrow.up.and.down")
                                 .labelStyle(.titleAndIcon)
                                 .font(.caption.weight(.semibold))
                                 .foregroundStyle(.tint)
@@ -285,9 +285,9 @@ private struct LayoutControls: View {
                         .menuIndicator(.hidden)
                         .buttonBorderShape(.capsule)
                         .fixedSize()
-                        .help("The section is drawn \(Int(window.camera.stretch)) times taller than true proportions. Click to change or turn off.")
+                        .help(String(localized: "The section is drawn \(Int(window.camera.stretch)) times taller than true proportions. Click to change or turn off.", locale: NumberDisplay.locale))
                         .accessibilityLabel("Vertical stretch")
-                        .accessibilityValue("\(Int(window.camera.stretch)) times")
+                        .accessibilityValue(String(localized: "\(Int(window.camera.stretch)) times", locale: NumberDisplay.locale))
                     }
                     if window.viewportMode == .orbit3D {
                         Button {
@@ -342,7 +342,7 @@ struct ScaleBar: View {
                 HStack(spacing: Space.s) {
                     Text(Nice.lengthLabel(mm))
                     if stretch != 1 {
-                        Text("vertical ×\(Int(stretch))").foregroundStyle(.tint).fontWeight(.semibold)
+                        Text(String(localized: "vertical ×\(Int(stretch))", locale: NumberDisplay.locale)).foregroundStyle(.tint).fontWeight(.semibold)
                     }
                 }
                 .font(.caption2.monospacedDigit())
@@ -352,7 +352,7 @@ struct ScaleBar: View {
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(
             stretch != 1
-                ? String(localized: "Scale bar \(Nice.lengthLabel(mm)), vertical stretch \(Int(stretch)) times, upright bar \(Nice.lengthLabel(up))")
-                : String(localized: "Scale bar \(Nice.lengthLabel(mm))"))
+                ? String(localized: "Scale bar \(Nice.lengthLabel(mm)), vertical stretch \(Int(stretch)) times, upright bar \(Nice.lengthLabel(up))", locale: NumberDisplay.locale)
+                : String(localized: "Scale bar \(Nice.lengthLabel(mm))", locale: NumberDisplay.locale))
     }
 }

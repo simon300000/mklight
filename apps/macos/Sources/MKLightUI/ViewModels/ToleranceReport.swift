@@ -70,34 +70,34 @@ public enum ToleranceReport {
     public static func summary(_ r: ToleranceResult, rows: [ToleranceRow], system: OpticalSystem, title: String) -> String {
         let d = r.display
         let crit = d.unit.isEmpty ? d.title : "\(d.title) (\(d.unit))"
-        var lines = [String(localized: "Tolerance analysis: \(title)"), String(localized: "Criterion: \(crit)")]
+        var lines = [String(localized: "Tolerance analysis: \(title)", locale: NumberDisplay.locale), String(localized: "Criterion: \(crit)", locale: NumberDisplay.locale)]
         if r.stopped { lines.append(String(localized: "Stopped early: statistics of the completed evaluations.")) }
         if r.hasSensitivity {
-            lines.append(String(localized: "Nominal: \(d.format(d.value(r.nominal)))"))
-            lines.append(String(localized: "Predicted mean (nominal + expected changes): \(d.format(d.value(r.predicted)))"))
+            lines.append(String(localized: "Nominal: \(d.format(d.value(r.nominal)))", locale: NumberDisplay.locale))
+            lines.append(String(localized: "Predicted mean (nominal + expected changes): \(d.format(d.value(r.predicted)))", locale: NumberDisplay.locale))
         }
         if r.hasMonteCarlo {
-            lines.append(r.failures > 0 ? String(localized: "Monte Carlo: \(r.trials) trials, seed \(r.seed), \(r.failures) failed") : String(localized: "Monte Carlo: \(r.trials) trials, seed \(r.seed)"))
-            if let t = r.secondsPerTrial { lines.append(String(localized: "  \(Fmt.short(t)) s per trial")) }
+            lines.append(r.failures > 0 ? String(localized: "Monte Carlo: \(r.trials) trials, seed \(r.seed), \(r.failures) failed", locale: NumberDisplay.locale) : String(localized: "Monte Carlo: \(r.trials) trials, seed \(r.seed)", locale: NumberDisplay.locale))
+            if let t = r.secondsPerTrial { lines.append(String(localized: "  \(Fmt.short(t)) s per trial", locale: NumberDisplay.locale)) }
             for p in r.percentiles {
                 let v = d.format(d.value(p.value)), q = Fmt.short(p.percentile)
-                lines.append(d.higherIsBetter ? String(localized: "  \(q) % of builds at least: \(v)") : String(localized: "  \(q) % of builds at most: \(v)"))
+                lines.append(d.higherIsBetter ? String(localized: "  \(q) % of builds at least: \(v)", locale: NumberDisplay.locale) : String(localized: "  \(q) % of builds at most: \(v)", locale: NumberDisplay.locale))
             }
-            if let y = r.yield { lines.append(String(localized: "  Yield: \(Fmt.percent(y))")) }
+            if let y = r.yield { lines.append(String(localized: "  Yield: \(Fmt.percent(y))", locale: NumberDisplay.locale)) }
         }
         if r.hasSensitivity {
             lines.append(String(localized: "Largest contributors:"))
             for s in r.sensitivities.prefix(5) {
                 let l = "\(label(s, rows: rows, system: system)) \(limits(s, rows: rows))"
-                lines.append(String(localized: "  \(l): \(Fmt.percent(r.share(s), digits: 0)) of the predicted change"))
+                lines.append(String(localized: "  \(l): \(Fmt.percent(r.share(s), digits: 0)) of the predicted change", locale: NumberDisplay.locale))
             }
         }
         for (j, c) in r.compensators.enumerated() {
             let t = ToleranceCompensator(c.param, range: c.range).title(in: system)
-            var s = String(localized: "Compensator \(t)")
-            if let (lo, hi) = r.compensatorRange(j) { s += String(localized: ": moved \(Fmt.short(lo)) to +\(Fmt.short(hi)) \(c.param.unit(in: system))") }
-            if let range = c.range { s += String(localized: " of ±\(Fmt.short(range))") }
-            if r.compensatorStd.indices.contains(j) { s += String(localized: "; Monte Carlo σ \(Fmt.short(r.compensatorStd[j]))") }
+            var s = String(localized: "Compensator \(t)", locale: NumberDisplay.locale)
+            if let (lo, hi) = r.compensatorRange(j) { s += String(localized: ": moved \(Fmt.short(lo)) to +\(Fmt.short(hi)) \(c.param.unit(in: system))", locale: NumberDisplay.locale) }
+            if let range = c.range { s += String(localized: " of ±\(Fmt.short(range))", locale: NumberDisplay.locale) }
+            if r.compensatorStd.indices.contains(j) { s += String(localized: "; Monte Carlo σ \(Fmt.short(r.compensatorStd[j]))", locale: NumberDisplay.locale) }
             lines.append(s)
         }
         return lines.joined(separator: "\n")

@@ -107,7 +107,7 @@ struct AnalysisSidebar: View {
         .help(panel == .lensData ? String(localized: "Show the lens data (⌥⌘E)") : String(localized: "Show the layout viewport (⌥⌘L)"))
         .contextMenu {
             let title = session.title(of: panel)
-            if open { Button("Hide \(title)") { session.close(panel) } } else { Button("Show \(title)") { session.show(panel) } }
+            if open { Button(String(localized: "Hide \(title)", locale: NumberDisplay.locale)) { session.close(panel) } } else { Button(String(localized: "Show \(title)", locale: NumberDisplay.locale)) { session.show(panel) } }
         }
     }
 
@@ -145,14 +145,14 @@ struct IssuesButton: View {
             if issues.isEmpty {
                 Label("No Issues", systemImage: "checkmark.circle").labelStyle(.iconOnly).foregroundStyle(.secondary)
             } else {
-                Label("\(issues.count)", systemImage: errors > 0 ? "xmark.octagon.fill" : "exclamationmark.triangle.fill")
+                Label(String(localized: "\(issues.count)", locale: NumberDisplay.locale), systemImage: errors > 0 ? "xmark.octagon.fill" : "exclamationmark.triangle.fill")
                     .labelStyle(.titleAndIcon)
                     .foregroundStyle(errors > 0 ? .red : .orange)
                     .monospacedDigit()
             }
         }
         .accessibilityLabel(
-            issues.isEmpty ? String(localized: "No issues") : issues.count == 1 ? String(localized: "1 issue") : String(localized: "\(issues.count) issues"))
+            issues.isEmpty ? String(localized: "No issues") : issues.count == 1 ? String(localized: "1 issue") : String(localized: "\(issues.count) issues", locale: NumberDisplay.locale))
         .help(issues.isEmpty ? String(localized: "The engine found no problems in the design") : String(localized: "Show the design's validation issues (⌃⌘E)"))
         .popover(isPresented: $window.showIssues, arrowEdge: .bottom) {
             IssuesList(workspace: workspace, window: window).frame(width: 420)
@@ -192,7 +192,7 @@ struct IssuesList: View {
                             }
                             .buttonStyle(.plain)
                             .help(
-                                issue.surface.map { String(localized: "Select surface \($0)") } ?? issue.field.map { String(localized: "Show field \($0 + 1)") } ?? "")
+                                issue.surface.map { String(localized: "Select surface \($0)", locale: NumberDisplay.locale) } ?? issue.field.map { String(localized: "Show field \($0 + 1)", locale: NumberDisplay.locale) } ?? "")
                         }
                     }
                     .padding(Space.l)
@@ -206,8 +206,8 @@ struct IssuesList: View {
     private var summary: String {
         let e = workspace.issues.filter { $0.severity == .error }.count
         let w = workspace.issues.filter { $0.severity == .warning }.count
-        let errors = e == 1 ? String(localized: "1 error") : String(localized: "\(e) errors")
-        let warnings = w == 1 ? String(localized: "1 warning") : String(localized: "\(w) warnings")
+        let errors = e == 1 ? String(localized: "1 error") : String(localized: "\(e) errors", locale: NumberDisplay.locale)
+        let warnings = w == 1 ? String(localized: "1 warning") : String(localized: "\(w) warnings", locale: NumberDisplay.locale)
         return [e > 0 ? errors : nil, w > 0 ? warnings : nil]
             .compactMap { $0 }.joined(separator: ", ")
     }
@@ -241,8 +241,8 @@ struct IssueRow: View {
                 }
                 HStack(spacing: Space.s) {
                     if !issue.code.isEmpty { Text(issue.code).monospaced() }
-                    if let s = issue.surface { Text("Surface \(s)") }
-                    if let f = issue.field { Text("Field \(f + 1)") }
+                    if let s = issue.surface { Text(String(localized: "Surface \(s)", locale: NumberDisplay.locale)) }
+                    if let f = issue.field { Text(String(localized: "Field \(f + 1)", locale: NumberDisplay.locale)) }
                 }
                 .font(.caption)
                 .foregroundStyle(.secondary)

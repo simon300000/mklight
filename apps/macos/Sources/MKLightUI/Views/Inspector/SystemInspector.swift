@@ -33,9 +33,9 @@ struct SystemInspector: View {
         Task {
             do {
                 let changes = try await workspace.reloadCatalog(named: c.name)
-                window.flash(String(localized: "\(c.name) reloaded: \(changes.localizedSummary.lowercased())."))
+                window.flash(String(localized: "\(c.name) reloaded: \(changes.localizedSummary.lowercased()).", locale: NumberDisplay.locale))
             } catch {
-                window.flash(String(localized: "\(c.name): \(error.localizedDescription)"))
+                window.flash(String(localized: "\(c.name): \(error.localizedDescription)", locale: NumberDisplay.locale))
             }
         }
     }
@@ -81,8 +81,8 @@ struct SystemInspector: View {
             if !system.configurations.isEmpty {
                 Section("Configurations") {
                     ForEach(Array(system.configurations.enumerated()), id: \.offset) { k, c in
-                        LabeledContent(c.name.isEmpty ? String(localized: "Configuration \(k + 1)") : c.name) {
-                            Text(c.overrides.count == 1 ? String(localized: "1 override") : String(localized: "\(c.overrides.count) overrides")).foregroundStyle(.secondary)
+                        LabeledContent(c.name.isEmpty ? String(localized: "Configuration \(k + 1)", locale: NumberDisplay.locale) : c.name) {
+                            Text(c.overrides.count == 1 ? String(localized: "1 override") : String(localized: "\(c.overrides.count) overrides", locale: NumberDisplay.locale)).foregroundStyle(.secondary)
                         }
                     }
                 }
@@ -138,7 +138,7 @@ struct SystemInspector: View {
                         .monospacedDigit()
                     LabeledContent("Squeeze", value: ParaxialXYData.squeezeText(p.squeeze))
                         .monospacedDigit()
-                        .help(String(localized: "Squeeze: \(xy.squeezeDefinition.map { EngineText.string($0) } ?? String(localized: "signed EFL y / EFL x"))"))
+                        .help(String(localized: "Squeeze: \(xy.squeezeDefinition.map { EngineText.string($0) } ?? String(localized: "signed EFL y / EFL x"))", locale: NumberDisplay.locale))
                     if let s = xy.symmetry { LabeledContent("Symmetry", value: s.title) }
                 } else {
                     Text("Not rotationally symmetric. The engine's first-order data covers the y section.")
@@ -161,8 +161,8 @@ struct SystemInspector: View {
             Grid(alignment: .trailing, horizontalSpacing: Space.m, verticalSpacing: Space.xs) {
                 GridRow {
                     Text("")
-                    Text("X (\(system.fields.kind.unit))")
-                    Text("Y (\(system.fields.kind.unit))")
+                    Text(String(localized: "X (\(system.fields.kind.unit))", locale: NumberDisplay.locale))
+                    Text(String(localized: "Y (\(system.fields.kind.unit))", locale: NumberDisplay.locale))
                     Text("Weight")
                     Text("")
                 }
@@ -172,10 +172,10 @@ struct SystemInspector: View {
                     GridRow {
                         HStack(spacing: Space.xs) {
                             Circle().fill(Palette.fieldColor(k)).frame(width: 7, height: 7)
-                            Text("\(k + 1)").numeric()
+                            Text(String(localized: "\(k + 1)", locale: NumberDisplay.locale)).numeric()
                         }
                         .accessibilityElement(children: .combine)
-                        .accessibilityLabel("Field \(k + 1)")
+                        .accessibilityLabel(String(localized: "Field \(k + 1)", locale: NumberDisplay.locale))
                         CompactNumber(value: f.x) { v in edit(String(localized: "Change Field")) { $0.fields.fields[k].x = v } }
                         CompactNumber(value: f.y) { v in edit(String(localized: "Change Field")) { $0.fields.fields[k].y = v } }
                         CompactNumber(value: f.weight, parse: LensValueParser.finite) { v in edit(String(localized: "Change Field Weight")) { $0.fields.fields[k].weight = v } }

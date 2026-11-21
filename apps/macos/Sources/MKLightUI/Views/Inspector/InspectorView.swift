@@ -122,7 +122,7 @@ struct SurfaceInspector: View {
     private var title: String {
         index == 0 ? String(localized: "surface.object", defaultValue: "Object", comment: "the object surface of a lens")
             : index == system.imageIndex ? String(localized: "surface.image", defaultValue: "Image", comment: "the image surface of a lens")
-            : String(localized: "Surface \(index)")
+            : String(localized: "Surface \(index)", locale: NumberDisplay.locale)
     }
 
     var body: some View {
@@ -278,7 +278,7 @@ struct SurfaceInspector: View {
             variable: path.map(variable), solve: path.flatMap { system.solve(for: $0)?.kind.kind.title }, owner: surface.id
         ) { stored in
             let value: JSONValue = p.display == .integer ? .integer(Int64(stored)) : .number(stored)
-            edit(String(localized: "Change \(p.title)")) { s in
+            edit(String(localized: "Change \(p.title)", locale: NumberDisplay.locale)) { s in
                 if let shape = SurfaceTypes.shape(s.shape, setting: p.key, to: value) { s.shape = shape }
             }
         }
@@ -291,7 +291,7 @@ struct SurfaceInspector: View {
             selection: Binding(
                 get: { current },
                 set: { v in
-                    edit(String(localized: "Change \(c.title)")) { s in
+                    edit(String(localized: "Change \(c.title)", locale: NumberDisplay.locale)) { s in
                         if let shape = SurfaceTypes.shape(s.shape, setting: c.key, to: .string(v)) { s.shape = shape }
                     }
                 })
@@ -397,7 +397,7 @@ private struct CoefficientRows: View {
                     unit: list.unit(k), variable: list.path.map { variable($0(surface.id, k)) }
                 ) { nv in set(values, k, nv) }
                 let removable = k == values.count - 1 || list.sparse
-                Button("Remove \(list.term(k, surface.shape))", systemImage: "minus.circle") { remove(values, k) }
+                Button(String(localized: "Remove \(list.term(k, surface.shape))", locale: NumberDisplay.locale), systemImage: "minus.circle") { remove(values, k) }
                     .labelStyle(.iconOnly)
                     .buttonStyle(.borderless)
                     .foregroundStyle(.secondary)
@@ -412,7 +412,7 @@ private struct CoefficientRows: View {
                     Menu {
                         ForEach(0..<limit, id: \.self) { k in
                             if k >= values.count || (values[k] == 0 && !revealed.contains(k)) {
-                                Button("\(list.term(k, surface.shape))   \(list.meaning(k, surface.shape))") { add(values, k) }
+                                Button(String(localized: "\(list.term(k, surface.shape))   \(list.meaning(k, surface.shape))", locale: NumberDisplay.locale)) { add(values, k) }
                             }
                         }
                     } label: {
@@ -423,7 +423,7 @@ private struct CoefficientRows: View {
                     Button {
                         add(values, values.count)
                     } label: {
-                        Label("Add \(list.term(values.count, surface.shape))  \(list.meaning(values.count, surface.shape))", systemImage: "plus")
+                        Label(String(localized: "Add \(list.term(values.count, surface.shape))  \(list.meaning(values.count, surface.shape))", locale: NumberDisplay.locale), systemImage: "plus")
                     }
                 }
             }
@@ -436,21 +436,21 @@ private struct CoefficientRows: View {
         }
         .buttonStyle(.borderless)
         if values.count >= limit {
-            Text("\(limit) terms, the most this type allows.").font(.caption).foregroundStyle(.secondary)
+            Text(String(localized: "\(limit) terms, the most this type allows.", locale: NumberDisplay.locale)).font(.caption).foregroundStyle(.secondary)
         }
     }
 
     private func set(_ values: [Double], _ k: Int, _ v: Double) {
         var a = values
         a[k] = v
-        write(a, String(localized: "Change \(list.term(k, surface.shape))"))
+        write(a, String(localized: "Change \(list.term(k, surface.shape))", locale: NumberDisplay.locale))
     }
 
     private func add(_ values: [Double], _ k: Int) {
         var a = values
         if k >= a.count { a += Array(repeating: 0, count: k - a.count + 1) }
         revealed.insert(k)
-        write(a, String(localized: "Add \(list.term(k, surface.shape))"))
+        write(a, String(localized: "Add \(list.term(k, surface.shape))", locale: NumberDisplay.locale))
     }
 
     private func remove(_ values: [Double], _ k: Int) {
@@ -464,7 +464,7 @@ private struct CoefficientRows: View {
             a[k] = 0
         }
         revealed.remove(k)
-        write(a, String(localized: "Remove \(list.term(k, surface.shape))"))
+        write(a, String(localized: "Remove \(list.term(k, surface.shape))", locale: NumberDisplay.locale))
     }
 
     private func write(_ a: [Double], _ name: String) {
@@ -571,20 +571,20 @@ struct MeltOffsetRows: View {
         if showing {
             NumberField(
                 title: "Δn_d", detail: String(localized: "melt"), value: offset.dnD,
-                help: String(localized: "The melt's index offset from the catalog n_d (within ±\(Fmt.short(MaterialOffset.maxDnD))); the dispersion keeps its shape."),
+                help: String(localized: "The melt's index offset from the catalog n_d (within ±\(Fmt.short(MaterialOffset.maxDnD))); the dispersion keeps its shape.", locale: NumberDisplay.locale),
                 parse: LensValueParser.offsetDnD, variable: variable(dn), solve: system.solve(for: dn)?.kind.kind.title
             ) { v in set(String(localized: "Change Δn_d")) { $0.dnD = v } }
             NumberField(
                 title: "ΔV_d", detail: String(localized: "melt"), value: offset.dvD,
-                help: String(localized: "The melt's Abbe-number offset from the catalog V_d (within ±\(Fmt.short(MaterialOffset.maxDvD)))."),
+                help: String(localized: "The melt's Abbe-number offset from the catalog V_d (within ±\(Fmt.short(MaterialOffset.maxDvD))).", locale: NumberDisplay.locale),
                 parse: LensValueParser.offsetDvD, variable: variable(dv), solve: system.solve(for: dv)?.kind.kind.title
             ) { v in set(String(localized: "Change ΔV_d")) { $0.dvD = v } }
             if let g = workspace.glass(surface.material) {
                 LabeledContent("Melt glass") {
                     VStack(alignment: .trailing, spacing: 1) {
-                        Text("n_d \(String(format: "%.5f", g.nd))  V_d \(String(format: "%.2f", g.vd))").numeric()
+                        Text(String(localized: "n_d \(String(format: "%.5f", g.nd))  V_d \(String(format: "%.2f", g.vd))", locale: NumberDisplay.locale)).numeric()
                         if !offset.isZero {
-                            Text("catalog \(String(format: "%.5f", g.catalogNd))  \(String(format: "%.2f", g.catalogVd))")
+                            Text(String(localized: "catalog \(String(format: "%.5f", g.catalogNd))  \(String(format: "%.2f", g.catalogVd))", locale: NumberDisplay.locale))
                                 .font(.caption).numeric().foregroundStyle(.secondary)
                         }
                     }
@@ -671,7 +671,7 @@ private struct SolvesSection: View {
                         }
                         Spacer()
                         if let label = s.kind.kind.valueLabel, let v = s.kind.value {
-                            Text("\(Fmt.short(v)) \(label.unit)").numeric().foregroundStyle(.secondary)
+                            Text(String(localized: "\(Fmt.short(v)) \(label.unit)", locale: NumberDisplay.locale)).numeric().foregroundStyle(.secondary)
                         }
                         Button("Remove", systemImage: "minus.circle") {
                             design.edit(String(localized: "Remove Solve"), undoManager: undoManager) { $0.solves.remove(at: k) }

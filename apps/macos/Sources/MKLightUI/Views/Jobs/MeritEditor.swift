@@ -95,7 +95,7 @@ struct MeritFunctionSection: View {
                     OperandTable(design: design, workspace: workspace, session: session, selection: $selection)
                 }
                 if let e = session.evaluationError, !session.evaluating {
-                    Label("The engine could not evaluate this merit: \(EngineText.message(e))", systemImage: "exclamationmark.triangle.fill")
+                    Label(String(localized: "The engine could not evaluate this merit: \(EngineText.message(e))", locale: NumberDisplay.locale), systemImage: "exclamationmark.triangle.fill")
                         .font(.caption).foregroundStyle(.orange).lineLimit(4).fixedSize(horizontal: false, vertical: true)
                 }
                 Toggle("Hold the focal length", isOn: Binding(get: { merit.holdEFL }, set: { v in edit(String(localized: "Hold Focal Length")) { $0.holdEFL = v } }))
@@ -125,7 +125,7 @@ struct MeritReadout: View {
             if session.evaluating { ProgressView().controlSize(.mini) }
             if let e = session.evaluationError, !session.evaluating {
                 Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.orange).help(EngineText.message(e))
-                    .accessibilityLabel("Evaluation failed: \(EngineText.message(e))")
+                    .accessibilityLabel(String(localized: "Evaluation failed: \(EngineText.message(e))", locale: NumberDisplay.locale))
             }
             VStack(alignment: .trailing, spacing: 0) {
                 Text("Merit").font(.caption2).foregroundStyle(.secondary)
@@ -144,13 +144,13 @@ struct MeritReadout: View {
     private var helpText: String {
         guard let e = session.evaluation else { return String(localized: "The merit at the current design, before optimizing.") }
         let on = e.reportedOn.hasPrefix("cpu") || e.reportedOn.isEmpty ? String(localized: "CPU f64 reference") : e.reportedOn
-        var s = String(localized: "Merit \(Fmt.short(e.merit)) at the current design (\(on)).")
-        if e.violation.isFinite && e.violation > 1e-9 { s += " " + String(localized: "Constraint violation \(Fmt.short(e.violation)).") }
+        var s = String(localized: "Merit \(Fmt.short(e.merit)) at the current design (\(on)).", locale: NumberDisplay.locale)
+        if e.violation.isFinite && e.violation > 1e-9 { s += " " + String(localized: "Constraint violation \(Fmt.short(e.violation)).", locale: NumberDisplay.locale) }
         switch e.status {
         case .ok: break
         case .degraded(let n):
             s += " " + (n == 1 ? String(localized: "1 residual carries penalty values (failed rays or operands).")
-                : String(localized: "\(n) residuals carry penalty values (failed rays or operands)."))
+                : String(localized: "\(n) residuals carry penalty values (failed rays or operands).", locale: NumberDisplay.locale))
         case .failed: s += " " + String(localized: "The evaluation failed: no meaningful merit.")
         }
         return s
@@ -203,9 +203,9 @@ struct DefaultMeritForm: View {
                     .help("Maximise the weakest field and direction at each frequency (minimax), instead of the field-weighted bounds.")
             }
             HStack {
-                Stepper("Rings \(d.rings)", value: bind(\.rings, String(localized: "Change Pupil Rings")), in: 1...12)
+                Stepper(String(localized: "Rings \(d.rings)", locale: NumberDisplay.locale), value: bind(\.rings, String(localized: "Change Pupil Rings")), in: 1...12)
                 Spacer()
-                Stepper("Arms \(d.arms)", value: bind(\.arms, String(localized: "Change Pupil Arms")), in: 3...24)
+                Stepper(String(localized: "Arms \(d.arms)", locale: NumberDisplay.locale), value: bind(\.arms, String(localized: "Change Pupil Arms")), in: 3...24)
             }
             .font(.callout.monospacedDigit())
             HStack {
@@ -282,7 +282,7 @@ struct IndexChecklist: View {
                 Toggle(all[k], isOn: Binding(get: { isOn(k) }, set: { toggle(k, $0) }))
             }
         } label: {
-            Text("\(title): \(summary)")
+            Text(String(localized: "\(title): \(summary)", locale: NumberDisplay.locale))
         }
         .menuStyle(.borderlessButton)
         .fixedSize()
@@ -290,7 +290,7 @@ struct IndexChecklist: View {
 
     private var summary: String {
         guard let s = selected, s.count < all.count else { return String(localized: "All") }
-        return s.count == 1 ? "\(s[0] + 1)" : String(localized: "\(s.count) of \(all.count)")
+        return s.count == 1 ? "\(s[0] + 1)" : String(localized: "\(s.count) of \(all.count)", locale: NumberDisplay.locale)
     }
 
     private func isOn(_ k: Int) -> Bool { selected?.contains(k) ?? true }
@@ -433,7 +433,7 @@ struct OperandTable: View {
             .keyboardShortcut(.downArrow, modifiers: [.command, .option])
             .help("Move down (⌥⌘↓)")
             Spacer()
-            Text(operands.count == 1 ? String(localized: "1 operand") : String(localized: "\(operands.count) operands")).font(.caption).foregroundStyle(.secondary)
+            Text(operands.count == 1 ? String(localized: "1 operand") : String(localized: "\(operands.count) operands", locale: NumberDisplay.locale)).font(.caption).foregroundStyle(.secondary)
         }
         .labelStyle(.iconOnly)
         .buttonStyle(.borderless)
@@ -493,7 +493,7 @@ struct OperandRow: View {
 
     var body: some View {
         HStack(alignment: .center, spacing: Space.s) {
-            Text("\(index + 1)").font(.caption.monospacedDigit()).foregroundStyle(.tertiary).frame(width: 24, alignment: .trailing)
+            Text(String(localized: "\(index + 1)", locale: NumberDisplay.locale)).font(.caption.monospacedDigit()).foregroundStyle(.tertiary).frame(width: 24, alignment: .trailing)
             VStack(alignment: .leading, spacing: 1) {
                 HStack(spacing: 4) {
                     Text(OperandCatalog.title(operand.type)).font(.callout).lineLimit(1).layoutPriority(1)
@@ -515,25 +515,25 @@ struct OperandRow: View {
         .opacity(operand.enabled ? 1 : 0.45)
         .padding(.vertical, 1)
         .accessibilityElement(children: .ignore)
-        .accessibilityLabel("Operand \(index + 1), \(OperandCatalog.title(operand.type)), \(detail)")
+        .accessibilityLabel(String(localized: "Operand \(index + 1), \(OperandCatalog.title(operand.type)), \(detail)", locale: NumberDisplay.locale))
         .accessibilityValue(accessibilityValue)
     }
 
-    private var problem: String? { evaluation?.error.map { String(localized: "The engine could not evaluate it: \(EngineText.message($0))") } ?? issues.first }
+    private var problem: String? { evaluation?.error.map { String(localized: "The engine could not evaluate it: \(EngineText.message($0))", locale: NumberDisplay.locale) } ?? issues.first }
 
     private var detail: String {
         if let problem { return problem }
         var parts: [String] = []
         if let s = OperandSummary.parameters(operand), !s.isEmpty { parts.append(s) }
         parts.append("\(operand.comparison.symbol) \(Fmt.short(operand.target))")
-        if !operand.isConstraint { parts.append(String(localized: "w \(Fmt.short(operand.weight))")) }
+        if !operand.isConstraint { parts.append(String(localized: "w \(Fmt.short(operand.weight))", locale: NumberDisplay.locale)) }
         return parts.joined(separator: " · ")
     }
 
     private var accessibilityValue: String {
         guard let e = evaluation else { return String(localized: "not evaluated") }
-        var s = String(localized: "value \(Fmt.short(e.value))")
-        if e.fraction.isFinite { s += ", " + String(localized: "\(Fmt.percent(e.fraction)) of the merit") }
+        var s = String(localized: "value \(Fmt.short(e.value))", locale: NumberDisplay.locale)
+        if e.fraction.isFinite { s += ", " + String(localized: "\(Fmt.percent(e.fraction)) of the merit", locale: NumberDisplay.locale) }
         return s
     }
 }
@@ -576,7 +576,7 @@ enum OperandSummary {
             case .choice: parts.append((v.string ?? v.displayText).replacingOccurrences(of: "_", with: " "))
             case .flag: if v.bool == true { parts.append(p.title.lowercased()) }
             case .sampling: parts.append("\(v["rings"]?.int ?? 3)×\(v["arms"]?.int ?? 6)")
-            case .operandList: parts.append(String(localized: "of \((v.intArray ?? []).map { "#\($0 + 1)" }.joined(separator: ", "))"))
+            case .operandList: parts.append(String(localized: "of \((v.intArray ?? []).map { "#\($0 + 1)" }.joined(separator: ", "))", locale: NumberDisplay.locale))
             case .number, .integer: parts.append("\(p.title.lowercased()) \(v.doubleValue.map(Fmt.short) ?? v.displayText)")
             }
         }
@@ -610,14 +610,14 @@ struct OperandDetail: View {
     var body: some View {
         VStack(alignment: .leading, spacing: Space.s) {
             HStack(alignment: .firstTextBaseline) {
-                Text("\(index + 1). \(OperandCatalog.title(operand.type))").font(.headline)
+                Text(String(localized: "\(index + 1). \(OperandCatalog.title(operand.type))", locale: NumberDisplay.locale)).font(.headline)
                 Spacer()
                 if let d = operand.descriptor, !d.unit.isEmpty { Text(d.unit).font(.caption).foregroundStyle(.secondary) }
             }
             if let s = operand.descriptor?.summary, !s.isEmpty { Text(s).font(.caption).foregroundStyle(.secondary) }
             ForEach(operand.descriptor?.params ?? []) { p in param(p) }
             if operand.descriptor == nil {
-                Text("Parameters: \(JSONText.text(.object(operand.kind)))").font(.caption.monospaced()).foregroundStyle(.secondary).lineLimit(3)
+                Text(String(localized: "Parameters: \(JSONText.text(.object(operand.kind)))", locale: NumberDisplay.locale)).font(.caption.monospaced()).foregroundStyle(.secondary).lineLimit(3)
             }
             fieldMenu
             wavelengthMenu
@@ -646,8 +646,8 @@ struct OperandDetail: View {
                 Toggle("Enabled", isOn: Binding(get: { operand.enabled }, set: { v in update(v ? String(localized: "Enable Operand") : String(localized: "Disable Operand")) { $0.enabled = v } }))
                 Spacer()
                 if let e = evaluation {
-                    Text("Value \(Fmt.short(e.value))").font(.callout.monospacedDigit())
-                    if e.fraction.isFinite { Text("· \(ContributionBar.percent(e.fraction))").font(.callout.monospacedDigit()).foregroundStyle(.secondary) }
+                    Text(String(localized: "Value \(Fmt.short(e.value))", locale: NumberDisplay.locale)).font(.callout.monospacedDigit())
+                    if e.fraction.isFinite { Text(String(localized: "· \(ContributionBar.percent(e.fraction))", locale: NumberDisplay.locale)).font(.callout.monospacedDigit()).foregroundStyle(.secondary) }
                 }
             }
             if let error = evaluation?.error {
@@ -668,7 +668,7 @@ struct OperandDetail: View {
     @ViewBuilder private func param(_ p: OperandParam) -> some View {
         let v = operand.kind[p.key]
         let title = p.title
-        let name = String(localized: "Change \(title)")
+        let name = String(localized: "Change \(title)", locale: NumberDisplay.locale)
         switch p.kind {
         case .number(let unit):
             LabeledContent(title) {
@@ -689,7 +689,7 @@ struct OperandDetail: View {
             Picker(title, selection: Binding(get: { v?.int ?? -1 }, set: { x in update(name) { $0.kind[p.key] = x < 0 ? nil : .integer(Int64(x)) } })) {
                 if !p.required { Text(p.key == "to" ? String(localized: "Next") : p.key == "from" ? String(localized: "First") : Self.imageName).tag(-1) }
                 ForEach(1..<system.surfaces.count, id: \.self) { i in
-                    Text(i == system.imageIndex ? Self.imageName : system.surfaces[i].label.isEmpty ? String(localized: "Surface \(i)") : String(localized: "Surface \(i) · \(system.surfaces[i].label)"))
+                    Text(i == system.imageIndex ? Self.imageName : system.surfaces[i].label.isEmpty ? String(localized: "Surface \(i)", locale: NumberDisplay.locale) : String(localized: "Surface \(i) · \(system.surfaces[i].label)", locale: NumberDisplay.locale))
                         .tag(Int(system.surfaces[i].id.rawValue))
                 }
             }
@@ -707,8 +707,8 @@ struct OperandDetail: View {
             Toggle(title, isOn: Binding(get: { v?.bool ?? false }, set: { x in update(name) { $0.kind[p.key] = .bool(x) } }))
         case .sampling:
             HStack {
-                Stepper("Rings \(v?["rings"]?.int ?? 3)", value: Binding(get: { v?["rings"]?.int ?? 3 }, set: { x in update(name) { $0.kind[p.key] = sampling(rings: x, arms: v?["arms"]?.int ?? 6, old: v) } }), in: 1...12)
-                Stepper("Arms \(v?["arms"]?.int ?? 6)", value: Binding(get: { v?["arms"]?.int ?? 6 }, set: { x in update(name) { $0.kind[p.key] = sampling(rings: v?["rings"]?.int ?? 3, arms: x, old: v) } }), in: 3...24)
+                Stepper(String(localized: "Rings \(v?["rings"]?.int ?? 3)", locale: NumberDisplay.locale), value: Binding(get: { v?["rings"]?.int ?? 3 }, set: { x in update(name) { $0.kind[p.key] = sampling(rings: x, arms: v?["arms"]?.int ?? 6, old: v) } }), in: 1...12)
+                Stepper(String(localized: "Arms \(v?["arms"]?.int ?? 6)", locale: NumberDisplay.locale), value: Binding(get: { v?["arms"]?.int ?? 6 }, set: { x in update(name) { $0.kind[p.key] = sampling(rings: v?["rings"]?.int ?? 3, arms: x, old: v) } }), in: 3...24)
             }
             .font(.callout.monospacedDigit())
         case .operandList:
@@ -734,7 +734,7 @@ struct OperandDetail: View {
         })) {
             if !single || current < 0 { Text("All fields (weighted)").tag(-1) }
             ForEach(system.fields.fields.indices, id: \.self) { k in
-                Text("\(k + 1): " + FieldLabel.text([system.fields.fields[k].x, system.fields.fields[k].y], unit: system.fields.kind.unit)).tag(k)
+                Text(String(localized: "\(k + 1): ", locale: NumberDisplay.locale) + FieldLabel.text([system.fields.fields[k].x, system.fields.fields[k].y], unit: system.fields.kind.unit)).tag(k)
             }
         }
     }
@@ -916,18 +916,18 @@ struct VariableBoundsRow: View {
             .frame(maxWidth: .infinity, alignment: .leading)
             .help(solvedHelp ?? problem ?? help)
             OptionalNumberField(
-                title: unit.isEmpty ? String(localized: "Minimum of \(label)") : String(localized: "Minimum of \(label) in \(unit)"), value: shown.min, prompt: "−∞", width: Self.fieldWidth,
+                title: unit.isEmpty ? String(localized: "Minimum of \(label)", locale: NumberDisplay.locale) : String(localized: "Minimum of \(label) in \(unit)", locale: NumberDisplay.locale), value: shown.min, prompt: "−∞", width: Self.fieldWidth,
                 format: BoundsFormat.compact, allowsInfinite: asRadius
             ) { v in setShown(min: v, max: shown.max) }
             OptionalNumberField(
-                title: unit.isEmpty ? String(localized: "Maximum of \(label)") : String(localized: "Maximum of \(label) in \(unit)"), value: shown.max, prompt: asRadius ? "∞" : "+∞", width: Self.fieldWidth,
+                title: unit.isEmpty ? String(localized: "Maximum of \(label)", locale: NumberDisplay.locale) : String(localized: "Maximum of \(label) in \(unit)", locale: NumberDisplay.locale), value: shown.max, prompt: asRadius ? "∞" : "+∞", width: Self.fieldWidth,
                 format: BoundsFormat.compact, allowsInfinite: asRadius
             ) { v in setShown(min: shown.min, max: v) }
             Text(unit.isEmpty ? "–" : unit)
                 .font(.caption).foregroundStyle(.secondary)
                 .lineLimit(1).minimumScaleFactor(0.8)
                 .frame(width: Self.unitWidth, alignment: .leading)
-                .help(unit.isEmpty ? String(localized: "Dimensionless") : String(localized: "The bounds are in \(unit)"))
+                .help(unit.isEmpty ? String(localized: "Dimensionless") : String(localized: "The bounds are in \(unit)", locale: NumberDisplay.locale))
                 .accessibilityHidden(true)
             HStack(spacing: 2) {
                 Button {
@@ -958,10 +958,10 @@ struct VariableBoundsRow: View {
     }
 
     private var help: String {
-        let other = BoundsFormat.counterpart(lower: variable.lower, upper: variable.upper, shownAs: curvatureUnit).map { String(localized: "Bounds as \($0).") + " " } ?? ""
+        let other = BoundsFormat.counterpart(lower: variable.lower, upper: variable.upper, shownAs: curvatureUnit).map { String(localized: "Bounds as \($0).", locale: NumberDisplay.locale) + " " } ?? ""
         if asRadius { return other + RadiusBounds.help }
         if path.isCurvature { return other + String(localized: "Bounds on the curvature c = 1/R (1/mm).") }
-        return unit.isEmpty ? String(localized: "Bounds of a dimensionless parameter.") : String(localized: "Bounds in \(unit).")
+        return unit.isEmpty ? String(localized: "Bounds of a dimensionless parameter.") : String(localized: "Bounds in \(unit).", locale: NumberDisplay.locale)
     }
 
     /// Stores typed min / max in the shown unit (a radius window converts
@@ -984,7 +984,7 @@ struct VariableBoundsRow: View {
     /// A variable on a parameter a solve sets, in full.
     private var solvedHelp: String? {
         design.system.solve(for: path).map {
-            String(localized: "A \($0.kind.kind.title.lowercased()) solve sets this value, so the optimizer leaves the variable out of the run. Remove the variable, or remove the solve to vary it.")
+            String(localized: "A \($0.kind.kind.title.lowercased()) solve sets this value, so the optimizer leaves the variable out of the run. Remove the variable, or remove the solve to vary it.", locale: NumberDisplay.locale)
         }
     }
 
@@ -997,7 +997,7 @@ struct VariableBoundsRow: View {
         }
         guard let value else { return String(localized: "This parameter does not exist on the surface any more.") }
         if let lo = variable.lower, let hi = variable.upper, lo > hi { return String(localized: "The minimum is above the maximum.") }
-        if variable.outOfBounds(value) { return String(localized: "Now \(nowText(value)): outside its bounds") }
+        if variable.outOfBounds(value) { return String(localized: "Now \(nowText(value)): outside its bounds", locale: NumberDisplay.locale) }
         return nil
     }
 
@@ -1012,12 +1012,12 @@ struct VariableBoundsRow: View {
         // bounds in the other unit are in the help.
         if path.isCurvature {
             let r = RadiusDisplay.radius(fromCurvature: value)
-            guard asRadius else { return String(localized: "now c \(BoundsFormat.compact(value))") }
+            guard asRadius else { return String(localized: "now c \(BoundsFormat.compact(value))", locale: NumberDisplay.locale) }
             let s = shown
-            let now = String(localized: "now R \(Fmt.short(r))")
+            let now = String(localized: "now R \(Fmt.short(r))", locale: NumberDisplay.locale)
             return RadiusBounds.passesThroughFlat(minRadius: s.min, maxRadius: s.max) ? now + " · " + String(localized: "through ∞") : now
         }
-        return String(localized: "now \(Fmt.short(value))")
+        return String(localized: "now \(Fmt.short(value))", locale: NumberDisplay.locale)
     }
 }
 

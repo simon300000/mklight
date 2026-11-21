@@ -164,7 +164,7 @@ public final class ToleranceSession {
     /// Why the run cannot start, if it cannot.
     public func runProblem(context: ToleranceContext) -> String? {
         let blocking = settings.issues(in: context).count
-        if blocking > 0 { return blocking == 1 ? String(localized: "Fix the tolerance marked in red first.") : String(localized: "Fix the \(blocking) tolerances marked in red first.") }
+        if blocking > 0 { return blocking == 1 ? String(localized: "Fix the tolerance marked in red first.") : String(localized: "Fix the \(blocking) tolerances marked in red first.", locale: NumberDisplay.locale) }
         if settings.rows.isEmpty { return String(localized: "Add a tolerance first.") }
         if settings.mode != .sensitivity && settings.trials < 2 { return String(localized: "Run at least 2 Monte Carlo trials.") }
         return nil
@@ -378,22 +378,22 @@ public final class ToleranceSession {
     }
 
     /// "Tolerance: trial 17, compensated", "Tolerance: Decentre y S3 at +0.02 mm".
-    public func title(of c: TolerancePreviewCase) -> String { String(localized: "Tolerance: \(detail(of: c))") }
+    public func title(of c: TolerancePreviewCase) -> String { String(localized: "Tolerance: \(detail(of: c))", locale: NumberDisplay.locale) }
 
     /// The build alone: "trial 17, compensated", "Decentre y S3 at +0.02 mm".
     public func detail(of c: TolerancePreviewCase) -> String {
         let compensated = !(result?.compensators.isEmpty ?? true)
         switch c {
         case .trial(let k):
-            return compensated ? String(localized: "trial \(k + 1), compensated") : String(localized: "trial \(k + 1)")
+            return compensated ? String(localized: "trial \(k + 1), compensated", locale: NumberDisplay.locale) : String(localized: "trial \(k + 1)", locale: NumberDisplay.locale)
         case .sensitivity(let k, let plus):
             let what: String
             if let system = runSystem, resultRows.indices.contains(k) {
-                what = String(localized: "\(resultRows[k].label(in: system)) at \(resultRows[k].limitText(plus: plus))")
+                what = String(localized: "\(resultRows[k].label(in: system)) at \(resultRows[k].limitText(plus: plus))", locale: NumberDisplay.locale)
             } else {
-                what = result?.sensitivities.first { $0.id == k }?.label ?? String(localized: "operand \(k + 1)")
+                what = result?.sensitivities.first { $0.id == k }?.label ?? String(localized: "operand \(k + 1)", locale: NumberDisplay.locale)
             }
-            return compensated ? String(localized: "\(what), compensated") : what
+            return compensated ? String(localized: "\(what), compensated", locale: NumberDisplay.locale) : what
         }
     }
 }

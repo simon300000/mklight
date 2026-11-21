@@ -267,10 +267,10 @@ private struct DesignWindowContent: View {
                 design.addCatalog(
                     CatalogReference(name: info.name, path: url.path, format: url.pathExtension.lowercased() == "json" ? "json" : "agf"),
                     undoManager: undoManager)
-                window.flash(String(localized: "Loaded glass catalog \(info.name) (\(glassCountText(info.glassCount))).\(warningsNote(info.warnings))"))
+                window.flash(String(localized: "Loaded glass catalog \(info.name) (\(glassCountText(info.glassCount))).\(warningsNote(info.warnings))", locale: NumberDisplay.locale))
                 if reimport, let source = prescriptionURL { await importAgain(source) }
             } catch {
-                window.flash(String(localized: "Glass catalog: \(EngineText.message(error.localizedDescription))"))
+                window.flash(String(localized: "Glass catalog: \(EngineText.message(error.localizedDescription))", locale: NumberDisplay.locale))
             }
         }
     }
@@ -287,7 +287,7 @@ private struct DesignWindowContent: View {
     /// everything mapped.
     private func present(_ report: ImportReport) {
         if report.warnings.isEmpty {
-            window.flash(String(localized: "Imported \(report.fileName): \(report.summary)."))
+            window.flash(String(localized: "Imported \(report.fileName): \(report.summary).", locale: NumberDisplay.locale))
         } else {
             importReport = report
         }
@@ -302,7 +302,7 @@ private struct DesignWindowContent: View {
             design.edit(String(localized: "Import Lens File Again"), undoManager: undoManager) { $0 = system }
             present(ImportReport(imported, fileName: url.lastPathComponent))
         } catch {
-            window.flash(String(localized: "Import: \(EngineText.message(error.localizedDescription))"))
+            window.flash(String(localized: "Import: \(EngineText.message(error.localizedDescription))", locale: NumberDisplay.locale))
         }
     }
 

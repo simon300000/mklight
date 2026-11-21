@@ -48,7 +48,7 @@ struct WavefrontView: View {
             let wl = m["wavelength_um"]?.nf ?? .nan
             let field = m["field"]?.int ?? 0
             return Map(
-                title: String(localized: "Field \(field + 1) · \(context.fieldLabel(m["field_value"]?.nfArray)) · \(String(format: "%.4f µm", wl))"),
+                title: String(localized: "Field \(field + 1) · \(context.fieldLabel(m["field_value"]?.nfArray)) · \(String(format: "%.4f µm", wl))", locale: NumberDisplay.locale),
                 grid: g, rms: m["rms_waves"]?.nf ?? .nan, pv: m["pv_waves"]?.nf ?? .nan,
                 strehl: m["strehl_at_reference"]?.nf ?? .nan,
                 zernike: output.buffer(ref: m[path: "zernike", "coefficients"])?.doubles ?? m[path: "zernike", "coefficients"]?.nfArray ?? [],
@@ -116,12 +116,12 @@ struct ZernikeTable: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: Space.xs) {
-            Text("Zernike (\(ordering.capitalized), waves)").font(.caption.weight(.semibold))
+            Text(String(localized: "Zernike (\(ordering.capitalized), waves)", locale: NumberDisplay.locale)).font(.caption.weight(.semibold))
             ScrollView {
                 Grid(alignment: .leading, horizontalSpacing: Space.m, verticalSpacing: 2) {
                     ForEach(coefficients.indices, id: \.self) { k in
                         GridRow {
-                            Text("Z\(k + 1)").foregroundStyle(.secondary)
+                            Text(String(localized: "Z\(k + 1)", locale: NumberDisplay.locale)).foregroundStyle(.secondary)
                             Text(ordering == "fringe" && k < Self.fringeNames.count ? Self.fringeNames[k] : "")
                                 .foregroundStyle(.secondary).lineLimit(1).fixedSize()
                             Text(Fmt.signed(coefficients[k])).numeric().fixedSize().gridColumnAlignment(.trailing)
@@ -158,8 +158,8 @@ struct PSFView: View {
             let fieldText = context.fieldLabel(p["field_value"]?.nfArray)
             let finiteWl = wl.flatMap { $0.isFinite ? $0 : nil }
             return Item(
-                title: finiteWl.map { String(localized: "Field \(field + 1) · \(fieldText) · \(String(format: "%.4f µm", $0))") }
-                    ?? String(localized: "Field \(field + 1) · \(fieldText) · polychromatic"),
+                title: finiteWl.map { String(localized: "Field \(field + 1) · \(fieldText) · \(String(format: "%.4f µm", $0))", locale: NumberDisplay.locale) }
+                    ?? String(localized: "Field \(field + 1) · \(fieldText) · polychromatic", locale: NumberDisplay.locale),
                 grid: g, strehl: p["strehl"]?.nf ?? .nan, spacing: h, size: n)
         }
         if items.isEmpty { return nil }
@@ -256,7 +256,7 @@ struct ThroughFocusMTFView: View {
         focus = f
         fields = list.map { fl in
             FieldCurves(
-                title: String(localized: "Field \((fl["field"]?.int ?? 0) + 1) · \(context.fieldLabel(fl["field_value"]?.nfArray))"),
+                title: String(localized: "Field \((fl["field"]?.int ?? 0) + 1) · \(context.fieldLabel(fl["field_value"]?.nfArray))", locale: NumberDisplay.locale),
                 curves: (fl["curves"]?.array ?? []).map { c in
                     (c["frequency"]?.nf ?? .nan, output.buffer(ref: c["tangential"])?.doubles ?? [], output.buffer(ref: c["sagittal"])?.doubles ?? [])
                 })
@@ -315,7 +315,7 @@ struct LineSpreadView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: Space.s) {
             FlowLayout(spacing: Space.m) {
-                ForEach(items, id: \.field) { LegendItem(color: Palette.fieldColor($0.field), label: String(localized: "Field \($0.field + 1)")) }
+                ForEach(items, id: \.field) { LegendItem(color: Palette.fieldColor($0.field), label: String(localized: "Field \($0.field + 1)", locale: NumberDisplay.locale)) }
                 LegendItem(color: .secondary, label: String(localized: "x solid, y dashed"))
             }
             LineChart(
@@ -324,7 +324,7 @@ struct LineSpreadView: View {
                         Series(id: "x\(i.field)", label: "", color: Palette.fieldColor(i.field), points: zip(i.x, i.lx).map { ($0, $1) }),
                         Series(id: "y\(i.field)", label: "", color: Palette.fieldColor(i.field), points: zip(i.x, i.ly).map { ($0, $1) }, dashed: true),
                     ]
-                }, xLabel: String(localized: "Position (\(units.micro))"), yLabel: String(localized: "Line spread (\(units.density))"), zeroLine: false)
+                }, xLabel: String(localized: "Position (\(units.micro))", locale: NumberDisplay.locale), yLabel: String(localized: "Line spread (\(units.density))", locale: NumberDisplay.locale), zeroLine: false)
         }
         .padding(Space.m)
     }

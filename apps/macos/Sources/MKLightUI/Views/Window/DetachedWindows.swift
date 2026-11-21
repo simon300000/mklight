@@ -27,7 +27,7 @@ final class DetachedPanelWindowController: NSWindowController, NSWindowDelegate 
         window.toolbarStyle = .unifiedCompact
         window.minSize = CGSize(width: 360, height: 260)
         let host = NSHostingController(
-            rootView: AnyView(DetachedPanelsView(session: session, model: model).environment(\.locale, NumberDisplay.locale)))
+            rootView: AnyView(DetachedPanelsView(session: session, model: model).environment(\.locale, NumberDisplay.textLocale)))
         host.sceneBridgingOptions = [.toolbars, .title]
         host.sizingOptions = []
         window.contentViewController = host

@@ -88,11 +88,11 @@ public struct MeritOperand: Identifiable, Hashable, Sendable {
         var out: [String] = []
         guard let d = descriptor else { return [] }
         if d.singleField && field["field"]?.string == "all" { out.append(String(localized: "Needs one field, not all fields.")) }
-        if let i = field["index"]?.int, field["field"]?.string == "index", i >= fieldCount { out.append(String(localized: "Field \(i + 1) does not exist.")) }
+        if let i = field["index"]?.int, field["field"]?.string == "index", i >= fieldCount { out.append(String(localized: "Field \(i + 1) does not exist.", locale: NumberDisplay.locale)) }
         if let i = wavelength["index"]?.int, wavelength["wavelength"]?.string == "index", i >= wavelengthCount {
-            out.append(String(localized: "Wavelength \(i + 1) does not exist."))
+            out.append(String(localized: "Wavelength \(i + 1) does not exist.", locale: NumberDisplay.locale))
         }
-        for p in d.params where p.required && (kind[p.key] == nil || kind[p.key] == .null) { out.append(String(localized: "\(p.title) is required.")) }
+        for p in d.params where p.required && (kind[p.key] == nil || kind[p.key] == .null) { out.append(String(localized: "\(p.title) is required.", locale: NumberDisplay.locale)) }
         if !weight.isFinite || weight < 0 { out.append(String(localized: "The weight must be zero or positive.")) }
         return out
     }
@@ -416,12 +416,12 @@ public struct DefaultMeritSettings: Hashable, Sendable {
         case .mtf:
             let target = Fmt.short(mtfTarget), freqs = mtfFrequencies.map { Fmt.short($0) }.joined(separator: ", ")
             s = worstField
-                ? String(localized: "MTF ≥ \(target) at \(freqs) cyc/mm, weakest field")
-                : String(localized: "MTF ≥ \(target) at \(freqs) cyc/mm")
+                ? String(localized: "MTF ≥ \(target) at \(freqs) cyc/mm, weakest field", locale: NumberDisplay.locale)
+                : String(localized: "MTF ≥ \(target) at \(freqs) cyc/mm", locale: NumberDisplay.locale)
         }
-        s += " · " + String(localized: "\(rings) rings × \(arms) arms")
+        s += " · " + String(localized: "\(rings) rings × \(arms) arms", locale: NumberDisplay.locale)
         if thickness { s += " · " + String(localized: "thickness limits") }
-        if let squeezeTarget { s += " · " + String(localized: "squeeze \(Fmt.short(squeezeTarget))") }
+        if let squeezeTarget { s += " · " + String(localized: "squeeze \(Fmt.short(squeezeTarget))", locale: NumberDisplay.locale) }
         return s
     }
 }

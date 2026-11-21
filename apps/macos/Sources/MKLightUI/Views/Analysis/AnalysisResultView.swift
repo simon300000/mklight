@@ -19,8 +19,6 @@ struct AnalysisResultView: View {
         Group {
             if let v = dedicated { v } else { GenericResultView(output: output) }
         }
-        // Plots use the same decimal point as the app's number formats.
-        .environment(\.locale, NumberDisplay.locale)
     }
 
     private var dedicated: AnyView? {

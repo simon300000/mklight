@@ -1,5 +1,6 @@
 import Foundation
 import MKLightEngine
+import MKLightModel
 
 /// The engine's run warnings, grouped for reading: the same message for
 /// several fields or wavelengths is shown once with its scopes. Engine
@@ -49,7 +50,7 @@ public enum RunWarnings {
     public static func summary(_ warnings: [String]) -> String {
         let g = group(warnings)
         guard let first = g.first else { return "" }
-        return g.count > 1 ? String(localized: "\(first.line) (and \(g.count - 1) more)") : first.line
+        return g.count > 1 ? String(localized: "\(first.line) (and \(g.count - 1) more)", locale: NumberDisplay.locale) : first.line
     }
 
     /// `field 2, wavelength 1: text` → (`Field 3 · λ2`, `text`); also the
@@ -61,15 +62,15 @@ public enum RunWarnings {
         let parts = head.split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }
         var scope: [String] = []
         if head.hasPrefix("field (") {
-            return (String(localized: "field \(head.dropFirst("field ".count).replacingOccurrences(of: "-", with: "−"))"), rest)
+            return (String(localized: "field \(head.dropFirst("field ".count).replacingOccurrences(of: "-", with: "−"))", locale: NumberDisplay.locale), rest)
         }
         for p in parts {
             let words = p.split(separator: " ")
             guard words.count == 2, let k = Int(words[1]) else { return (nil, t) }
             switch words[0] {
-            case "field": scope.append(String(localized: "Field \(k + 1)"))
+            case "field": scope.append(String(localized: "Field \(k + 1)", locale: NumberDisplay.locale))
             case "wavelength": scope.append("λ\(k + 1)")
-            case "surface": scope.append(String(localized: "Surface \(k)"))
+            case "surface": scope.append(String(localized: "Surface \(k)", locale: NumberDisplay.locale))
             default: return (nil, t)
             }
         }

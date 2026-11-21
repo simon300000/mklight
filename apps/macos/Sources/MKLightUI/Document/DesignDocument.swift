@@ -192,7 +192,7 @@ public final class DesignDocument {
     /// applies solves first and refuses solved parameters as variables.
     public func variableRefusal(_ path: ParamPath) -> String? {
         guard let s = system.solve(for: path) else { return nil }
-        return String(localized: "Set by a solve (\(s.kind.kind.title)), so the optimizer cannot vary it. Remove the solve to make it a variable.")
+        return String(localized: "Set by a solve (\(s.kind.kind.title)), so the optimizer cannot vary it. Remove the solve to make it a variable.", locale: NumberDisplay.locale)
     }
 
     /// Makes `path` a variable or a fixed parameter (undoable). A parameter

@@ -74,19 +74,19 @@ struct SettingsBar: View {
         guard let descriptor else { return "" }
         return descriptor.settingsFields.compactMap { f -> String? in
             guard let v = pane.settings[f.name], v != f.defaultValue, v != descriptor.defaultSettings[f.name] else { return nil }
-            if f.name == "spectrum" { return SpectrumSetting(json: v).map { $0.kind == .design ? nil : String(localized: "Spectrum \($0.summary)") } ?? String(localized: "Spectrum custom") }
+            if f.name == "spectrum" { return SpectrumSetting(json: v).map { $0.kind == .design ? nil : String(localized: "Spectrum \($0.summary)", locale: NumberDisplay.locale) } ?? String(localized: "Spectrum custom") }
             if f.name == "optics", pane.analysis == "image_simulation" {
                 let e = v["field_extent"]?.doubleValue ?? ImageSimulationSettings.fullExtent
                 let c = v["field_center"]?.array?.compactMap(\.doubleValue) ?? []
                 let extent = ImageSimulationSettings.extentTitle(e)
-                guard c.count == 2 && (c[0] != 0 || c[1] != 0) else { return String(localized: "View \(extent)") }
-                return String(localized: "View \(extent) at \(ImageSimulationSettings.coordinates(SIMD2(c[0], c[1])))")
+                guard c.count == 2 && (c[0] != 0 || c[1] != 0) else { return String(localized: "View \(extent)", locale: NumberDisplay.locale) }
+                return String(localized: "View \(extent) at \(ImageSimulationSettings.coordinates(SIMD2(c[0], c[1])))", locale: NumberDisplay.locale)
             }
-            if f.name == "pupil", let g = v["grid"]?.int { return g == 0 ? nil : String(localized: "Pupil \(g)") }
+            if f.name == "pupil", let g = v["grid"]?.int { return g == 0 ? nil : String(localized: "Pupil \(g)", locale: NumberDisplay.locale) }
             if f.name == "through_focus", pane.analysis == "spot_diagram" {
                 return v == .null ? String(localized: "Single plane") : ThroughFocusControl.summary(v, output: pane.output)
             }
-            if let a = AutoSettings.sentinel(f.name, analysis: pane.analysis), AutoSettings.isAuto(v, a) { return String(localized: "\(label(f)) auto") }
+            if let a = AutoSettings.sentinel(f.name, analysis: pane.analysis), AutoSettings.isAuto(v, a) { return String(localized: "\(label(f)) auto", locale: NumberDisplay.locale) }
             if let t = arraySummary(f, v) { return "\(label(f)) \(t)" }
             if let variant = f.variant(of: v) { return "\(label(f)) \(EngineText.string(variant.title).lowercased())" }
             let value: String =
@@ -133,14 +133,14 @@ struct SettingsBar: View {
     var wavelengthOptions: [(Int, String)] {
         guard let s = system else { return [] }
         return s.wavelengths.wavelengths.enumerated().map { k, w in
-            (k, k == s.wavelengths.primary ? String(localized: "\(String(format: "%.4f", w.um)) µm (primary)") : String(format: "%.4f µm", w.um))
+            (k, k == s.wavelengths.primary ? String(localized: "\(String(format: "%.4f", w.um)) µm (primary)", locale: NumberDisplay.locale) : String(format: "%.4f µm", w.um))
         }
     }
 
     var surfaceOptions: [(Int, String)] {
         guard let s = system else { return [] }
         return (1...max(s.imageIndex, 1)).map { i in
-            (i, i == s.imageIndex ? String(localized: "surface.image", defaultValue: "Image", comment: "the image surface") : i == s.stop ? String(localized: "\(i) (stop)") : "\(i)" + (s.surfaces[i].label.isEmpty ? "" : " " + s.surfaces[i].label))
+            (i, i == s.imageIndex ? String(localized: "surface.image", defaultValue: "Image", comment: "the image surface") : i == s.stop ? String(localized: "\(i) (stop)", locale: NumberDisplay.locale) : "\(i)" + (s.surfaces[i].label.isEmpty ? "" : " " + s.surfaces[i].label))
         }
     }
 
@@ -403,7 +403,7 @@ struct SelectionMenu: View {
         case "index":
             let i = value?["index"]?.int ?? 0
             return options.first { $0.0 == i }.map { String($0.1.split(separator: ":").first ?? "") } ?? "\(i + 1)"
-        case "list": return String(localized: "\(value?["indices"]?.array?.count ?? 0) selected")
+        case "list": return String(localized: "\(value?["indices"]?.array?.count ?? 0) selected", locale: NumberDisplay.locale)
         default: return String(localized: "All")
         }
     }
@@ -472,7 +472,7 @@ struct IndexListMenu: View {
         let s = selected
         if s.isEmpty || s.count == options.count && !options.isEmpty { return String(localized: "All") }
         if s.count == 1, let k = s.first, let t = options.first(where: { $0.0 == k }) { return String(t.1.split(separator: ":").first ?? Substring(t.1)) }
-        return String(localized: "\(s.count) of \(options.count)")
+        return String(localized: "\(s.count) of \(options.count)", locale: NumberDisplay.locale)
     }
 }
 
@@ -754,10 +754,10 @@ struct ThroughFocusControl: View {
     /// "±0.08 mm · 3 planes" (the range the run used when automatic).
     static func summary(_ v: JSONValue, output: AnalysisOutput?) -> String {
         let steps = v["steps"]?.int ?? 3
-        let planes = steps == 1 ? String(localized: "1 plane") : String(localized: "\(steps) planes")
+        let planes = steps == 1 ? String(localized: "1 plane") : String(localized: "\(steps) planes", locale: NumberDisplay.locale)
         if let a = v["min"]?.doubleValue, let b = v["max"]?.doubleValue {
             if abs(a + b) <= 1e-12 * Swift.max(1, abs(b)) { return "±\(Fmt.short(b)) mm · " + planes }
-            return String(localized: "\(Fmt.short(a)) to \(Fmt.short(b)) mm") + " · " + planes
+            return String(localized: "\(Fmt.short(a)) to \(Fmt.short(b)) mm", locale: NumberDisplay.locale) + " · " + planes
         }
         if let used = AutoSettings.used("through_focus", analysis: "spot_diagram", output: output) { return "\(used) mm · " + planes }
         return String(localized: "Auto range") + " · " + planes
@@ -794,7 +794,7 @@ struct ThroughFocusControl: View {
                     }
                     Text("mm").foregroundStyle(.secondary)
                     Stepper(value: Binding(get: { steps }, set: { update(steps: $0) }), in: 1...15) {
-                        Text("\(steps) planes").numeric()
+                        Text(String(localized: "\(steps) planes", locale: NumberDisplay.locale)).numeric()
                     }
                     .help("Planes from the first to the last; 3 shows before, on and after focus.")
                     .accessibilityLabel("Planes")

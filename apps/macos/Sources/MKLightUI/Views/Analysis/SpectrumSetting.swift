@@ -305,9 +305,9 @@ public enum SpectrumSetting: Equatable, Hashable, Sendable {
         case .design: String(localized: "design")
         case .photopic(let s): String(localized: "photopic") + Self.samplesSuffix(s)
         case .scotopic(let s): String(localized: "scotopic") + Self.samplesSuffix(s)
-        case .blackbody(let t, let s): String(localized: "blackbody \(Self.kelvin(t))") + Self.samplesSuffix(s)
-        case .explicit(let l): l.count == 1 ? String(format: "%.4g µm", l[0].um) : String(localized: "\(l.count) wavelengths")
-        case .sensor(let t, let s): String(localized: "sensor (\(t.count) rows)") + Self.samplesSuffix(s)
+        case .blackbody(let t, let s): String(localized: "blackbody \(Self.kelvin(t))", locale: NumberDisplay.locale) + Self.samplesSuffix(s)
+        case .explicit(let l): l.count == 1 ? String(format: "%.4g µm", l[0].um) : String(localized: "\(l.count) wavelengths", locale: NumberDisplay.locale)
+        case .sensor(let t, let s): String(localized: "sensor (\(t.count) rows)", locale: NumberDisplay.locale) + Self.samplesSuffix(s)
         }
     }
 

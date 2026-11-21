@@ -187,7 +187,7 @@ private struct SampleCard: View {
         .animation(reduceMotion ? nil : .smooth(duration: 0.2), value: hover)
         .onHover { hover = $0 }
         .accessibilityElement(children: .ignore)
-        .accessibilityLabel("\(s.name). \(detail(s))")
+        .accessibilityLabel(String(localized: "\(s.name). \(detail(s))", locale: NumberDisplay.locale))
         .accessibilityAddTraits(.isButton)
         .accessibilityHint("Creates a new design from this sample")
     }
@@ -196,7 +196,7 @@ private struct SampleCard: View {
         let n = s.surfaces.count - 2
         let kinds = Set(s.surfaces.map(\.shape.kind)).filter { !$0.isLegacy }.map { SurfaceTypes.descriptor(for: $0).title }.sorted()
         let notes = !kinds.isEmpty ? kinds.joined(separator: ", ") : s.notes
-        return notes.isEmpty ? String(localized: "\(n) surfaces") : String(localized: "\(n) surfaces · \(notes)")
+        return notes.isEmpty ? String(localized: "\(n) surfaces", locale: NumberDisplay.locale) : String(localized: "\(n) surfaces · \(notes)", locale: NumberDisplay.locale)
     }
 }
 

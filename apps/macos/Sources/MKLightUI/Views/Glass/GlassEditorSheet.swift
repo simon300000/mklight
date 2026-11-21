@@ -22,7 +22,7 @@ struct GlassEditorSheet: View {
                     .disabled(editor.originalName != nil)
                 } footer: {
                     if editor.renames, let old = editor.originalName {
-                        Label("Designs that use “\(old)” will not find it under the new name.", systemImage: "exclamationmark.triangle")
+                        Label(String(localized: "Designs that use “\(old)” will not find it under the new name.", locale: NumberDisplay.locale), systemImage: "exclamationmark.triangle")
                             .font(.caption).foregroundStyle(.orange)
                     }
                 }
@@ -38,7 +38,7 @@ struct GlassEditorSheet: View {
                         number("ΔPg,F", value: $editor.dpgf)
                     case .formula:
                         Picker("Formula", selection: $editor.formula) {
-                            ForEach(GlassEditorModel.formulaNames, id: \.0) { f in Text("\(f.0): \(f.1)").tag(f.0) }
+                            ForEach(GlassEditorModel.formulaNames, id: \.0) { f in Text(String(localized: "\(f.0): \(f.1)", locale: NumberDisplay.locale)).tag(f.0) }
                         }
                         let names = GlassEditorModel.coefficientNames(editor.formula)
                         ForEach(names.indices, id: \.self) { i in

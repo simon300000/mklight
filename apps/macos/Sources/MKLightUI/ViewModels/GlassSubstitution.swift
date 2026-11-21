@@ -68,7 +68,7 @@ public struct GlassCandidates: Hashable, Sendable {
     public var summary: String {
         var parts: [String] = []
         switch rule {
-        case .nearest: parts.append(String(localized: "\(nearest) nearest"))
+        case .nearest: parts.append(String(localized: "\(nearest) nearest", locale: NumberDisplay.locale))
         case .window: parts.append("n_d ±\(Fmt.short(windowNd)), V_d ±\(Fmt.short(windowVd))")
         }
         parts.append(catalogs.isEmpty ? String(localized: "all catalogs") : catalogs.joined(separator: ", "))
@@ -381,7 +381,7 @@ public final class GlassSubstitutionSession {
             workspace.preview(nil)
             return
         }
-        workspace.preview(s, title: String(localized: "Candidate \(c.rank)"))
+        workspace.preview(s, title: String(localized: "Candidate \(c.rank)", locale: NumberDisplay.locale))
     }
 
     /// Applies the previewed combination's design as one undoable step.

@@ -13,7 +13,7 @@ extension SettingsBar {
     static func arraySummary(_ f: SettingsField, _ v: JSONValue) -> String? {
         if f.name == "sensor_limit" {
             let n = FieldMapData.sensorLimit(v).count
-            return n == 0 ? String(localized: "none") : n == 1 ? String(localized: "1 point") : String(localized: "\(n) points")
+            return n == 0 ? String(localized: "none") : n == 1 ? String(localized: "1 point") : String(localized: "\(n) points", locale: NumberDisplay.locale)
         }
         if f.name == "source", let kind = v["kind"]?.string {
             switch kind {
@@ -188,7 +188,7 @@ struct SettingPairField: View {
                 sync()
                 write(edit.submit(entry))
             }
-            .accessibilityLabel("\(label) \(index == 0 ? "x" : "y")")
+            .accessibilityLabel(String(localized: "\(label) \(index == 0 ? "x" : "y")", locale: NumberDisplay.locale))
     }
 
     /// One number of the pair: whole where the setting is, held to its
@@ -245,7 +245,7 @@ struct TableSettingControl: View {
         Button {
             open = true
         } label: {
-            Text(count == 0 ? Self.emptyTitle(field) : count == 1 ? String(localized: "1 row") : String(localized: "\(count) rows"))
+            Text(count == 0 ? Self.emptyTitle(field) : count == 1 ? String(localized: "1 row") : String(localized: "\(count) rows", locale: NumberDisplay.locale))
         }
         .buttonStyle(.borderless)
         .help(EngineText.string(field.description.isEmpty ? field.title : field.description))
@@ -429,8 +429,8 @@ struct SensorLimitControl: View {
         Button {
             open = true
         } label: {
-            let n = rows.isEmpty ? String(localized: "None") : rows.count == 1 ? String(format: "%.1f°", rows[0].1) : String(localized: "\(rows.count) points")
-            Text("Sensor limit: \(n)")
+            let n = rows.isEmpty ? String(localized: "None") : rows.count == 1 ? String(format: "%.1f°", rows[0].1) : String(localized: "\(rows.count) points", locale: NumberDisplay.locale)
+            Text(String(localized: "Sensor limit: \(n)", locale: NumberDisplay.locale))
         }
         .buttonStyle(.borderless)
         .help(EngineText.string(help))
@@ -579,14 +579,14 @@ struct ImageSourceControl: View {
             Button("Choose Image…") { importing = true }
         } label: {
             if missing != nil {
-                Label("Source: \(title) (missing)", systemImage: "exclamationmark.triangle")
+                Label(String(localized: "Source: \(title) (missing)", locale: NumberDisplay.locale), systemImage: "exclamationmark.triangle")
             } else {
-                Text("Source: \(title)")
+                Text(String(localized: "Source: \(title)", locale: NumberDisplay.locale))
             }
         }
         .menuStyle(.borderlessButton)
         .fixedSize()
-        .help(missing.map { String(localized: "\($0) could not be read; the simulation uses the grid pattern. Choose the image again.") } ?? EngineText.string(field.description))
+        .help(missing.map { String(localized: "\($0) could not be read; the simulation uses the grid pattern. Choose the image again.", locale: NumberDisplay.locale) } ?? EngineText.string(field.description))
         .accessibilityLabel("Source")
         .accessibilityValue(title)
         .fileImporter(isPresented: $importing, allowedContentTypes: [.image]) { result in

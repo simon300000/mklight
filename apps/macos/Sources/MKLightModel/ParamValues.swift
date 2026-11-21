@@ -150,39 +150,39 @@ extension ParamPath {
         case .curvature(let id):
             // The y section of a toroid or biconic.
             let anamorphic = system.surfaceIndex(of: id).map { system.surfaces[$0].shape.kind == .toroid || system.surfaces[$0].shape.kind == .biconic } ?? false
-            return anamorphic ? String(localized: "Radius y \(n)") : String(localized: "Radius \(n)")
-        case .thickness: return String(localized: "Thickness \(n)")
-        case .conic: return String(localized: "Conic \(n)")
-        case .asphere(_, let k): return String(localized: "A\(2 * k + 4) on \(n)", comment: "an asphere coefficient A4, A6… on a surface")
+            return anamorphic ? String(localized: "Radius y \(n)", locale: NumberDisplay.locale) : String(localized: "Radius \(n)", locale: NumberDisplay.locale)
+        case .thickness: return String(localized: "Thickness \(n)", locale: NumberDisplay.locale)
+        case .conic: return String(localized: "Conic \(n)", locale: NumberDisplay.locale)
+        case .asphere(_, let k): return String(localized: "A\(2 * k + 4) on \(n)", locale: NumberDisplay.locale, comment: "an asphere coefficient A4, A6… on a surface")
         case .shapeCoefficient(_, let set, let k):
             let term = set.termLabel(k)
             switch set {
-            case .odd: return String(localized: "Odd \(term) on \(n)")
-            case .phase: return String(localized: "Phase \(term) on \(n)")
-            default: return String(localized: "\(term) on \(n)")
+            case .odd: return String(localized: "Odd \(term) on \(n)", locale: NumberDisplay.locale)
+            case .phase: return String(localized: "Phase \(term) on \(n)", locale: NumberDisplay.locale)
+            default: return String(localized: "\(term) on \(n)", locale: NumberDisplay.locale)
             }
-        case .shapeParam(_, let p): return String(localized: "\(p.title) on \(n)")
-        case .paraxialFocalLength: return String(localized: "Focal length \(n)")
+        case .shapeParam(_, let p): return String(localized: "\(p.title) on \(n)", locale: NumberDisplay.locale)
+        case .paraxialFocalLength: return String(localized: "Focal length \(n)", locale: NumberDisplay.locale)
         case .modelNd: return "n_d \(n)"
         case .modelVd: return "V_d \(n)"
         case .modelDpgf: return "ΔP_g,F \(n)"
         case .materialDnD: return "Δn_d \(n)"
         case .materialDvD: return "ΔV_d \(n)"
-        case .decenterX: return String(localized: "Decenter X \(n)")
-        case .decenterY: return String(localized: "Decenter Y \(n)")
-        case .tiltX: return String(localized: "Tilt X \(n)")
-        case .tiltY: return String(localized: "Tilt Y \(n)")
-        case .tiltZ: return String(localized: "Tilt Z \(n)")
-        case .semiDiameter: return String(localized: "Semi-diameter \(n)")
+        case .decenterX: return String(localized: "Decenter X \(n)", locale: NumberDisplay.locale)
+        case .decenterY: return String(localized: "Decenter Y \(n)", locale: NumberDisplay.locale)
+        case .tiltX: return String(localized: "Tilt X \(n)", locale: NumberDisplay.locale)
+        case .tiltY: return String(localized: "Tilt Y \(n)", locale: NumberDisplay.locale)
+        case .tiltZ: return String(localized: "Tilt Z \(n)", locale: NumberDisplay.locale)
+        case .semiDiameter: return String(localized: "Semi-diameter \(n)", locale: NumberDisplay.locale)
         case .apertureValue: return String(localized: "Aperture")
-        case .fieldX(let i): return String(localized: "Field \(i + 1) x")
-        case .fieldY(let i): return String(localized: "Field \(i + 1) y")
-        case .fieldWeight(let i): return String(localized: "Field \(i + 1) weight")
+        case .fieldX(let i): return String(localized: "Field \(i + 1) x", locale: NumberDisplay.locale)
+        case .fieldY(let i): return String(localized: "Field \(i + 1) y", locale: NumberDisplay.locale)
+        case .fieldWeight(let i): return String(localized: "Field \(i + 1) weight", locale: NumberDisplay.locale)
         case .wavelengthUm(let i): return "λ\(i + 1)"
-        case .wavelengthWeight(let i): return String(localized: "λ\(i + 1) weight")
+        case .wavelengthWeight(let i): return String(localized: "λ\(i + 1) weight", locale: NumberDisplay.locale)
         case .temperatureC: return String(localized: "Temperature")
         case .pressureAtm: return String(localized: "Pressure")
-        case .irregularity(_, let mode): return mode == .astigmatism ? String(localized: "Astig. irregularity \(n)") : String(localized: "Sph. irregularity \(n)")
+        case .irregularity(_, let mode): return mode == .astigmatism ? String(localized: "Astig. irregularity \(n)", locale: NumberDisplay.locale) : String(localized: "Sph. irregularity \(n)", locale: NumberDisplay.locale)
         case .elementPlacement(_, let last, _, let component):
             let m = system.surfaceIndex(of: last).map(String.init) ?? "?"
             return "\(component.title) \(n)–\(m)"

@@ -201,7 +201,7 @@ final class GlassBrowserModel {
     func useSelected() {
         guard let row = selectedRow, let t = target, let i = assignment.index else { return }
         t.assign(i, row.catalog, row.name)
-        message = String(localized: "Surface \(i) is followed by \(row.name) (\(row.catalog)).")
+        message = String(localized: "Surface \(i) is followed by \(row.name) (\(row.catalog)).", locale: NumberDisplay.locale)
     }
 
     // MARK: Status
@@ -222,17 +222,17 @@ final class GlassBrowserModel {
 
     func addToLibrary(_ urls: [URL]) {
         let added = urls.filter { library.add($0) }
-        message = added.isEmpty ? String(localized: "Already in the library.") : String(localized: "Added \(added.map(\.lastPathComponent).joined(separator: ", ")) to the library.")
+        message = added.isEmpty ? String(localized: "Already in the library.") : String(localized: "Added \(added.map(\.lastPathComponent).joined(separator: ", ")) to the library.", locale: NumberDisplay.locale)
     }
 
     func removeFromLibrary(_ info: CatalogInfo) {
         guard let path = info.path, let e = library.entry(containing: path) else {
-            message = String(localized: "\(info.name) is not a registered library file.")
+            message = String(localized: "\(info.name) is not a registered library file.", locale: NumberDisplay.locale)
             return
         }
         let index = library.entries.firstIndex(of: e) ?? library.entries.count
         library.remove(e)
-        let note = e.isFolder ? String(localized: "Removed the folder \(e.title) from the library.") : String(localized: "Removed \(info.name) from the library.")
+        let note = e.isFolder ? String(localized: "Removed the folder \(e.title) from the library.", locale: NumberDisplay.locale) : String(localized: "Removed \(info.name) from the library.", locale: NumberDisplay.locale)
         removalMessage = note
         message = note
         removal = (e, index)
@@ -243,14 +243,14 @@ final class GlassBrowserModel {
         guard let r = removal else { return }
         library.restore(r.entry, at: r.index)
         removalMessage = nil
-        message = String(localized: "Restored \(r.entry.title) to the library.")
+        message = String(localized: "Restored \(r.entry.title) to the library.", locale: NumberDisplay.locale)
     }
 
     func addToDesign(_ url: URL) async {
         guard let t = target else { return }
         do {
             let info = try await t.addCatalog(url)
-            message = String(localized: "Added \(info.name) (\(glassCountText(info.glassCount))) to \(t.title()).") + warningsNote(info.warnings)
+            message = String(localized: "Added \(info.name) (\(glassCountText(info.glassCount))) to \(t.title()).", locale: NumberDisplay.locale) + warningsNote(info.warnings)
         } catch {
             message = error.localizedDescription
         }
@@ -259,7 +259,7 @@ final class GlassBrowserModel {
     func removeFromDesign(_ info: CatalogInfo) {
         guard let t = target else { return }
         t.removeCatalog(info.name)
-        message = String(localized: "Removed \(info.name) from \(t.title()). Undo in the design window to restore it.")
+        message = String(localized: "Removed \(info.name) from \(t.title()). Undo in the design window to restore it.", locale: NumberDisplay.locale)
     }
 
     func reload(_ info: CatalogInfo) async {
@@ -267,10 +267,10 @@ final class GlassBrowserModel {
         do {
             let changes = try await ws.reloadCatalog(named: info.name)
             reloadReport = changes
-            message = String(localized: "\(info.name) reloaded: \(changes.localizedSummary.lowercased()).") + warningsNote(changes.warnings)
+            message = String(localized: "\(info.name) reloaded: \(changes.localizedSummary.lowercased()).", locale: NumberDisplay.locale) + warningsNote(changes.warnings)
             await refresh()
         } catch {
-            message = String(localized: "\(info.name) could not be reloaded: \(error.localizedDescription)")
+            message = String(localized: "\(info.name) could not be reloaded: \(error.localizedDescription)", locale: NumberDisplay.locale)
         }
     }
 
@@ -330,7 +330,7 @@ final class GlassBrowserModel {
         do {
             try library.deleteGlass(row.name, from: row.catalog)
             if selection == row.id { selection = nil }
-            message = String(localized: "Deleted \(row.name).")
+            message = String(localized: "Deleted \(row.name).", locale: NumberDisplay.locale)
         } catch {
             message = error.localizedDescription
         }
@@ -340,7 +340,7 @@ final class GlassBrowserModel {
     func saveEditor() -> Bool {
         guard let e = editor, let engine = workspace?.documentEngine else { return false }
         guard e.save(engine: engine) else { return false }
-        message = String(localized: "Saved \(e.name) in \(e.catalog).")
+        message = String(localized: "Saved \(e.name) in \(e.catalog).", locale: NumberDisplay.locale)
         // Show the saved glass, whatever was searched for.
         search = ""
         filter = .all
@@ -402,7 +402,7 @@ final class GlassEditorModel {
     private(set) var preview: JSONValue?
     private(set) var problem: String?
 
-    var title: String { originalName == nil ? String(localized: "New Glass") : String(localized: "Edit \(originalName!)") }
+    var title: String { originalName == nil ? String(localized: "New Glass") : String(localized: "Edit \(originalName!)", locale: NumberDisplay.locale) }
 
     init(newIn catalog: String, library: GlassLibrary) {
         self.library = library
@@ -603,18 +603,18 @@ final class GlassEditorModel {
 }
 
 /// "1 glass", "13 glasses".
-func glassCountText(_ n: Int) -> String { n == 1 ? String(localized: "1 glass") : String(localized: "\(n) glasses") }
+func glassCountText(_ n: Int) -> String { n == 1 ? String(localized: "1 glass") : String(localized: "\(n) glasses", locale: NumberDisplay.locale) }
 
 /// "line 12: NAME: message" with the message translated.
 func warningText(_ w: CatalogWarning) -> String {
-    (w.line.map { String(localized: "line \($0): ") } ?? "") + (w.glass.map { "\($0): " } ?? "") + EngineText.message(w.message)
+    (w.line.map { String(localized: "line \($0): ", locale: NumberDisplay.locale) } ?? "") + (w.glass.map { "\($0): " } ?? "") + EngineText.message(w.message)
 }
 
 /// " The reader reported 3 warnings (first: …)." after a catalog load, or "".
 func warningsNote(_ warnings: [CatalogWarning]) -> String {
     guard let first = warnings.first else { return "" }
-    let count = warnings.count == 1 ? String(localized: "1 warning") : String(localized: "\(warnings.count) warnings")
-    return " " + String(localized: "Reading it reported \(count) (first: \(warningText(first))).")
+    let count = warnings.count == 1 ? String(localized: "1 warning") : String(localized: "\(warnings.count) warnings", locale: NumberDisplay.locale)
+    return " " + String(localized: "Reading it reported \(count) (first: \(warningText(first))).", locale: NumberDisplay.locale)
 }
 
 extension CatalogChanges {
@@ -622,9 +622,9 @@ extension CatalogChanges {
     var localizedSummary: String {
         if isEmpty { return String(localized: "No changes") }
         var parts: [String] = []
-        if !added.isEmpty { parts.append(String(localized: "\(added.count) added")) }
-        if !removed.isEmpty { parts.append(String(localized: "\(removed.count) removed")) }
-        if !changed.isEmpty { parts.append(String(localized: "\(changed.count) changed")) }
+        if !added.isEmpty { parts.append(String(localized: "\(added.count) added", locale: NumberDisplay.locale)) }
+        if !removed.isEmpty { parts.append(String(localized: "\(removed.count) removed", locale: NumberDisplay.locale)) }
+        if !changed.isEmpty { parts.append(String(localized: "\(changed.count) changed", locale: NumberDisplay.locale)) }
         return parts.joined(separator: ", ")
     }
 }

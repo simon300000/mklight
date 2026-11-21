@@ -42,13 +42,13 @@ struct DiffractionEfficiencySection: View {
             LabeledContent("Trace order at λ₀") {
                 Text(Fmt.percent(efficiency(at: phase.designWavelengthUm), digits: 1)).monospacedDigit()
             }
-            .help("Efficiency of the trace order (\(phase.traceOrder)) at the design wavelength \(Fmt.short(phase.designWavelengthUm)) µm.")
+            .help(String(localized: "Efficiency of the trace order (\(phase.traceOrder)) at the design wavelength \(Fmt.short(phase.designWavelengthUm)) µm.", locale: NumberDisplay.locale))
             if model != .ideal && !wavelengths.isEmpty {
                 VStack(alignment: .leading, spacing: 3) {
                     ForEach(Array(wavelengths.enumerated()), id: \.offset) { _, um in
                         let e = efficiency(at: um)
                         HStack(spacing: Space.s) {
-                            Text("\(Fmt.short(um)) µm").font(.caption.monospacedDigit()).foregroundStyle(.secondary)
+                            Text(String(localized: "\(Fmt.short(um)) µm", locale: NumberDisplay.locale)).font(.caption.monospacedDigit()).foregroundStyle(.secondary)
                                 .frame(width: 62, alignment: .leading)
                             GeometryReader { g in
                                 ZStack(alignment: .leading) {
@@ -60,7 +60,7 @@ struct DiffractionEfficiencySection: View {
                             Text(Fmt.percent(e, digits: 1)).font(.caption.monospacedDigit()).frame(width: 46, alignment: .trailing)
                         }
                         .accessibilityElement(children: .ignore)
-                        .accessibilityLabel("\(Fmt.short(um)) micrometers")
+                        .accessibilityLabel(String(localized: "\(Fmt.short(um)) micrometers", locale: NumberDisplay.locale))
                         .accessibilityValue(Fmt.percent(e, digits: 1))
                     }
                 }
