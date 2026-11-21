@@ -18,9 +18,9 @@ static class GlassCatalogsRegistration
     internal static void Register()
     {
         AppHooks.SessionStarting.Add(async session => await GlassLibrarySync.SyncAsync(session.Workspace.Engine, GlassCatalogsWindow.Library));
-        AppHooks.Commands.Add(new("Glass Catalogs…", "\uE8F1", w => GlassCatalogsWindow.Show(w),
+        AppHooks.Commands.Add(new(Loc.S("Glass_Command_GlassCatalogs"), "\uE8F1", w => GlassCatalogsWindow.Show(w),
             VirtualKey.G, VirtualKeyModifiers.Control | VirtualKeyModifiers.Menu, Order: 40, Menu: "Lens"));
-        AppHooks.Commands.Add(new("Add Glass Catalog to Design…", "\uE8E5", w => _ = GlassCatalogsWindow.AddCatalogToDesignAsync(w), Order: 41, Menu: "Lens"));
+        AppHooks.Commands.Add(new(Loc.S("Glass_Command_AddCatalogToDesign"), "\uE8E5", w => _ = GlassCatalogsWindow.AddCatalogToDesignAsync(w), Order: 41, Menu: "Lens"));
         AppHooks.WindowCreated += w =>
         {
             w.Activated += (_, e) =>
