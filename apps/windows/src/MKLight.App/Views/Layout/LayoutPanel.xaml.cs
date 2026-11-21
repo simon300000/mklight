@@ -62,6 +62,10 @@ public sealed partial class LayoutPanel : UserControl
     public LayoutPanel()
     {
         InitializeComponent();
+        ToolTipService.SetToolTip(DisplayButton, Loc.S("Shell_Layout_DisplayTip"));
+        ToolTipService.SetToolTip(FitButton, Loc.S("Shell_Layout_FitTip"));
+        ToolTipService.SetToolTip(MoreButton, Loc.S("Shell_Layout_MoreTip"));
+        StaleText.Text = Loc.S("Shell_Layout_DesignChanged");
         ActualThemeChanged += (_, _) => { UpdateStyle(); Canvas.Invalidate(); };
         SizeChanged += (_, e) =>
         {
@@ -99,9 +103,9 @@ public sealed partial class LayoutPanel : UserControl
             SetScene(session.LayoutScene, layout.Phase == PanePhase.Failed ? layout.Message : session.Workspace.ModelErrors.FirstOrDefault());
             SetStale(layout.IsStale, layout.IsRunning);
             var previewing = session.Workspace.PreviewTitle;
-            if (previewing is not null) PreviewText.Text = $"Previewing {previewing} · not applied";
+            if (previewing is not null) PreviewText.Text = Loc.F("Shell_Status_PreviewingTip", previewing);
             MotionFade.Show(PreviewChip, previewing is not null);
-            AutomationProperties.SetName(PreviewChip, previewing is null ? "" : $"Previewing {previewing}. The design has not changed.");
+            AutomationProperties.SetName(PreviewChip, previewing is null ? "" : Loc.F("Shell_Layout_PreviewingName", previewing));
             UpdateAnamorphic();
         }
         SurfaceClicked += i => session.SelectedSurface = i;
@@ -243,7 +247,7 @@ public sealed partial class LayoutPanel : UserControl
             phase, layout?.Message ?? _message,
             designHasErrors: ws?.Issues.Any(i => i.Severity == "error") ?? false,
             modelError: ws?.ModelErrors.FirstOrDefault() ?? (_session is null ? _message : null));
-        if (_simulatedPhase is "placeholder") state = new("Design Not Ready", "\uEA39", "The design needs at least one surface between the object and the image.");
+        if (_simulatedPhase is "placeholder") state = new(Loc.S("Shell_Layout_DesignNotReady"), "\uEA39", Loc.S("Shell_Layout_SimulatedNotReady"));
         Placeholder.Visibility = state is null ? Visibility.Collapsed : Visibility.Visible;
         if (state is not null)
         {
@@ -266,7 +270,7 @@ public sealed partial class LayoutPanel : UserControl
     void UpdateAutomation(LayoutModes.PlaceholderState? state = null)
     {
         var (name, help) = LayoutModes.Summary(_scene, _mode, _session?.Document.System.Surfaces.Count ?? 0, _camera.Stretch, _selected, _stale,
-            _session?.Workspace.PreviewTitle, state is null || state.Busy ? null : $"{state.Title}. {state.Text}");
+            _session?.Workspace.PreviewTitle, state is null || state.Busy ? null : Loc.F("Shell_Layout_StateHelp", state.Title, state.Text));
         AutomationProperties.SetName(Surface, name);
         AutomationProperties.SetHelpText(Surface, help);
     }
@@ -284,7 +288,7 @@ public sealed partial class LayoutPanel : UserControl
         if (viewport)
         {
             Mode = ViewportMode.Orbit3D;
-            View3D.SimulateError("The graphics device stopped responding. The 3-D view will draw again when it is available.");
+            View3D.SimulateError(Loc.S("Shell_Viewport_DeviceLost"));
         }
         else
         {
@@ -309,8 +313,8 @@ public sealed partial class LayoutPanel : UserControl
         _stale = stale;
         MotionFade.Show(StaleCard, stale);
         StaleRing.IsActive = updating;
-        StaleText.Text = updating ? "Updating" : "Design changed";
-        ToolTipService.SetToolTip(StaleCard, updating ? null : "The layout is out of date. Click to update it.");
+        StaleText.Text = Loc.S(updating ? "Shell_Layout_Updating" : "Shell_Layout_DesignChanged");
+        ToolTipService.SetToolTip(StaleCard, updating ? null : Loc.S("Shell_Layout_StaleTip"));
         TitleRing.IsActive = updating;
         TitleRing.Visibility = updating ? Visibility.Visible : Visibility.Collapsed;
         UpdateStyle();
@@ -334,8 +338,8 @@ public sealed partial class LayoutPanel : UserControl
         var fields = _scene?.FieldCount ?? _section!.FieldCount;
         var wavelengths = _scene?.WavelengthsUm ?? _section!.WavelengthsUm;
         ColoringLegend.Text = _coloring == RayColoring.Field
-            ? $"Rays by field · {fields}"
-            : "Rays by wavelength · " + string.Join("  ", wavelengths.Select(w => w.ToString("0.####", CultureInfo.InvariantCulture)));
+            ? Loc.F("Shell_Layout_LegendField", fields)
+            : Loc.F("Shell_Layout_LegendWavelength", string.Join("  ", wavelengths.Select(w => w.ToString("0.####", CultureInfo.InvariantCulture))));
     }
 
     // ---- Views ----
@@ -467,7 +471,7 @@ public sealed partial class LayoutPanel : UserControl
         ScaleText.Text = LayoutModes.LengthLabel(len);
         var vs = _camera.VerticalScale(_mode);
         var stretched = vs != 1;
-        StretchLabel.Text = stretched ? $"   vertical ×{vs.ToString("0", CultureInfo.InvariantCulture)}" : "";
+        StretchLabel.Text = stretched ? "   " + Loc.F("Shell_Layout_VerticalScale", vs.ToString("0", CultureInfo.InvariantCulture)) : "";
         UpBar.Visibility = stretched ? Visibility.Visible : Visibility.Collapsed;
         if (stretched)
         {
@@ -475,7 +479,9 @@ public sealed partial class LayoutPanel : UserControl
             UpLine.Height = Math.Max(up * ppm * vs, 1);
             UpText.Text = LayoutModes.LengthLabel(up);
         }
-        AutomationProperties.SetName(ScaleBar, $"Scale bar {LayoutModes.LengthLabel(len)}" + (stretched ? $", vertical stretch {vs:0} times" : ""));
+        AutomationProperties.SetName(ScaleBar, stretched
+            ? Loc.F("Shell_Layout_ScaleBarStretched", LayoutModes.LengthLabel(len), vs.ToString("0", CultureInfo.InvariantCulture))
+            : Loc.F("Shell_Layout_ScaleBar", LayoutModes.LengthLabel(len)));
     }
 
     // ---- Controls ----
@@ -493,11 +499,11 @@ public sealed partial class LayoutPanel : UserControl
                 Style = (Style)Resources[m == _mode ? "ModeSegmentSelected" : "ModeSegment"],
             };
             AutomationProperties.SetAutomationId(b, "Layout.Mode." + m switch { ViewportMode.Orbit3D => "3d", ViewportMode.SectionXZ => "xz", _ => "section" });
-            AutomationProperties.SetName(b, m switch { ViewportMode.Orbit3D => "3D view", ViewportMode.SectionXZ => "X–Z section", _ => modes.Length == 3 ? "Y–Z section" : "Section" });
+            AutomationProperties.SetName(b, Loc.S(m switch { ViewportMode.Orbit3D => "Shell_Layout_Mode3DName", ViewportMode.SectionXZ => "Shell_Layout_ModeXZName", _ => modes.Length == 3 ? "Shell_Layout_ModeYZName" : "Shell_Layout_ModeSection" }));
             b.Click += (_, _) => b.Choose();
             ModeSegments.Children.Add(b);
         }
-        ToolTipService.SetToolTip(ModeSegments, modes.Length == 3 ? "Y–Z section, X–Z section or 3D view" : "Meridional section or 3D view");
+        ToolTipService.SetToolTip(ModeSegments, Loc.S(modes.Length == 3 ? "Shell_Layout_ModesTipAnamorphic" : "Shell_Layout_ModesTip"));
     }
 
     void UpdateStretchChip()
@@ -507,14 +513,14 @@ public sealed partial class LayoutPanel : UserControl
         if (show)
         {
             var n = _camera.Stretch.ToString("0", CultureInfo.InvariantCulture);
-            StretchText.Text = $"Stretch ×{n}";
-            ToolTipService.SetToolTip(StretchButton, $"The section is drawn {n} times taller than true proportions. Click to change or turn off.");
+            StretchText.Text = Loc.F("Shell_Layout_StretchChip", n);
+            ToolTipService.SetToolTip(StretchButton, Loc.F("Shell_Layout_StretchTip", n));
         }
         UpdateScaleBar();
     }
 
     void UpdateFootprintsTip() => ToolTipService.SetToolTip(FootprintsButton,
-        _showFootprints ? "Hide the beam footprints on the surfaces" : "Show the beam footprint of every field on every surface");
+        Loc.S(_showFootprints ? "Shell_Layout_HideFootprintsTip" : "Shell_Layout_ShowFootprintsTip"));
 
     void OnStretchMenuOpening(object? sender, object e) => FillStretchItems(StretchMenu.Items, enabled: true);
 
@@ -525,7 +531,7 @@ public sealed partial class LayoutPanel : UserControl
         {
             var item = new RadioMenuFlyoutItem
             {
-                Text = s == 1 ? "Off (true proportions)" : $"×{s.ToString("0", CultureInfo.InvariantCulture)}",
+                Text = s == 1 ? Loc.S("Shell_Layout_StretchOff") : $"×{s.ToString("0", CultureInfo.InvariantCulture)}",
                 GroupName = "stretch", IsChecked = _camera.Stretch == s, IsEnabled = enabled,
             };
             var value = s;
@@ -546,13 +552,13 @@ public sealed partial class LayoutPanel : UserControl
     void FillMoreItems(IList<MenuFlyoutItemBase> items)
     {
         items.Clear();
-        var fit = new MenuFlyoutItem { Text = "Fit", Icon = new FontIcon { Glyph = "\uE9A6" }, KeyboardAcceleratorTextOverride = "Ctrl+0" };
+        var fit = new MenuFlyoutItem { Text = Loc.S("Shell_Layout_Fit"), Tag = "Fit", Icon = new FontIcon { Glyph = "\uE9A6" }, KeyboardAcceleratorTextOverride = "Ctrl+0" };
         fit.Click += (_, _) => { _fitLens = false; Fit(); };
-        var fitLens = new MenuFlyoutItem { Text = "Fit Lens", Icon = new FontIcon { Glyph = "\uE71E" }, IsEnabled = _scene is not null };
+        var fitLens = new MenuFlyoutItem { Text = Loc.S("Shell_Layout_FitLens"), Tag = "Fit Lens", Icon = new FontIcon { Glyph = "\uE71E" }, IsEnabled = _scene is not null };
         fitLens.Click += (_, _) => FitLens();
         items.Add(fit);
         items.Add(fitLens);
-        var display = new MenuFlyoutSubItem { Text = "Display Options", Icon = new FontIcon { Glyph = "\uE890" } };
+        var display = new MenuFlyoutSubItem { Text = Loc.S("Shell_Layout_DisplayOptions"), Icon = new FontIcon { Glyph = "\uE890" } };
         FillDisplayItems(display.Items, fit: false);
         items.Add(display);
         if (Host is { } host)
@@ -561,7 +567,8 @@ public sealed partial class LayoutPanel : UserControl
             host.AddPanelMenuItems(items, PanelId.Layout);
         }
         foreach (var item in items.OfType<MenuFlyoutItem>())
-            AutomationProperties.SetAutomationId(item, "Layout.More." + item.Text.Replace(" ", ""));
+            // The id from the English text (the item's Tag), the same in every language.
+            AutomationProperties.SetAutomationId(item, "Layout.More." + (item.Tag as string ?? item.Text).Replace(" ", ""));
     }
 
     /// <summary>Launch actions: opens the More menu (for screenshots).</summary>
@@ -586,12 +593,12 @@ public sealed partial class LayoutPanel : UserControl
             item.Click += (_, _) => Coloring = c;
             return item;
         }
-        items.Add(ColoringItem("Rays by Field", RayColoring.Field));
-        items.Add(ColoringItem("Rays by Wavelength", RayColoring.Wavelength));
+        items.Add(ColoringItem(Loc.S("Shell_Layout_RaysByField"), RayColoring.Field));
+        items.Add(ColoringItem(Loc.S("Shell_Layout_RaysByWavelength"), RayColoring.Wavelength));
         items.Add(new MenuFlyoutSeparator());
 
         var settings = _session?.Workspace.Layout.Settings;
-        var rays = new MenuFlyoutSubItem { Text = "Rays per Field", IsEnabled = _session is not null };
+        var rays = new MenuFlyoutSubItem { Text = Loc.S("Shell_Layout_RaysPerField"), IsEnabled = _session is not null };
         var current = settings?["rays_per_field"].IntOrNull();
         foreach (var n in new[] { 3, 5, 7, 11, 15 })
         {
@@ -600,9 +607,9 @@ public sealed partial class LayoutPanel : UserControl
             rays.Items.Add(item);
         }
         items.Add(rays);
-        var wl = new MenuFlyoutSubItem { Text = "Wavelengths", IsEnabled = _session is not null };
+        var wl = new MenuFlyoutSubItem { Text = Loc.S("Shell_Layout_Wavelengths"), IsEnabled = _session is not null };
         var type = settings?["wavelengths"].At("type").StringOrNull();
-        foreach (var (text, value) in new[] { ("Primary", "primary"), ("All", "all") })
+        foreach (var (text, value) in new[] { (Loc.S("Shell_Layout_WavelengthsPrimary"), "primary"), (Loc.S("Shell_Layout_WavelengthsAll"), "all") })
         {
             var item = new RadioMenuFlyoutItem { Text = text, GroupName = "wavelengths", IsChecked = type == value };
             item.Click += (_, _) => SetLayoutSetting("wavelengths", new JsonObject { ["type"] = value });
@@ -611,9 +618,9 @@ public sealed partial class LayoutPanel : UserControl
         items.Add(wl);
         items.Add(new MenuFlyoutSeparator());
 
-        var fitAll = new MenuFlyoutItem { Text = "Fit All", KeyboardAcceleratorTextOverride = "Ctrl+0" };
+        var fitAll = new MenuFlyoutItem { Text = Loc.S("Shell_Layout_FitAll"), KeyboardAcceleratorTextOverride = "Ctrl+0" };
         fitAll.Click += (_, _) => { _fitLens = false; Fit(); };
-        var fitLens = new MenuFlyoutItem { Text = "Fit Lens" };
+        var fitLens = new MenuFlyoutItem { Text = Loc.S("Shell_Layout_FitLens") };
         fitLens.Click += (_, _) => FitLens();
         if (fit)
         {
@@ -622,14 +629,14 @@ public sealed partial class LayoutPanel : UserControl
             items.Add(new MenuFlyoutSeparator());
         }
 
-        var stretch = new MenuFlyoutSubItem { Text = "Vertical Stretch", IsEnabled = _mode != ViewportMode.Orbit3D };
+        var stretch = new MenuFlyoutSubItem { Text = Loc.S("Shell_Layout_VerticalStretch"), IsEnabled = _mode != ViewportMode.Orbit3D };
         FillStretchItems(stretch.Items, enabled: _mode != ViewportMode.Orbit3D);
         items.Add(stretch);
         items.Add(new MenuFlyoutSeparator());
 
-        var mesh = new ToggleMenuFlyoutItem { Text = "Surface Mesh in 3D", IsChecked = ShowMesh, IsEnabled = _session is not null };
+        var mesh = new ToggleMenuFlyoutItem { Text = Loc.S("Shell_Layout_SurfaceMesh"), IsChecked = ShowMesh, IsEnabled = _session is not null };
         mesh.Click += (_, _) => ShowMesh = mesh.IsChecked;
-        var footprints = new ToggleMenuFlyoutItem { Text = "Beam Footprints in 3D", IsChecked = _showFootprints, IsEnabled = _session is not null };
+        var footprints = new ToggleMenuFlyoutItem { Text = Loc.S("Shell_Layout_BeamFootprints"), IsChecked = _showFootprints, IsEnabled = _session is not null };
         footprints.Click += (_, _) => ShowFootprints = footprints.IsChecked;
         items.Add(mesh);
         items.Add(footprints);
@@ -674,14 +681,14 @@ public sealed partial class LayoutPanel : UserControl
         {
             using var output = await job.ResultAsync();
             overlay = FootprintOverlay.FromOutput(output);
-            if (overlay is null) error = "The footprint result has no beam outlines.";
+            if (overlay is null) error = Loc.S("Shell_Layout_NoOutlines");
         }
         catch (EngineException e) when (e.Kind == EngineErrorKind.Cancelled) { return; }
         catch (Exception e) { error = e.Message; }
         if (!ReferenceEquals(job, _footprintJob)) return;
         _footprintJob = null;
         _footprints = overlay;
-        if (error is not null) _session?.ShowToast("Beam footprints: " + error);
+        if (error is not null) _session?.ShowToast(Loc.F("Shell_Layout_FootprintsFailed", error));
         UpdateStyle();
         ready.TrySetResult();
     }

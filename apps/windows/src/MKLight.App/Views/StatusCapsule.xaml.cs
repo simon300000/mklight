@@ -3,6 +3,7 @@ using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Controls.Primitives;
 using Microsoft.UI.Xaml.Media;
 using MKLight.App.Support;
+using MKLight.Model;
 
 namespace MKLight.App.Views;
 
@@ -15,7 +16,12 @@ public sealed record IssueItem(string Severity, string Message, string? Where, i
 /// </summary>
 public sealed partial class StatusCapsule : UserControl
 {
-    public StatusCapsule() { InitializeComponent(); }
+    public StatusCapsule()
+    {
+        InitializeComponent();
+        ToolTipService.SetToolTip(NumbersButton, Loc.S("Shell_Status_NumbersTip"));
+        ToolTipService.SetToolTip(BackendPicker, Loc.S("Shell_Status_BackendTip"));
+    }
 
     /// <summary>Raised when an issue that names a surface is clicked.</summary>
     public event Action<IssueItem>? IssueInvoked;
@@ -31,7 +37,7 @@ public sealed partial class StatusCapsule : UserControl
             _activityHooked = true;
             Activity.Tapped += (_, _) => _activityOpen?.Invoke();
         }
-        ToolTipService.SetToolTip(Activity, open is null ? null : "Show the running job");
+        ToolTipService.SetToolTip(Activity, open is null ? null : Loc.S("Shell_Status_ShowRunningJob"));
     }
     bool _activityHooked;
 
@@ -78,7 +84,9 @@ public sealed partial class StatusCapsule : UserControl
             var row = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 5 };
             row.Children.Add(new TextBlock { Text = label, Style = (Style)Application.Current.Resources["SecondaryText"], FontSize = 12 });
             var number = new TextBlock { Text = value, Style = (Style)Application.Current.Resources["NumberText"], FontSize = 12.5 };
-            Microsoft.UI.Xaml.Automation.AutomationProperties.SetAutomationId(number, "Status." + label switch { "EFL" or "EFL y" => "EFL", "F/#" => "FNumber", _ => label });
+            // The id stays English in every language (the squeeze label is translated).
+            var id = label switch { "EFL" or "EFL y" => "EFL", "F/#" => "FNumber", _ when label == Loc.S("Shell_Status_Squeeze") => "Squeeze", _ => label };
+            Microsoft.UI.Xaml.Automation.AutomationProperties.SetAutomationId(number, "Status." + id);
             row.Children.Add(number);
             Numbers.Children.Add(row);
         }
@@ -136,7 +144,7 @@ public sealed partial class StatusCapsule : UserControl
                         g.Children.Add(v);
                     }
                     if (head) Microsoft.UI.Xaml.Automation.AutomationProperties.SetAccessibilityView(g, Microsoft.UI.Xaml.Automation.Peers.AccessibilityView.Raw);
-                    else Microsoft.UI.Xaml.Automation.AutomationProperties.SetName(g, $"{row.Help ?? row.Label}: x {row.Value} mm, y {row.Value2} mm");
+                    else Microsoft.UI.Xaml.Automation.AutomationProperties.SetName(g, Loc.F("Shell_Status_XyName", row.Help ?? row.Label, row.Value, row.Value2));
                     e = g;
                     break;
                 }
@@ -169,7 +177,7 @@ public sealed partial class StatusCapsule : UserControl
             IssuesGlyph.Glyph = "\uE930";
             IssuesGlyph.Foreground = ThemeLookup.Brush(this, "TextFillColorTertiaryBrush");
             IssuesCount.Visibility = Visibility.Collapsed;
-            ToolTipService.SetToolTip(IssuesButton, "The engine found no problems in the design");
+            ToolTipService.SetToolTip(IssuesButton, Loc.S("Shell_Status_NoProblemsTip"));
         }
         else
         {
@@ -179,7 +187,7 @@ public sealed partial class StatusCapsule : UserControl
             IssuesCount.Foreground = brush;
             IssuesCount.Text = issues.Count.ToString(System.Globalization.CultureInfo.InvariantCulture);
             IssuesCount.Visibility = Visibility.Visible;
-            ToolTipService.SetToolTip(IssuesButton, $"{issues.Count} issue{(issues.Count == 1 ? "" : "s")}: show the design's validation issues");
+            ToolTipService.SetToolTip(IssuesButton, Loc.F(issues.Count == 1 ? "Shell_Status_IssuesTipOne" : "Shell_Status_IssuesTipMany", issues.Count));
         }
     }
 
@@ -191,8 +199,8 @@ public sealed partial class StatusCapsule : UserControl
         _endPreview = endPreview;
         PreviewBadge.Visibility = title is null ? Visibility.Collapsed : Visibility.Visible;
         // The capsule stays compact (the panes and the layout carry the full title); the title is the tooltip.
-        PreviewText.Text = title is null ? "" : "Previewing";
-        ToolTipService.SetToolTip(PreviewBadge, title is null ? null : $"Previewing {title} · not applied");
+        PreviewText.Text = title is null ? "" : Loc.S("Shell_Status_Previewing");
+        ToolTipService.SetToolTip(PreviewBadge, title is null ? null : Loc.F("Shell_Status_PreviewingTip", title));
     }
 
     void OnEndPreview(object sender, RoutedEventArgs e) => _endPreview?.Invoke();
@@ -216,19 +224,22 @@ public sealed partial class StatusCapsule : UserControl
             BackendPicker.Items.Clear();
             foreach (var o in options)
             {
+                // The option texts come from the engine library (MKLight.Engine): through the engine text lookup.
+                var title = EngineText.T(o.Title);
+                var reason = o.Reason is null ? null : EngineText.T(o.Reason);
                 var content = new StackPanel { Spacing = 0 };
-                content.Children.Add(new TextBlock { Text = o.Title, Style = StyleOf("NumberText") });
-                if (o.Reason is not null)
-                    content.Children.Add(new TextBlock { Text = o.Reason, Style = StyleOf("CaptionText"), MaxWidth = 280, TextWrapping = TextWrapping.Wrap, TextTrimming = TextTrimming.None });
+                content.Children.Add(new TextBlock { Text = title, Style = StyleOf("NumberText") });
+                if (reason is not null)
+                    content.Children.Add(new TextBlock { Text = reason, Style = StyleOf("CaptionText"), MaxWidth = 280, TextWrapping = TextWrapping.Wrap, TextTrimming = TextTrimming.None });
                 var item = new ComboBoxItem { Content = content, IsEnabled = o.Enabled };
-                ToolTipService.SetToolTip(item, o.Reason is null ? o.Help : o.Reason);
-                Microsoft.UI.Xaml.Automation.AutomationProperties.SetName(item, o.Reason is null ? o.Title : $"{o.Title}, not available: {o.Reason}");
+                ToolTipService.SetToolTip(item, reason ?? EngineText.T(o.Help));
+                Microsoft.UI.Xaml.Automation.AutomationProperties.SetName(item, reason is null ? title : Loc.F("Shell_Status_BackendNotAvailableName", title, reason));
                 BackendPicker.Items.Add(item);
             }
         }
         BackendPicker.SelectedIndex = selected;
         var chosen = selected >= 0 && selected < options.Count ? options[selected] : null;
-        BackendNote.Text = chosen is { Enabled: false } ? $"Not available: {chosen.Reason}. Analyses run on the CPU reference." : "";
+        BackendNote.Text = chosen is { Enabled: false } ? Loc.F("Shell_Status_BackendNote", chosen.Reason is null ? "" : EngineText.T(chosen.Reason)) : "";
         BackendNote.Visibility = BackendNote.Text.Length > 0 ? Visibility.Visible : Visibility.Collapsed;
         _settingBackend = false;
     }
@@ -244,7 +255,7 @@ public sealed partial class StatusCapsule : UserControl
     {
         IssuesList.Children.Clear();
         if (_issues.Count == 0)
-            IssuesList.Children.Add(new TextBlock { Text = "No issues. The engine found no problems in the design.", Style = (Style)Application.Current.Resources["SecondaryText"] });
+            IssuesList.Children.Add(new TextBlock { Text = Loc.S("Shell_Status_NoIssues"), Style = (Style)Application.Current.Resources["SecondaryText"] });
         foreach (var issue in _issues.OrderBy(i => i.Severity == "error" ? 0 : i.Severity == "warning" ? 1 : 2))
         {
             var row = new Grid { ColumnSpacing = 10 };

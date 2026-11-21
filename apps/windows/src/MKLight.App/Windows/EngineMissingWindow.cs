@@ -1,6 +1,7 @@
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Media;
+using MKLight.App.Support;
 
 namespace MKLight.App.Windows;
 
@@ -11,16 +12,16 @@ public sealed class EngineMissingWindow : Window
     {
         Title = "MKLight";
         SystemBackdrop = new MicaBackdrop();
-        var close = new Button { Content = "Quit", Style = (Style)Application.Current.Resources["AccentCapsuleButton"], HorizontalAlignment = HorizontalAlignment.Right };
+        var close = new Button { Content = Loc.S("Shell_EngineMissing_Quit"), Style = (Style)Application.Current.Resources["AccentCapsuleButton"], HorizontalAlignment = HorizontalAlignment.Right };
         close.Click += (_, _) => Close();
         Content = new StackPanel
         {
             Spacing = 12, Padding = new Thickness(32), VerticalAlignment = VerticalAlignment.Center,
             Children =
             {
-                new TextBlock { Text = "The optical engine is not available", FontSize = 20, FontWeight = Microsoft.UI.Text.FontWeights.SemiBold },
+                new TextBlock { Text = Loc.S("Shell_EngineMissing_Title"), FontSize = 20, FontWeight = Microsoft.UI.Text.FontWeights.SemiBold },
                 new TextBlock { Text = reason, TextWrapping = TextWrapping.Wrap, Foreground = (Brush)Application.Current.Resources["TextFillColorSecondaryBrush"] },
-                new TextBlock { Text = "Build it with scripts/build-windows.ps1, which places mklight_ffi.dll next to the app.", TextWrapping = TextWrapping.Wrap },
+                new TextBlock { Text = Loc.S("Shell_EngineMissing_Build"), TextWrapping = TextWrapping.Wrap },
                 close,
             },
         };

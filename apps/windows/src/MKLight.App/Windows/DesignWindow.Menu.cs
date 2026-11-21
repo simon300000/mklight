@@ -26,7 +26,13 @@ namespace MKLight.App.Windows;
 /// </summary>
 public sealed partial class DesignWindow
 {
-    static readonly string[] MenuTitles = ["File", "Edit", "View", "Lens", "Design", "Analysis", "Help"];
+    /// <summary>The menus by English name (their lookup key) and their titles in the UI language.</summary>
+    static (string Name, string Title)[] MenuTitles =>
+    [
+        ("File", Loc.S("Shell_Menu_File")), ("Edit", Loc.S("Shell_Menu_Edit")), ("View", Loc.S("Shell_Menu_View")),
+        ("Lens", Loc.S("Shell_Menu_Lens")), ("Design", Loc.S("Shell_Menu_Design")), ("Analysis", Loc.S("Shell_Menu_Analysis")),
+        ("Help", Loc.S("Shell_Menu_Help")),
+    ];
 
     readonly Dictionary<string, MenuBarItem> _menus = new(StringComparer.OrdinalIgnoreCase);
     /// <summary>The separator above a menu's final group (hooked commands go above it); none: at the end.</summary>
@@ -41,11 +47,12 @@ public sealed partial class DesignWindow
 
     void BuildMenus()
     {
-        foreach (var title in MenuTitles)
+        foreach (var (name, title) in MenuTitles)
         {
-            var m = new MenuBarItem { Title = title, AccessKey = title[..1] };
+            // Looked up by the English name (launch actions, registered commands); the title is translated.
+            var m = new MenuBarItem { Title = title, AccessKey = name[..1] };
             m.AccessKeyDisplayRequested += (_, _) => RefreshMenus();
-            _menus[title] = m;
+            _menus[name] = m;
             Menus.Items.Add(m);
         }
         BuildFileMenu();
@@ -124,8 +131,9 @@ public sealed partial class DesignWindow
         _menus[menu].Items.Add(s);
     }
 
-    MenuFlyoutSubItem Sub(string text, string? glyph = null) =>
-        new() { Text = text, Icon = glyph is null ? null : new FontIcon { Glyph = glyph } };
+    /// <summary>A submenu; its English text is kept in <c>Tag</c>, so <c>--do "menu=View/Ray Colors"</c> finds it in any language.</summary>
+    static MenuFlyoutSubItem Sub(string key, string english, string? glyph = null) =>
+        new() { Text = Loc.S(key), Tag = english, Icon = glyph is null ? null : new FontIcon { Glyph = glyph } };
 
     RadioMenuFlyoutItem[] Radios<T>(IList<MenuFlyoutItemBase> into, string group, (string Text, T Value)[] choices, Func<T> current, Action<T> set, Func<bool>? enabled = null)
     {
@@ -164,7 +172,7 @@ public sealed partial class DesignWindow
             if (sub.Items.Count > 0) sub.Items.Add(new MenuFlyoutSeparator());
             foreach (var e in group)
             {
-                var item = new MenuFlyoutItem { Text = e.System.Name };
+                var item = new MenuFlyoutItem { Text = EngineText.T(e.System.Name) };
                 var id = e.Id;
                 item.Click += (_, _) => pick(id);
                 sub.Items.Add(item);
@@ -177,22 +185,22 @@ public sealed partial class DesignWindow
     void BuildFileMenu()
     {
         const string m = "File";
-        var samples = Sub("New from Sample", "\uE8A5");
+        var samples = Sub("Shell_File_NewFromSample", "New from Sample", "\uE8A5");
         AddSamples(samples, id => App.OpenDocument(DesignDocument.FromSample(id)));
         _menus[m].Items.Add(samples);
-        Item(m, "Show Welcome Window", App.ShowWelcome, "Ctrl+N");
-        Item(m, "Open…", () => _ = App.OpenWithPickerAsync(this), "Ctrl+O", glyph: "\uE838");
-        _recentMenu = Sub("Open Recent", "\uE81C");
+        Item(m, Loc.S("Shell_File_ShowWelcome"), App.ShowWelcome, "Ctrl+N");
+        Item(m, Loc.S("Shell_File_Open"), () => _ = App.OpenWithPickerAsync(this), "Ctrl+O", glyph: "\uE838");
+        _recentMenu = Sub("Shell_File_OpenRecent", "Open Recent", "\uE81C");
         _menus[m].Items.Add(_recentMenu);
         Separator(m);
-        Item(m, "Close", () => _ = CloseAsync(), "Ctrl+W");
-        Item(m, "Save", () => _ = SaveAsync(false), "Ctrl+S", glyph: "\uE74E");
-        Item(m, "Save As…", () => _ = SaveAsync(true), "Ctrl+Shift+S");
-        Item(m, "Duplicate", () => _ = DuplicateAsync());
-        Item(m, "Rename…", () => _ = RenameAsync(), enabled: () => CanRename);
-        Item(m, "Revert to Saved", () => _ = RevertAsync(), enabled: () => CanRevert);
+        Item(m, Loc.S("Shell_File_Close"), () => _ = CloseAsync(), "Ctrl+W");
+        Item(m, Loc.S("Shell_File_Save"), () => _ = SaveAsync(false), "Ctrl+S", glyph: "\uE74E");
+        Item(m, Loc.S("Shell_File_SaveAs"), () => _ = SaveAsync(true), "Ctrl+Shift+S");
+        Item(m, Loc.S("Shell_File_Duplicate"), () => _ = DuplicateAsync());
+        Item(m, Loc.S("Shell_File_Rename"), () => _ = RenameAsync(), enabled: () => CanRename);
+        Item(m, Loc.S("Shell_File_Revert"), () => _ = RevertAsync(), enabled: () => CanRevert);
         FinalGroup(m);
-        Item(m, "Exit", () => _ = ExitAsync());
+        Item(m, Loc.S("Shell_File_Exit"), () => _ = ExitAsync());
     }
 
     void BuildRecentMenu()
@@ -222,20 +230,20 @@ public sealed partial class DesignWindow
     {
         const string m = "Edit";
         var doc = _session.Document;
-        var undo = Item(m, "Undo", MenuUndo, "Ctrl+Z", () => doc.CanUndo || EditText?.CanUndo == true, "\uE7A7");
-        var redo = Item(m, "Redo", MenuRedo, "Ctrl+Y", () => doc.CanRedo || EditText?.CanRedo == true, "\uE7A6");
+        var undo = Item(m, Loc.S("Shell_Edit_Undo"), MenuUndo, "Ctrl+Z", () => doc.CanUndo || EditText?.CanUndo == true, "\uE7A7");
+        var redo = Item(m, Loc.S("Shell_Edit_Redo"), MenuRedo, "Ctrl+Y", () => doc.CanRedo || EditText?.CanRedo == true, "\uE7A6");
         _menuState.Add(() =>
         {
             var typing = EditText is not null;
-            undo.Text = !typing && doc.UndoActionName is { } u ? "Undo " + u : "Undo";
-            redo.Text = !typing && doc.RedoActionName is { } r ? "Redo " + r : "Redo";
+            undo.Text = !typing && doc.UndoActionName is { } u ? Loc.F("Shell_Edit_UndoAction", u) : Loc.S("Shell_Edit_Undo");
+            redo.Text = !typing && doc.RedoActionName is { } r ? Loc.F("Shell_Edit_RedoAction", r) : Loc.S("Shell_Edit_Redo");
         });
         Separator(m);
         // The focused text box's own commands (its keys reach it directly).
-        Item(m, "Cut", () => OnText(t => t.CutSelectionToClipboard()), "Ctrl+X", () => EditText is { SelectionLength: > 0, IsReadOnly: false }, "\uE8C6");
-        Item(m, "Copy", () => OnText(t => t.CopySelectionToClipboard()), "Ctrl+C", () => EditText is { SelectionLength: > 0 }, "\uE8C8");
-        Item(m, "Paste", () => OnText(t => t.PasteFromClipboard()), "Ctrl+V", () => EditText is { IsReadOnly: false }, "\uE77F");
-        Item(m, "Select All", () => OnText(t => t.SelectAll()), "Ctrl+A", () => EditText is not null);
+        Item(m, Loc.S("Shell_Edit_Cut"), () => OnText(t => t.CutSelectionToClipboard()), "Ctrl+X", () => EditText is { SelectionLength: > 0, IsReadOnly: false }, "\uE8C6");
+        Item(m, Loc.S("Shell_Edit_Copy"), () => OnText(t => t.CopySelectionToClipboard()), "Ctrl+C", () => EditText is { SelectionLength: > 0 }, "\uE8C8");
+        Item(m, Loc.S("Shell_Edit_Paste"), () => OnText(t => t.PasteFromClipboard()), "Ctrl+V", () => EditText is { IsReadOnly: false }, "\uE77F");
+        Item(m, Loc.S("Shell_Edit_SelectAll"), () => OnText(t => t.SelectAll()), "Ctrl+A", () => EditText is not null);
     }
 
     /// <summary>The text box last focused, while it is still on screen.</summary>
@@ -267,17 +275,17 @@ public sealed partial class DesignWindow
     {
         const string m = "View";
         var arr = _panels.Arrangement;
-        Toggle(m, "Sidebar", () => IsSidebarVisible = !IsSidebarVisible, () => IsSidebarVisible);
-        Toggle(m, "Inspector", ToggleInspector, () => IsInspectorVisible, "Ctrl+Alt+P");
+        Toggle(m, Loc.S("Shell_View_Sidebar"), () => IsSidebarVisible = !IsSidebarVisible, () => IsSidebarVisible);
+        Toggle(m, Loc.S("Shell_View_Inspector"), ToggleInspector, () => IsInspectorVisible, "Ctrl+Alt+P");
         Separator(m);
-        var lens = Item(m, "Hide Lens Data", () => TogglePanel(PanelId.LensData), glyph: AnalysisCatalog.LensDataGlyph);
-        var layout = Item(m, "Hide Layout", () => TogglePanel(PanelId.Layout), glyph: AnalysisCatalog.LayoutGlyph);
+        var lens = Item(m, Loc.S("Shell_View_HideLensData"), () => TogglePanel(PanelId.LensData), glyph: AnalysisCatalog.LensDataGlyph);
+        var layout = Item(m, Loc.S("Shell_View_HideLayout"), () => TogglePanel(PanelId.Layout), glyph: AnalysisCatalog.LayoutGlyph);
         _menuState.Add(() =>
         {
-            lens.Text = arr.Contains(PanelId.LensData) ? "Hide Lens Data" : "Show Lens Data";
-            layout.Text = arr.Contains(PanelId.Layout) ? "Hide Layout" : "Show Layout";
+            lens.Text = Loc.S(arr.Contains(PanelId.LensData) ? "Shell_View_HideLensData" : "Shell_View_ShowLensData");
+            layout.Text = Loc.S(arr.Contains(PanelId.Layout) ? "Shell_View_HideLayout" : "Shell_View_ShowLayout");
         });
-        var panel = Sub("Panel");
+        var panel = Sub("Shell_View_Panel", "Panel");
         _menus[m].Items.Add(panel);
         void PanelItem(string text, Action<PanelId> act, Func<PanelId, bool> can, Func<PanelId, string>? label = null)
         {
@@ -291,26 +299,26 @@ public sealed partial class DesignWindow
             });
             panel.Items.Add(item);
         }
-        PanelItem("Move to New Window", p => _panels.MoveToNewWindow(p), p => !arr.IsAloneInWindow(p));
-        PanelItem("Move to Main Window", p => _panels.MoveToMainWindow(p), arr.IsDetached);
-        PanelItem("Close Pane", p => _panels.Close(p), _ => true,
-            p => p == PanelId.LensData ? "Hide Lens Data" : p == PanelId.Layout ? "Hide Layout" : "Close Pane");
+        PanelItem(Loc.S("Shell_View_MoveToNewWindow"), p => _panels.MoveToNewWindow(p), p => !arr.IsAloneInWindow(p));
+        PanelItem(Loc.S("Shell_View_MoveToMainWindow"), p => _panels.MoveToMainWindow(p), arr.IsDetached);
+        PanelItem(Loc.S("Shell_View_ClosePane"), p => _panels.Close(p), _ => true,
+            p => Loc.S(p == PanelId.LensData ? "Shell_View_HideLensData" : p == PanelId.Layout ? "Shell_View_HideLayout" : "Shell_View_ClosePane"));
         Separator(m);
         var layoutShown = () => arr.Contains(PanelId.Layout);
-        Radios(_menus[m].Items, "viewport", [("Section View", ViewportMode.SectionYZ), ("X–Z Section", ViewportMode.SectionXZ), ("3D View", ViewportMode.Orbit3D)],
+        Radios(_menus[m].Items, "viewport", [(Loc.S("Shell_View_SectionView"), ViewportMode.SectionYZ), (Loc.S("Shell_View_SectionXZ"), ViewportMode.SectionXZ), (Loc.S("Shell_View_View3D"), ViewportMode.Orbit3D)],
             () => _panels.Layout.Mode, v => _panels.Layout.Mode = v, layoutShown);
-        Item(m, "Fit Layout", () => _panels.Layout.Fit(), "Ctrl+0", layoutShown);
-        var colors = Sub("Ray Colors");
-        Radios(colors.Items, "coloring", [("By Field", RayColoring.Field), ("By Wavelength", RayColoring.Wavelength)],
+        Item(m, Loc.S("Shell_View_FitLayout"), () => _panels.Layout.Fit(), "Ctrl+0", layoutShown);
+        var colors = Sub("Shell_View_RayColors", "Ray Colors");
+        Radios(colors.Items, "coloring", [(Loc.S("Shell_View_ByField"), RayColoring.Field), (Loc.S("Shell_View_ByWavelength"), RayColoring.Wavelength)],
             () => _panels.Layout.Coloring, c => _panels.Layout.Coloring = c, layoutShown);
         _menus[m].Items.Add(colors);
         FinalGroup(m);
-        var appearance = Sub("Appearance", "\uE793");
-        _themeItems = Radios(appearance.Items, "theme", [("System", ElementTheme.Default), ("Light", ElementTheme.Light), ("Dark", ElementTheme.Dark)],
+        var appearance = Sub("Shell_View_Appearance", "Appearance", "\uE793");
+        _themeItems = Radios(appearance.Items, "theme", [(Loc.S("Shell_View_ThemeSystem"), ElementTheme.Default), (Loc.S("Shell_View_ThemeLight"), ElementTheme.Light), (Loc.S("Shell_View_ThemeDark"), ElementTheme.Dark)],
             () => AppSettings.Theme, ThemeSwitch.Set);
         _menus[m].Items.Add(appearance);
         // The UI language: saved, shown from the next launch (the app is unpackaged; docs/WINDOWS.md "Languages").
-        var language = Sub(Loc.S("Shell_Language_Title"), "");
+        var language = Sub("Shell_Language_Title", "Language", "");
         var system = Languages.Resolve(null, UiLanguageSystem());
         Radios(language.Items, "language",
             [(Loc.F("Shell_Language_System", system == Languages.SimplifiedChinese ? Loc.S("Shell_Language_Chinese") : Loc.S("Shell_Language_English")), Languages.System),
@@ -357,14 +365,14 @@ public sealed partial class DesignWindow
         bool Shown() => _panels.Arrangement.Contains(PanelId.LensData);
         int? Sel() => _session.SelectedSurface is int i && i < _session.Document.System.Surfaces.Count ? i : null;
         // The lens table handles these keys itself: the menu shows them.
-        Item(m, "Insert Surface Before", lens.InsertBefore, "Ctrl+Shift+I", Shown);
-        Item(m, "Insert Surface After", lens.InsertAfter, "Ctrl+Alt+I", Shown);
-        Item(m, "Delete Surface", lens.DeleteSelected, "Ctrl+Del", () => Shown() && Sel() is int i && LensCommands.CanDelete(_session.Document.System, i));
+        Item(m, Loc.S("Shell_Lens_InsertBefore"), lens.InsertBefore, "Ctrl+Shift+I", Shown);
+        Item(m, Loc.S("Shell_Lens_InsertAfter"), lens.InsertAfter, "Ctrl+Alt+I", Shown);
+        Item(m, Loc.S("Shell_Lens_DeleteSurface"), lens.DeleteSelected, "Ctrl+Del", () => Shown() && Sel() is int i && LensCommands.CanDelete(_session.Document.System, i));
         Separator(m);
-        Item(m, "Make Aperture Stop", lens.MakeSelectedStop, "Ctrl+Shift+T", () => Shown() && Sel() is int i && LensCommands.CanMakeStop(_session.Document.System, i));
-        Item(m, "Toggle Variable", () => lens.ToggleVariable(), "Ctrl+Shift+V", () => Shown() && Sel() is > 0);
+        Item(m, Loc.S("Shell_Lens_MakeStop"), lens.MakeSelectedStop, "Ctrl+Shift+T", () => Shown() && Sel() is int i && LensCommands.CanMakeStop(_session.Document.System, i));
+        Item(m, Loc.S("Shell_Lens_ToggleVariable"), () => lens.ToggleVariable(), "Ctrl+Shift+V", () => Shown() && Sel() is > 0);
         Separator(m);
-        var replace = Sub("Replace with Sample");
+        var replace = Sub("Shell_Lens_ReplaceWithSample", "Replace with Sample");
         AddSamples(replace, ReplaceWithSample);
         _menus[m].Items.Add(replace);
     }
@@ -375,12 +383,12 @@ public sealed partial class DesignWindow
     {
         const string m = "Design";
         void Job(string text, string page, string glyph) => Item(m, text, () => { SetInspector(true); _session.ShowInspectorPage(page); }, glyph: glyph);
-        Job("Optimize…", "optimize", "\uE9D9");
-        Job("Glass Substitution…", "glass_substitution", "\uEB42");
-        Job("Tolerance…", "tolerance", "\uE9E9");
-        Job("Apply Solves…", "solves", "\uE943");
+        Job(Loc.S("Shell_Design_Optimize"), "optimize", "\uE9D9");
+        Job(Loc.S("Shell_Design_GlassSubstitution"), "glass_substitution", "\uEB42");
+        Job(Loc.S("Shell_Design_Tolerance"), "tolerance", "\uE9E9");
+        Job(Loc.S("Shell_Design_ApplySolves"), "solves", "\uE943");
         Separator(m);
-        Item(m, "Show Issues", ShowIssues, enabled: () => _session.Workspace.Issues.Count > 0);
+        Item(m, Loc.S("Shell_Design_ShowIssues"), ShowIssues, enabled: () => _session.Workspace.Issues.Count > 0);
     }
 
     // ---- Analysis ----
@@ -389,14 +397,14 @@ public sealed partial class DesignWindow
     {
         const string m = "Analysis";
         var ws = _session.Workspace;
-        _newPaneMenu = Sub("New Analysis Pane", "\uECCD");
+        _newPaneMenu = Sub("Shell_Analysis_NewPane", "New Analysis Pane", "\uECCD");
         _menus[m].Items.Add(_newPaneMenu);
         Separator(m);
-        Item(m, "Run Analyses", ws.RerunAll, "F5", () => ws.Panes.Count > 0 || arrHasLayout(), "\uE768");
-        Item(m, "Cancel Running", ws.CancelAll, "Ctrl+Esc", () => ws.IsBusy, "\uE711");
+        Item(m, Loc.S("Shell_Analysis_Run"), ws.RerunAll, "F5", () => ws.Panes.Count > 0 || arrHasLayout(), "\uE768");
+        Item(m, Loc.S("Shell_Analysis_CancelRunning"), ws.CancelAll, "Ctrl+Esc", () => ws.IsBusy, "\uE711");
         Separator(m);
-        var compute = Sub("Compute On");
-        Radios(compute.Items, "backend", [("Automatic", BackendPreference.Auto), ("CPU Reference (f64)", BackendPreference.CpuReference), ("GPU", BackendPreference.Gpu)],
+        var compute = Sub("Shell_Analysis_ComputeOn", "Compute On");
+        Radios(compute.Items, "backend", [(Loc.S("Shell_Analysis_BackendAuto"), BackendPreference.Auto), (Loc.S("Shell_Analysis_BackendCpu"), BackendPreference.CpuReference), ("GPU", BackendPreference.Gpu)],
             () => ws.Backend, b => ChooseBackend(new ExecutionSettings(b, b == BackendPreference.Gpu ? ws.GpuName : null))); // saved with the design like the picker's choice
         _menus[m].Items.Add(compute);
         bool arrHasLayout() => _panels.Arrangement.Contains(PanelId.Layout);
@@ -434,14 +442,14 @@ public sealed partial class DesignWindow
     void BuildHelpMenu()
     {
         const string m = "Help";
-        Item(m, "Keyboard Shortcuts", () => _ = ShowShortcutsAsync(), glyph: "\uE765");
+        Item(m, Loc.S("Shell_Help_Shortcuts"), () => _ = ShowShortcutsAsync(), glyph: "\uE765");
         FinalGroup(m);
-        Item(m, "About MKLight", () => _ = ShowAboutAsync(), glyph: "\uE946");
+        Item(m, Loc.S("Shell_Help_About"), () => _ = ShowAboutAsync(), glyph: "\uE946");
     }
 
     ContentDialog Dialog(string title, UIElement content) => new()
     {
-        Title = title, Content = content, CloseButtonText = "Close", DefaultButton = ContentDialogButton.Close,
+        Title = title, Content = content, CloseButtonText = Loc.S("Common_Close"), DefaultButton = ContentDialogButton.Close,
         XamlRoot = Root.XamlRoot, RequestedTheme = Root.ActualTheme,
     };
 
@@ -449,21 +457,23 @@ public sealed partial class DesignWindow
     {
         var info = _session.Workspace.Engine.Info;
         var text = new StackPanel { Spacing = 4 };
-        text.Children.Add(new TextBlock { Text = "Optical design, computed by the MKLight engine.", TextWrapping = TextWrapping.Wrap });
-        text.Children.Add(new TextBlock { Text = $"Version {App.AppVersion}", Margin = new Thickness(0, 8, 0, 0) });
-        text.Children.Add(new TextBlock { Text = $"Engine: {info.Name} {info.Version}", Foreground = ThemeLookup.Brush(Root, "TextFillColorSecondaryBrush") });
+        text.Children.Add(new TextBlock { Text = Loc.S("Shell_About_Tagline"), TextWrapping = TextWrapping.Wrap });
+        text.Children.Add(new TextBlock { Text = Loc.F("Shell_About_Version", App.AppVersion), Margin = new Thickness(0, 8, 0, 0) });
+        text.Children.Add(new TextBlock { Text = Loc.F("Shell_About_Engine", info.Name, info.Version), Foreground = ThemeLookup.Brush(Root, "TextFillColorSecondaryBrush") });
         await Dialog("MKLight", text).ShowAsync();
     }
 
     /// <summary>The window's keys, as the menus show them (and the lens table's).</summary>
-    static readonly (string Keys, string Command)[] Shortcuts =
+    static (string Keys, string Command)[] Shortcuts =>
     [
-        ("Ctrl+N", "Show Welcome Window"), ("Ctrl+O", "Open…"), ("Ctrl+S", "Save"), ("Ctrl+Shift+S", "Save As…"), ("Ctrl+W", "Close"),
-        ("Ctrl+Z", "Undo"), ("Ctrl+Y / Ctrl+Shift+Z", "Redo"),
-        ("Ctrl+Alt+P", "Show or hide the inspector"), ("Ctrl+0", "Fit the layout"),
-        ("Ctrl+Shift+I", "Insert surface before"), ("Ctrl+Alt+I", "Insert surface after"), ("Ctrl+Del", "Delete surface"),
-        ("Ctrl+Shift+T", "Make aperture stop"), ("Ctrl+Shift+V", "Toggle variable"),
-        ("F5", "Run analyses"), ("Ctrl+Esc", "Cancel running analyses"),
+        ("Ctrl+N", Loc.S("Shell_File_ShowWelcome")), ("Ctrl+O", Loc.S("Shell_File_Open")), ("Ctrl+S", Loc.S("Shell_File_Save")),
+        ("Ctrl+Shift+S", Loc.S("Shell_File_SaveAs")), ("Ctrl+W", Loc.S("Shell_File_Close")),
+        ("Ctrl+Z", Loc.S("Shell_Edit_Undo")), ("Ctrl+Y / Ctrl+Shift+Z", Loc.S("Shell_Edit_Redo")),
+        ("Ctrl+Alt+P", Loc.S("Shell_Shortcut_Inspector")), ("Ctrl+0", Loc.S("Shell_Shortcut_FitLayout")),
+        ("Ctrl+Shift+I", Loc.S("Shell_Shortcut_InsertBefore")), ("Ctrl+Alt+I", Loc.S("Shell_Shortcut_InsertAfter")),
+        ("Ctrl+Del", Loc.S("Shell_Shortcut_DeleteSurface")),
+        ("Ctrl+Shift+T", Loc.S("Shell_Shortcut_MakeStop")), ("Ctrl+Shift+V", Loc.S("Shell_Shortcut_ToggleVariable")),
+        ("F5", Loc.S("Shell_Shortcut_RunAnalyses")), ("Ctrl+Esc", Loc.S("Shell_Shortcut_CancelAnalyses")),
     ];
 
     async Task ShowShortcutsAsync()
@@ -483,7 +493,7 @@ public sealed partial class DesignWindow
             grid.Children.Add(k);
             grid.Children.Add(c);
         }
-        await Dialog("Keyboard Shortcuts", new ScrollViewer { Content = grid, MaxHeight = 480 }).ShowAsync();
+        await Dialog(Loc.S("Shell_Help_Shortcuts"), new ScrollViewer { Content = grid, MaxHeight = 480 }).ShowAsync();
     }
 
     // ---- Registered commands ----
@@ -491,7 +501,8 @@ public sealed partial class DesignWindow
     /// <summary>Commands features registered (<see cref="AppHooks.Commands"/>): in their menu above its final group, with their keys.</summary>
     void AddCommands()
     {
-        foreach (var group in AppHooks.Commands.GroupBy(c => c.Menu is { } name && _menus.ContainsKey(name) ? _menus[name].Title : "File"))
+        // Grouped by the menus' English names (the dictionary's keys; the titles are translated).
+        foreach (var group in AppHooks.Commands.GroupBy(c => c.Menu is { } name && _menus.ContainsKey(name) ? name : "File", StringComparer.OrdinalIgnoreCase))
         {
             var items = _menus[group.Key].Items;
             int at;
@@ -546,7 +557,8 @@ public sealed partial class DesignWindow
         foreach (var name in parts.Skip(1))
         {
             var sub = OpenPopups().SelectMany(p => p.Child is { } c ? Descendants<MenuFlyoutSubItem>(c) : [])
-                .LastOrDefault(s => string.Equals(s.Text, name, StringComparison.OrdinalIgnoreCase));
+                .LastOrDefault(s => string.Equals(s.Text, name, StringComparison.OrdinalIgnoreCase)
+                    || s.Tag is string english && string.Equals(english, name, StringComparison.OrdinalIgnoreCase));
             if (sub is null || FrameworkElementAutomationPeer.CreatePeerForElement(sub)?.GetPattern(PatternInterface.ExpandCollapse) is not IExpandCollapseProvider p) break;
             p.Expand();
             await Task.Delay(400);

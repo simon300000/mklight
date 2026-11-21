@@ -37,6 +37,9 @@ public sealed partial class DesignWindow : Window
     {
         _session = session;
         InitializeComponent();
+        ToolTipService.SetToolTip(AddAnalysisButton, Loc.S("Shell_Title_AddAnalysis"));
+        ToolTipService.SetToolTip(InspectorToggle, Loc.S("Shell_Title_InspectorToggle"));
+        SidebarSearch.PlaceholderText = Loc.S("Shell_Sidebar_Search");
         ExtendsContentIntoTitleBar = true;
         SetTitleBar(AppTitleBar);
         AppWindow.TitleBar.PreferredHeightOption = TitleBarHeightOption.Tall;
@@ -95,9 +98,9 @@ public sealed partial class DesignWindow : Window
         }
         var dialog = new ContentDialog
         {
-            Title = $"Save the changes to “{_session.Document.DisplayName}”?",
-            Content = "Your changes are lost if you don't save them.",
-            PrimaryButtonText = "Save", SecondaryButtonText = "Don't Save", CloseButtonText = "Cancel",
+            Title = Loc.F("Shell_Close_Title", _session.Document.DisplayName),
+            Content = Loc.S("Shell_Close_Message"),
+            PrimaryButtonText = Loc.S("Shell_File_Save"), SecondaryButtonText = Loc.S("Shell_Close_DontSave"), CloseButtonText = Loc.S("Common_Cancel"),
             DefaultButton = ContentDialogButton.Primary, XamlRoot = Root.XamlRoot, RequestedTheme = Root.ActualTheme,
         };
         var answer = await dialog.ShowAsync();
@@ -188,8 +191,8 @@ public sealed partial class DesignWindow : Window
         ToolTipService.SetToolTip(DocTitle, doc.Path);
         UndoButton.IsEnabled = doc.CanUndo;
         RedoButton.IsEnabled = doc.CanRedo;
-        ToolTipService.SetToolTip(UndoButton, doc.UndoActionName is { } u ? $"Undo {u} (Ctrl+Z)" : "Undo (Ctrl+Z)");
-        ToolTipService.SetToolTip(RedoButton, doc.RedoActionName is { } r ? $"Redo {r} (Ctrl+Y)" : "Redo (Ctrl+Y)");
+        ToolTipService.SetToolTip(UndoButton, doc.UndoActionName is { } u ? Loc.F("Shell_Title_UndoAction", u) : Loc.S("Shell_Title_Undo"));
+        ToolTipService.SetToolTip(RedoButton, doc.RedoActionName is { } r ? Loc.F("Shell_Title_RedoAction", r) : Loc.S("Shell_Title_Redo"));
     }
 
     void ShowToast(string message)
@@ -217,31 +220,31 @@ public sealed partial class DesignWindow : Window
         var q = _query.Trim().ToLowerInvariant();
         if (q.Length == 0)
         {
-            Nav.MenuItems.Add(new NavigationViewItemHeader { Content = "Design" });
-            Nav.MenuItems.Add(SidebarItem(":lens", "Lens Data", AnalysisCatalog.LensDataGlyph, "Show the lens data"));
-            Nav.MenuItems.Add(SidebarItem(":layout", "Layout", AnalysisCatalog.LayoutGlyph, "Show the layout"));
+            Nav.MenuItems.Add(new NavigationViewItemHeader { Content = Loc.S("Shell_Sidebar_Design") });
+            Nav.MenuItems.Add(SidebarItem(":lens", Loc.S("Shell_Sidebar_LensData"), AnalysisCatalog.LensDataGlyph, Loc.S("Shell_Sidebar_ShowLensDataTip")));
+            Nav.MenuItems.Add(SidebarItem(":layout", Loc.S("Shell_Sidebar_Layout"), AnalysisCatalog.LayoutGlyph, Loc.S("Shell_Sidebar_ShowLayoutTip")));
         }
         if (ws.Issues.Count > 0 && q.Length == 0)
         {
-            var issues = SidebarItem(":issues", "Issues", ws.Issues.Any(i => i.Severity == "error") ? AnalysisCatalog.ErrorGlyph : AnalysisCatalog.WarningGlyph, "Show the design's validation issues");
+            var issues = SidebarItem(":issues", Loc.S("Shell_Sidebar_Issues"), ws.Issues.Any(i => i.Severity == "error") ? AnalysisCatalog.ErrorGlyph : AnalysisCatalog.WarningGlyph, Loc.S("Shell_Sidebar_IssuesTip"));
             issues.InfoBadge = new InfoBadge { Value = ws.Issues.Count };
             Nav.MenuItems.Add(issues);
         }
         var list = ws.PaneAnalyses.Where(d => q.Length == 0 || AnalysisCatalog.Title(d.Name, d.Title).ToLowerInvariant().Contains(q)
-            || d.Name.Contains(q) || d.Description.ToLowerInvariant().Contains(q));
+            || d.Name.Contains(q) || d.Description.ToLowerInvariant().Contains(q) || EngineText.T(d.Description).ToLowerInvariant().Contains(q));
         foreach (var group in list.GroupBy(d => d.Category).OrderBy(g => AnalysisCatalog.CategoryRank(g.Key)).ThenBy(g => g.Key))
         {
             Nav.MenuItems.Add(new NavigationViewItemHeader { Content = AnalysisCatalog.CategoryTitle(group.Key) });
             foreach (var d in group.OrderBy(d => AnalysisCatalog.Title(d.Name, d.Title), StringComparer.Ordinal))
             {
                 var item = SidebarItem(d.Name, AnalysisCatalog.Title(d.Name, d.Title), AnalysisCatalog.Glyph(d.Name),
-                    d.Available ? d.Description : d.UnavailableReason ?? "Not available in this engine build");
+                    d.Available ? EngineText.T(d.Description) : d.UnavailableReason is { } why ? EngineText.T(why) : Loc.S("Shell_Sidebar_NotInBuild"));
                 if (!d.Available) item.Opacity = 0.45;
                 Nav.MenuItems.Add(item);
             }
         }
         if (Nav.MenuItems.Count == 0)
-            Nav.MenuItems.Add(new NavigationViewItemHeader { Content = $"No analyses match “{_query}”" });
+            Nav.MenuItems.Add(new NavigationViewItemHeader { Content = Loc.F("Shell_Sidebar_NoMatch", _query) });
         UpdateSidebarState();
         _buildingSidebar = false;
     }
@@ -255,9 +258,9 @@ public sealed partial class DesignWindow : Window
         if (tag is ":lens" or ":layout")
         {
             var panel = tag == ":lens" ? PanelId.LensData : PanelId.Layout;
-            var show = new MenuFlyoutItem { Text = "Show " + title };
+            var show = new MenuFlyoutItem { Text = Loc.S(tag == ":lens" ? "Shell_View_ShowLensData" : "Shell_View_ShowLayout") };
             show.Click += (_, _) => _panels.ShowPanel(panel.Key);
-            var hide = new MenuFlyoutItem { Text = "Hide " + title };
+            var hide = new MenuFlyoutItem { Text = Loc.S(tag == ":lens" ? "Shell_View_HideLensData" : "Shell_View_HideLayout") };
             hide.Click += (_, _) => _panels.Close(panel);
             menu.Items.Add(show);
             menu.Items.Add(hide);
@@ -271,7 +274,7 @@ public sealed partial class DesignWindow : Window
         }
         else if (!tag.StartsWith(':'))
         {
-            var open = new MenuFlyoutItem { Text = "Open in New Pane" };
+            var open = new MenuFlyoutItem { Text = Loc.S("Shell_Sidebar_OpenInNewPane") };
             open.Click += (_, _) => _session.Workspace.AddPane(tag, after: _session.Workspace.FocusedPane);
             menu.Items.Add(open);
             item.ContextFlyout = menu;
@@ -291,10 +294,12 @@ public sealed partial class DesignWindow : Window
             if (tag is ":lens" or ":layout")
             {
                 // A hidden panel's row is dimmed (a click shows it again).
-                var title = tag == ":lens" ? "lens data" : "layout";
-                var shown = _panels.Arrangement.Contains(tag == ":lens" ? PanelId.LensData : PanelId.Layout);
+                var lens = tag == ":lens";
+                var shown = _panels.Arrangement.Contains(lens ? PanelId.LensData : PanelId.Layout);
                 item.Opacity = shown ? 1 : 0.5;
-                ToolTipService.SetToolTip(item, shown ? $"Show the {title}" : $"The {title} is hidden: click to show it");
+                ToolTipService.SetToolTip(item, Loc.S(shown
+                    ? lens ? "Shell_Sidebar_ShowLensDataTip" : "Shell_Sidebar_ShowLayoutTip"
+                    : lens ? "Shell_Sidebar_LensDataHiddenTip" : "Shell_Sidebar_LayoutHiddenTip"));
                 continue;
             }
             if (tag.StartsWith(':')) continue;
@@ -316,7 +321,7 @@ public sealed partial class DesignWindow : Window
             case ":layout": _panels.ShowPanel("layout"); break;
             case ":issues": Status.ShowIssues(); break;
             default:
-                if (_session.Workspace.Descriptor(tag) is { Available: false } d) { ShowToast(d.UnavailableReason ?? "Not available."); break; }
+                if (_session.Workspace.Descriptor(tag) is { Available: false } d) { ShowToast(d.UnavailableReason is { } why ? EngineText.T(why) : Loc.S("Shell_Sidebar_NotAvailable")); break; }
                 var shift = Microsoft.UI.Input.InputKeyboardSource.GetKeyStateForCurrentThread(VirtualKey.Shift).HasFlag(global::Windows.UI.Core.CoreVirtualKeyStates.Down);
                 if (_session.Workspace.Panes.Count == 0 || shift) _session.Workspace.AddPane(tag, after: _session.Workspace.FocusedPane);
                 else _session.Workspace.Open(tag);
@@ -408,12 +413,12 @@ public sealed partial class DesignWindow : Window
             doc.Save(path, _session.Workspace.Engine.Info.Version, inUse);
             RecentFiles.Add(path);
             UpdateTitle();
-            ShowToast($"Saved {Path.GetFileName(path)}");
+            ShowToast(Loc.F("Shell_Toast_Saved", Path.GetFileName(path)));
             return true;
         }
         catch (Exception ex)
         {
-            ShowToast($"Could not save: {ex.Message}");
+            ShowToast(Loc.F("Shell_Toast_SaveFailed", ex.Message));
             return false;
         }
     }

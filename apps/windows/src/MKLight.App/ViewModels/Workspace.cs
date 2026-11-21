@@ -1,4 +1,5 @@
 using System.Text.Json.Nodes;
+using MKLight.App.Support;
 using MKLight.App.Views;
 using MKLight.Engine;
 using MKLight.Model;
@@ -267,7 +268,7 @@ public sealed class Workspace
                 catch (EngineException e) { error = e.Message; }
             }
             if (!loaded)
-                warnings.Add(error is null ? $"Glass catalog “{c.Name}” was not found ({c.Path ?? c.RelativePath ?? "no path"})." : $"{c.Name}: {error}");
+                warnings.Add(error is null ? Loc.F("Shell_Catalog_NotFound", c.Name, c.Path ?? c.RelativePath ?? Loc.S("Shell_Catalog_NoPath")) : $"{c.Name}: {error}");
         }
         CatalogWarnings = warnings;
         await CatalogsDidChangeAsync();
@@ -307,9 +308,9 @@ public sealed class Workspace
             if (!ReferenceEquals(system, _latest)) return;
             var messages = e.Issues.Count > 0 ? e.Issues : [e.Message];
             // The model mirror's structural problems name their surface.
-            var structural = system.StructuralIssues().Select(i => new IssueItem("error", i.Message, i.Surface is int s ? $"Surface {s}" : null, i.Surface));
+            var structural = system.StructuralIssues().Select(i => new IssueItem("error", EngineText.T(i.Message), i.Surface is int s ? Loc.F("Shell_Issue_SurfaceAt", s) : null, i.Surface));
             ModelErrors = messages;
-            _refusal = [.. messages.Select(m => new IssueItem("error", m, null)), .. structural];
+            _refusal = [.. messages.Select(m => new IssueItem("error", EngineText.T(m), null)), .. structural];
             UpdateIssuesBySurface();
             StateChanged?.Invoke();
             foreach (var p in AllPanes) p.RaiseChanged();
@@ -368,12 +369,12 @@ public sealed class Workspace
         {
             pane.Job?.Cancel();
             pane.Job = null; // the cancelled job's outcome must not replace this state
-            SetPhase(pane, PanePhase.Unavailable, d.UnavailableReason ?? "Not available in this engine build.");
+            SetPhase(pane, PanePhase.Unavailable, d.UnavailableReason is { } why ? EngineText.T(why) : Loc.S("Shell_Pane_NotInBuild"));
             return;
         }
         if (Descriptors.Count > 0 && Descriptor(pane.Analysis) is null)
         {
-            SetPhase(pane, PanePhase.Unavailable, $"This engine has no analysis named “{pane.Analysis}”.");
+            SetPhase(pane, PanePhase.Unavailable, Loc.F("Shell_Pane_NoSuchAnalysis", pane.Analysis));
             return;
         }
         pane.Job?.Cancel();
@@ -435,8 +436,13 @@ public sealed class Workspace
         foreach (var i in json?["issues"] as JsonArray ?? [])
         {
             var surface = i?["surface"].IntOrNull() is long s ? (int)s : (int?)null;
-            list.Add(new IssueItem(i?["severity"].StringOrNull() ?? "warning", i?["message"].StringOrNull() ?? "",
-                surface is int k ? $"Surface {k}" : null, surface));
+            // The message in the UI language: the engine text catalog's template for the code, else the English.
+            var args = i?["args"] is JsonObject a
+                ? a.Where(p => p.Value is JsonValue).ToDictionary(p => p.Key, p => p.Value!.ToString(), StringComparer.Ordinal)
+                : null;
+            var message = EngineText.Diagnostic(i?["code"].StringOrNull(), i?["message"].StringOrNull() ?? "", args);
+            list.Add(new IssueItem(i?["severity"].StringOrNull() ?? "warning", message,
+                surface is int k ? Loc.F("Shell_Issue_SurfaceAt", k) : null, surface));
         }
         _validation = list;
         UpdateIssuesBySurface();

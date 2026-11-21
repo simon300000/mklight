@@ -24,24 +24,24 @@
             <StackPanel Spacing="4">
                 <Image Source="ms-appx:///Assets/AppIcon.png" Width="84" Height="84" HorizontalAlignment="Left" Margin="-4,0,0,18" />
                 <TextBlock Text="MKLight" FontFamily="{StaticResource UIDisplayFont}" FontSize="34" FontWeight="SemiBold" />
-                <TextBlock Text="Sequential optical design" Style="{StaticResource SecondaryText}" FontSize="16" />
+                <TextBlock x:Uid="Shell_Welcome_Tagline" Style="{StaticResource SecondaryText}" FontSize="16" />
             </StackPanel>
             <StackPanel Grid.Row="1" Spacing="10" Margin="0,40,0,0">
                 <Button x:Name="NewButton" Style="{StaticResource AccentCapsuleButton}" HorizontalAlignment="Stretch" Height="40" CornerRadius="20" Click="OnNew">
                     <StackPanel Orientation="Horizontal" Spacing="10">
                         <FontIcon Glyph="&#xE710;" FontSize="14" />
-                        <TextBlock Text="New Design" FontSize="14" />
+                        <TextBlock x:Uid="Shell_Welcome_New" FontSize="14" />
                     </StackPanel>
                 </Button>
                 <Button Style="{StaticResource CapsuleButton}" HorizontalAlignment="Stretch" Height="40" CornerRadius="20" Click="OnOpen">
                     <StackPanel Orientation="Horizontal" Spacing="10">
                         <FontIcon Glyph="&#xE838;" FontSize="14" />
-                        <TextBlock Text="Open…" FontSize="14" />
+                        <TextBlock x:Uid="Shell_Welcome_Open" FontSize="14" />
                     </StackPanel>
                 </Button>
             </StackPanel>
             <StackPanel Grid.Row="2" Margin="0,32,0,0" Spacing="2" x:Name="RecentPanel">
-                <TextBlock Text="Recent" Style="{StaticResource ColumnHeaderText}" Margin="4,0,0,6" />
+                <TextBlock x:Uid="Shell_Welcome_Recent" Style="{StaticResource ColumnHeaderText}" Margin="4,0,0,6" />
             </StackPanel>
             <StackPanel Grid.Row="3" Spacing="10">
                 <!-- The drop hint: projects and lens files dropped anywhere on the window open. -->
@@ -51,7 +51,7 @@
                         <ColumnDefinition Width="*" />
                     </Grid.ColumnDefinitions>
                     <FontIcon Glyph="&#xE896;" FontSize="12" VerticalAlignment="Top" Margin="0,2,0,0" Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
-                    <TextBlock Grid.Column="1" Text="Drop a project or a .zmx or .seq lens file here to open it." Style="{StaticResource CaptionText}"
+                    <TextBlock Grid.Column="1" x:Uid="Shell_Welcome_DropHint" Style="{StaticResource CaptionText}"
                                TextWrapping="Wrap" TextTrimming="None" />
                 </Grid>
                 <StackPanel Orientation="Horizontal" Spacing="8">

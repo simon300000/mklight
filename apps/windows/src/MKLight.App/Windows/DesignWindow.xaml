@@ -47,19 +47,18 @@
         <!-- Undo, Redo, Add Analysis and the inspector toggle, trailing before the caption buttons (over the title
              bar, as its right header would sit too far left: its inset is taken in pixels, not in view units). -->
         <StackPanel x:Name="RightButtons" Orientation="Horizontal" Spacing="2" Margin="0,0,4,0" HorizontalAlignment="Right" VerticalAlignment="Center">
-            <Button x:Name="UndoButton" Style="{StaticResource CircleButton}" Content="&#xE7A7;" Click="OnUndo" ToolTipService.ToolTip="Undo (Ctrl+Z)" />
-            <Button x:Name="RedoButton" Style="{StaticResource CircleButton}" Content="&#xE7A6;" Click="OnRedo" ToolTipService.ToolTip="Redo (Ctrl+Y)" />
+            <Button x:Name="UndoButton" Style="{StaticResource CircleButton}" Content="&#xE7A7;" Click="OnUndo" />
+            <Button x:Name="RedoButton" Style="{StaticResource CircleButton}" Content="&#xE7A6;" Click="OnRedo" />
             <Border x:Name="UndoDivider" Width="1" Height="18" Margin="6,0" Background="{ThemeResource DividerBrush}" />
             <DropDownButton x:Name="AddAnalysisButton" Height="30" CornerRadius="15" Padding="9,0,7,0"
-                            Background="Transparent" BorderThickness="0"
-                            ToolTipService.ToolTip="Add an analysis pane">
+                            Background="Transparent" BorderThickness="0">
                 <FontIcon Glyph="&#xECCD;" FontSize="14" />
                 <DropDownButton.Flyout>
                     <MenuFlyout x:Name="AddAnalysisMenu" Placement="BottomEdgeAlignedRight" />
                 </DropDownButton.Flyout>
             </DropDownButton>
             <ToggleButton x:Name="InspectorToggle" Style="{StaticResource CircleToggleButton}" Content="&#xE89F;"
-                          IsChecked="True" Click="OnInspectorToggle" ToolTipService.ToolTip="Show or hide the inspector (Ctrl+Alt+P)" />
+                          IsChecked="True" Click="OnInspectorToggle" />
         </StackPanel>
 
         <!-- The status capsule, centred on the window (pointer input passes through the title bar there). -->
@@ -70,7 +69,7 @@
                         IsSettingsVisible="False" OpenPaneLength="248" IsTitleBarAutoPaddingEnabled="False"
                         SelectionChanged="OnSidebarSelectionChanged">
             <NavigationView.AutoSuggestBox>
-                <AutoSuggestBox x:Name="SidebarSearch" PlaceholderText="Analyses" QueryIcon="Find"
+                <AutoSuggestBox x:Name="SidebarSearch" QueryIcon="Find"
                                 TextChanged="OnSidebarSearchChanged" />
             </NavigationView.AutoSuggestBox>
 
