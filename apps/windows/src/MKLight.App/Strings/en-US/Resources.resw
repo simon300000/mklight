@@ -28,5 +28,228 @@
   <!-- area: Results -->
   <!-- end area: Results -->
   <!-- area: Glass -->
+  <data name="Glass_CatalogBar_BuiltinPath" xml:space="preserve"><value>Published Sellmeier data of a few common glasses</value></data>
+  <data name="Glass_CatalogBar_NewGlassTip" xml:space="preserve"><value>Add a glass to this catalog</value></data>
+  <data name="Glass_CatalogBar_NotesMany" xml:space="preserve"><value>{0} notes</value></data>
+  <data name="Glass_CatalogBar_NotesOne" xml:space="preserve"><value>{0} note</value></data>
+  <data name="Glass_CatalogBar_NotesTip" xml:space="preserve"><value>What the engine noticed while reading the file</value></data>
+  <data name="Glass_CatalogBar_Reload" xml:space="preserve"><value>Reload</value></data>
+  <data name="Glass_CatalogBar_ReloadTip" xml:space="preserve"><value>Read the catalog file again and list what changed</value></data>
+  <data name="Glass_CatalogBar_RemoveFromDesignTip" xml:space="preserve"><value>Remove the catalog from this design (undo with Ctrl+Z)</value></data>
+  <data name="Glass_CatalogBar_RemoveFromLibraryTip" xml:space="preserve"><value>Stop loading this catalog into every design (the file stays)</value></data>
+  <data name="Glass_Changes_Added" xml:space="preserve"><value>{0} added</value></data>
+  <data name="Glass_Changes_Changed" xml:space="preserve"><value>{0} changed</value></data>
+  <data name="Glass_Changes_None" xml:space="preserve"><value>No changes</value></data>
+  <data name="Glass_Changes_Removed" xml:space="preserve"><value>{0} removed</value></data>
+  <data name="Glass_Command_AddCatalogToDesign" xml:space="preserve"><value>Add Glass Catalog to Design…</value></data>
+  <data name="Glass_Command_GlassCatalogs" xml:space="preserve"><value>Glass Catalogs…</value></data>
+  <data name="Glass_Delete_Button" xml:space="preserve"><value>Delete</value></data>
+  <data name="Glass_Delete_Message" xml:space="preserve"><value>The glass is removed from {0}. Designs that use it will not find it.</value></data>
+  <data name="Glass_Delete_Title" xml:space="preserve"><value>Delete {0}?</value></data>
+  <data name="Glass_Detail_Acid" xml:space="preserve"><value>Acid (SR)</value></data>
+  <data name="Glass_Detail_Alkali" xml:space="preserve"><value>Alkali (AR)</value></data>
+  <data name="Glass_Detail_Availability" xml:space="preserve"><value>Availability</value></data>
+  <data name="Glass_Detail_CatalogLists" xml:space="preserve"><value>Catalog lists</value></data>
+  <data name="Glass_Detail_CatalogNotes" xml:space="preserve"><value>Catalog Notes</value></data>
+  <data name="Glass_Detail_CatalogStatus" xml:space="preserve"><value>Catalog ({0})</value></data>
+  <data name="Glass_Detail_Climate" xml:space="preserve"><value>Climate (CR)</value></data>
+  <data name="Glass_Detail_Density" xml:space="preserve"><value>Density</value></data>
+  <data name="Glass_Detail_Dispersion" xml:space="preserve"><value>Dispersion</value></data>
+  <data name="Glass_Detail_DpgfCatalog" xml:space="preserve"><value>ΔPg,F (catalog)</value></data>
+  <data name="Glass_Detail_DuplicateTip" xml:space="preserve"><value>Copy this glass into a user catalog to edit it</value></data>
+  <data name="Glass_Detail_Edit" xml:space="preserve"><value>Edit…</value></data>
+  <data name="Glass_Detail_Formula" xml:space="preserve"><value>Formula {0}: {1}</value></data>
+  <data name="Glass_Detail_GlassCode" xml:space="preserve"><value>Glass code</value></data>
+  <data name="Glass_Detail_Index" xml:space="preserve"><value>Index</value></data>
+  <data name="Glass_Detail_Lambda80" xml:space="preserve"><value>λ for 80 % (10 mm)</value></data>
+  <data name="Glass_Detail_MeltFrequency" xml:space="preserve"><value>Melt frequency</value></data>
+  <data name="Glass_Detail_ModelGlass" xml:space="preserve"><value>Model glass: nd {0}, Vd {1}, ΔPg,F {2}</value></data>
+  <data name="Glass_Detail_NoGlass" xml:space="preserve"><value>No Glass Selected</value></data>
+  <data name="Glass_Detail_NoGlassText" xml:space="preserve"><value>Select a glass to see its data and use it.</value></data>
+  <data name="Glass_Detail_NoNdVd" xml:space="preserve"><value>No nd or Vd: the d line (587.6 nm) is outside this glass's range.</value></data>
+  <data name="Glass_Detail_NoVd" xml:space="preserve"><value>No Vd: the F or C line is outside this glass's range.</value></data>
+  <data name="Glass_Detail_OpticalData" xml:space="preserve"><value>Optical Data</value></data>
+  <data name="Glass_Detail_OverriddenTip" xml:space="preserve"><value>Your setting (the catalog says otherwise)</value></data>
+  <data name="Glass_Detail_Phosphate" xml:space="preserve"><value>Phosphate (PR)</value></data>
+  <data name="Glass_Detail_PhysicalData" xml:space="preserve"><value>Physical and Catalog Data</value></data>
+  <data name="Glass_Detail_Range" xml:space="preserve"><value>Range</value></data>
+  <data name="Glass_Detail_RelativeCost" xml:space="preserve"><value>Relative cost</value></data>
+  <data name="Glass_Detail_SettingsNote" xml:space="preserve"><value>Your settings apply to every design and are not saved in projects. Glass substitution skips obsolete, special and excluded glasses by default.</value></data>
+  <data name="Glass_Detail_Stain" xml:space="preserve"><value>Stain (FR)</value></data>
+  <data name="Glass_Detail_Thermal" xml:space="preserve"><value>Thermal dn/dT data</value></data>
+  <data name="Glass_Detail_Transmission" xml:space="preserve"><value>Transmission data</value></data>
+  <data name="Glass_Detail_Unrestricted" xml:space="preserve"><value>unrestricted</value></data>
+  <data name="Glass_Detail_UseForSurface" xml:space="preserve"><value>Use for Surface</value></data>
+  <data name="Glass_Detail_UseInSubstitution" xml:space="preserve"><value>Use in glass substitution</value></data>
+  <data name="Glass_Detail_UseTip" xml:space="preserve"><value>Make the selected surface's following medium this glass</value></data>
+  <data name="Glass_Detail_Yes" xml:space="preserve"><value>yes</value></data>
+  <data name="Glass_Dialog_Done" xml:space="preserve"><value>Done</value></data>
+  <data name="Glass_Editor_Catalog" xml:space="preserve"><value>Catalog</value></data>
+  <data name="Glass_Editor_Comment" xml:space="preserve"><value>Comment</value></data>
+  <data name="Glass_Editor_Density" xml:space="preserve"><value>Density (g/cm³)</value></data>
+  <data name="Glass_Editor_DispersionFormula" xml:space="preserve"><value>Dispersion Formula</value></data>
+  <data name="Glass_Editor_EditTitle" xml:space="preserve"><value>Edit {0}</value></data>
+  <data name="Glass_Editor_EnterNumbers" xml:space="preserve"><value>Enter a number in every field.</value></data>
+  <data name="Glass_Editor_Exclude" xml:space="preserve"><value>Exclude from glass substitution</value></data>
+  <data name="Glass_Editor_Formula" xml:space="preserve"><value>Formula</value></data>
+  <data name="Glass_Editor_FormulaHint" xml:space="preserve"><value>AGF formula coefficients, λ in µm.</value></data>
+  <data name="Glass_Editor_LongestLambda" xml:space="preserve"><value>Longest λ (µm)</value></data>
+  <data name="Glass_Editor_ModelGlass" xml:space="preserve"><value>Model Glass</value></data>
+  <data name="Glass_Editor_ModelHint" xml:space="preserve"><value>A Cauchy fit through nd, the F–C dispersion and ΔPg,F from the normal line (valid 0.35–1.1 µm unless set below).</value></data>
+  <data name="Glass_Editor_NewTitle" xml:space="preserve"><value>New Glass</value></data>
+  <data name="Glass_Editor_NoGlassMade" xml:space="preserve"><value>The engine made no glass.</value></data>
+  <data name="Glass_Editor_PreviewNoVd" xml:space="preserve"><value>nd {0}    No Vd (the F or C line is outside the range)</value></data>
+  <data name="Glass_Editor_PreviewNone" xml:space="preserve"><value>No nd, Vd (the d line is outside the range)</value></data>
+  <data name="Glass_Editor_RangeAndData" xml:space="preserve"><value>Range and Data</value></data>
+  <data name="Glass_Editor_Save" xml:space="preserve"><value>Save</value></data>
+  <data name="Glass_Editor_ShortestLambda" xml:space="preserve"><value>Shortest λ (µm)</value></data>
+  <data name="Glass_Export_FileType" xml:space="preserve"><value>AGF glass catalog</value></data>
+  <data name="Glass_Export_NotExactIntro" xml:space="preserve"><value>AGF cannot express everything in this catalog:</value></data>
+  <data name="Glass_Export_NotExactTitle" xml:space="preserve"><value>Not Exported Exactly</value></data>
+  <data name="Glass_Filter_HideObsolete" xml:space="preserve"><value>Hide Obsolete</value></data>
+  <data name="Glass_Filter_PreferredOnly" xml:space="preserve"><value>Preferred Only</value></data>
+  <data name="Glass_Filter_Substitution" xml:space="preserve"><value>Usable in Glass Substitution</value></data>
+  <data name="Glass_Format_Any" xml:space="preserve"><value>any</value></data>
+  <data name="Glass_Ir_CatalogLists" xml:space="preserve"><value>Catalog lists {0}.</value></data>
+  <data name="Glass_Ir_NoD" xml:space="preserve"><value>The d line (587.6 nm) is outside this glass's range.</value></data>
+  <data name="Glass_Ir_NoFC" xml:space="preserve"><value>The F (486.1 nm) or C (656.3 nm) line is outside this glass's range.</value></data>
+  <data name="Glass_Label_Name" xml:space="preserve"><value>Name</value></data>
+  <data name="Glass_Label_Status" xml:space="preserve"><value>Status</value></data>
+  <data name="Glass_Library_Duplicate" xml:space="preserve"><value>There is already a catalog or glass named “{0}”.</value></data>
+  <data name="Glass_Library_FileTaken" xml:space="preserve"><value>The file “{0}” already holds the catalog “{1}”. Choose another name.</value></data>
+  <data name="Glass_Library_NoGlass" xml:space="preserve"><value>There is no glass named “{0}”.</value></data>
+  <data name="Glass_Library_NoName" xml:space="preserve"><value>The glass has no name.</value></data>
+  <data name="Glass_Library_NoUserCatalog" xml:space="preserve"><value>There is no user catalog named “{0}”.</value></data>
+  <data name="Glass_Library_NotCatalog" xml:space="preserve"><value>{0} is not a glass catalog.</value></data>
+  <data name="Glass_Library_ReadFailed" xml:space="preserve"><value>{0} could not be read.</value></data>
+  <data name="Glass_Library_SaveFailed" xml:space="preserve"><value>The glass library could not be saved ({0}).</value></data>
+  <data name="Glass_List_Comma" xml:space="preserve"><value>, </value></data>
+  <data name="Glass_List_Separator" xml:space="preserve"><value>; </value></data>
+  <data name="Glass_Menu_AllowSubstitution" xml:space="preserve"><value>Allow in Glass Substitution</value></data>
+  <data name="Glass_Menu_CatalogStatus" xml:space="preserve"><value>Catalog's Status</value></data>
+  <data name="Glass_Menu_CopyName" xml:space="preserve"><value>Copy Name</value></data>
+  <data name="Glass_Menu_Duplicate" xml:space="preserve"><value>Duplicate…</value></data>
+  <data name="Glass_Menu_DuplicateToUser" xml:space="preserve"><value>Duplicate to User Glasses…</value></data>
+  <data name="Glass_Menu_ExcludeSubstitution" xml:space="preserve"><value>Exclude from Glass Substitution</value></data>
+  <data name="Glass_Menu_ExportAgf" xml:space="preserve"><value>Export as AGF…</value></data>
+  <data name="Glass_Menu_MoveToRecycleBin" xml:space="preserve"><value>Move to Recycle Bin…</value></data>
+  <data name="Glass_Menu_NewGlass" xml:space="preserve"><value>New Glass…</value></data>
+  <data name="Glass_Menu_ReloadFromDisk" xml:space="preserve"><value>Reload from Disk</value></data>
+  <data name="Glass_Menu_RemoveFromDesign" xml:space="preserve"><value>Remove from Design</value></data>
+  <data name="Glass_Menu_RemoveFromLibrary" xml:space="preserve"><value>Remove from Library</value></data>
+  <data name="Glass_Menu_Rename" xml:space="preserve"><value>Rename…</value></data>
+  <data name="Glass_Menu_ResetToCatalog" xml:space="preserve"><value>Reset to Catalog Settings</value></data>
+  <data name="Glass_Menu_ShowInExplorer" xml:space="preserve"><value>Show in File Explorer</value></data>
+  <data name="Glass_Menu_UseForSelectedSurface" xml:space="preserve"><value>Use for Selected Surface</value></data>
+  <data name="Glass_Menu_UseForSurface" xml:space="preserve"><value>Use for Surface {0}</value></data>
+  <data name="Glass_Name_Builtin" xml:space="preserve"><value>“BUILTIN” is the built-in catalog's name.</value></data>
+  <data name="Glass_Name_Empty" xml:space="preserve"><value>Enter a name.</value></data>
+  <data name="Glass_Name_FileCharacter" xml:space="preserve"><value>The name contains a character a file name cannot have.</value></data>
+  <data name="Glass_Name_Separators" xml:space="preserve"><value>Names cannot contain “/”, “:” or “\”.</value></data>
+  <data name="Glass_Name_Spaces" xml:space="preserve"><value>Glass names cannot contain spaces (AGF names are single words).</value></data>
+  <data name="Glass_Notes_Intro" xml:space="preserve"><value>Read from {0}:</value></data>
+  <data name="Glass_Notes_Line" xml:space="preserve"><value>Line {0}: {1}</value></data>
+  <data name="Glass_Notes_ReadingMany" xml:space="preserve"><value>{0} notes while reading the file</value></data>
+  <data name="Glass_Notes_ReadingOne" xml:space="preserve"><value>{0} note while reading the file</value></data>
+  <data name="Glass_Notes_Title" xml:space="preserve"><value>{0}: Notes</value></data>
+  <data name="Glass_Origin_Builtin" xml:space="preserve"><value>Built into MKLight</value></data>
+  <data name="Glass_Origin_DesignOnly" xml:space="preserve"><value>This design only</value></data>
+  <data name="Glass_Origin_LibraryEveryDesign" xml:space="preserve"><value>Library · loaded into every design</value></data>
+  <data name="Glass_Origin_LibraryInDesign" xml:space="preserve"><value>Library · recorded in this design</value></data>
+  <data name="Glass_Origin_User" xml:space="preserve"><value>Your glasses · saved in the app's library</value></data>
+  <data name="Glass_Reload_Added" xml:space="preserve"><value>Added</value></data>
+  <data name="Glass_Reload_Changed" xml:space="preserve"><value>Changed</value></data>
+  <data name="Glass_Reload_Group" xml:space="preserve"><value>{0} ({1})</value></data>
+  <data name="Glass_Reload_NotesMany" xml:space="preserve"><value>{0} notes while reading the file: {1}</value></data>
+  <data name="Glass_Reload_NotesOne" xml:space="preserve"><value>{0} note while reading the file: {1}</value></data>
+  <data name="Glass_Reload_Removed" xml:space="preserve"><value>Removed</value></data>
+  <data name="Glass_Reload_Same" xml:space="preserve"><value>The file has the same glasses as before ({0}).</value></data>
+  <data name="Glass_Reload_Summary" xml:space="preserve"><value>{0}; {1} unchanged.</value></data>
+  <data name="Glass_Reload_Title" xml:space="preserve"><value>{0} Reloaded</value></data>
+  <data name="Glass_Rename_Button" xml:space="preserve"><value>Rename</value></data>
+  <data name="Glass_Rename_Note" xml:space="preserve"><value>Designs that name the catalog in a glass reference keep the old name.</value></data>
+  <data name="Glass_Rename_Title" xml:space="preserve"><value>Rename Catalog</value></data>
+  <data name="Glass_Scope_AllGlasses" xml:space="preserve"><value>All Glasses</value></data>
+  <data name="Glass_Scope_BuiltinGlasses" xml:space="preserve"><value>Built-in Glasses</value></data>
+  <data name="Glass_Sidebar_AddCatalog" xml:space="preserve"><value>Add Catalog…</value></data>
+  <data name="Glass_Sidebar_AddCatalogTip" xml:space="preserve"><value>Catalogs and folders in the library load into every design</value></data>
+  <data name="Glass_Sidebar_AddToDesign" xml:space="preserve"><value>Add Catalog to Design…</value></data>
+  <data name="Glass_Sidebar_AddToDesignTip" xml:space="preserve"><value>Record a catalog file in this design</value></data>
+  <data name="Glass_Sidebar_AllGlassesTip" xml:space="preserve"><value>Every glass the design can use</value></data>
+  <data name="Glass_Sidebar_BuiltinTip" xml:space="preserve"><value>The glasses built into MKLight</value></data>
+  <data name="Glass_Sidebar_Library" xml:space="preserve"><value>Library</value></data>
+  <data name="Glass_Sidebar_NewUserCatalog" xml:space="preserve"><value>New User Catalog</value></data>
+  <data name="Glass_Sidebar_NewUserCatalogTip" xml:space="preserve"><value>A catalog of your own glasses, kept with the library</value></data>
+  <data name="Glass_Sidebar_UserGlasses" xml:space="preserve"><value>User Glasses</value></data>
+  <data name="Glass_Status_Melt" xml:space="preserve"><value>Melt</value></data>
+  <data name="Glass_Status_Obsolete" xml:space="preserve"><value>Obsolete</value></data>
+  <data name="Glass_Status_Other" xml:space="preserve"><value>Status {0}</value></data>
+  <data name="Glass_Status_Preferred" xml:space="preserve"><value>Preferred</value></data>
+  <data name="Glass_Status_Special" xml:space="preserve"><value>Special</value></data>
+  <data name="Glass_Status_Standard" xml:space="preserve"><value>Standard</value></data>
+  <data name="Glass_Sync_Error" xml:space="preserve"><value>{0}: {1}</value></data>
+  <data name="Glass_Sync_Library" xml:space="preserve"><value>Glass library</value></data>
+  <data name="Glass_Sync_StatusSettings" xml:space="preserve"><value>Glass status settings: {0}</value></data>
+  <data name="Glass_Table_AddHint" xml:space="preserve"><value>Add a glass with New Glass.</value></data>
+  <data name="Glass_Table_CatalogTip" xml:space="preserve"><value>The catalog the glass comes from</value></data>
+  <data name="Glass_Table_Cost" xml:space="preserve"><value>Cost</value></data>
+  <data name="Glass_Table_Count" xml:space="preserve"><value>{0} of {1} glasses</value></data>
+  <data name="Glass_Table_DpgfTip" xml:space="preserve"><value>Anomalous partial dispersion</value></data>
+  <data name="Glass_Table_EmptyCatalog" xml:space="preserve"><value>This catalog has no glasses.</value></data>
+  <data name="Glass_Table_EmptyFiltered" xml:space="preserve"><value>{0} ({1}).</value></data>
+  <data name="Glass_Table_EmptySentence" xml:space="preserve"><value>{0}.</value></data>
+  <data name="Glass_Table_ExcludedMark.[using:Microsoft.UI.Xaml.Controls]ToolTipService.ToolTip" xml:space="preserve"><value>Excluded from glass substitution</value></data>
+  <data name="Glass_Table_Footer.Text" xml:space="preserve"><value>Double-click a glass to use it for the selected surface</value></data>
+  <data name="Glass_Table_Glass" xml:space="preserve"><value>Glass</value></data>
+  <data name="Glass_Table_GlassTip" xml:space="preserve"><value>Glass name</value></data>
+  <data name="Glass_Table_Lambda80Tip" xml:space="preserve"><value>Wavelength of 80 % internal transmittance through 10 mm</value></data>
+  <data name="Glass_Table_NdTip" xml:space="preserve"><value>Refractive index at the d line (587.6 nm)</value></data>
+  <data name="Glass_Table_NoGlasses" xml:space="preserve"><value>No Glasses</value></data>
+  <data name="Glass_Table_NoMatch" xml:space="preserve"><value>No glass matches “{0}”</value></data>
+  <data name="Glass_Table_NoPass" xml:space="preserve"><value>No glass passes the filter</value></data>
+  <data name="Glass_Table_NoResults" xml:space="preserve"><value>No Results</value></data>
+  <data name="Glass_Table_OverriddenMark.[using:Microsoft.UI.Xaml.Controls]ToolTipService.ToolTip" xml:space="preserve"><value>Your setting (the catalog says otherwise)</value></data>
+  <data name="Glass_Table_Range" xml:space="preserve"><value>Range µm</value></data>
+  <data name="Glass_Table_RangeTip" xml:space="preserve"><value>The wavelength range the dispersion formula is valid for</value></data>
+  <data name="Glass_Table_StatusTip" xml:space="preserve"><value>Availability (your setting or the catalog's)</value></data>
+  <data name="Glass_Table_TceTip" xml:space="preserve"><value>Thermal expansion, 10⁻⁶/K (−30…+70 °C)</value></data>
+  <data name="Glass_Table_VdTip" xml:space="preserve"><value>Abbe number</value></data>
+  <data name="Glass_Toast_AddedToDesign" xml:space="preserve"><value>Added {0} ({1} glasses) to the design.</value></data>
+  <data name="Glass_Toast_AddedToLibrary" xml:space="preserve"><value>Added {0} to the library.</value></data>
+  <data name="Glass_Toast_AddedToTarget" xml:space="preserve"><value>Added {0} ({1} glasses) to {2}.</value></data>
+  <data name="Glass_Toast_AlreadyInLibrary" xml:space="preserve"><value>Already in the library.</value></data>
+  <data name="Glass_Toast_Deleted" xml:space="preserve"><value>Deleted {0}.</value></data>
+  <data name="Glass_Toast_ExportFailed" xml:space="preserve"><value>Could not export: {0}</value></data>
+  <data name="Glass_Toast_Exported" xml:space="preserve"><value>Exported {0} to {1}.</value></data>
+  <data name="Glass_Toast_LoadFailed" xml:space="preserve"><value>{0} could not be loaded: {1}</value></data>
+  <data name="Glass_Toast_MovedToRecycleBin" xml:space="preserve"><value>Moved {0} to the Recycle Bin.</value></data>
+  <data name="Glass_Toast_NotRegistered" xml:space="preserve"><value>{0} is not a registered library file.</value></data>
+  <data name="Glass_Toast_ReloadFailed" xml:space="preserve"><value>{0} could not be reloaded: {1}</value></data>
+  <data name="Glass_Toast_Reloaded" xml:space="preserve"><value>{0} reloaded: {1}.</value></data>
+  <data name="Glass_Toast_RemovedFolder" xml:space="preserve"><value>Removed the folder {0} from the library.</value></data>
+  <data name="Glass_Toast_RemovedFromDesign" xml:space="preserve"><value>Removed {0} from {1}. Undo in the design window to restore it.</value></data>
+  <data name="Glass_Toast_RemovedFromLibrary" xml:space="preserve"><value>Removed {0} from the library.</value></data>
+  <data name="Glass_Toast_Saved" xml:space="preserve"><value>Saved {0} in {1}.</value></data>
+  <data name="Glass_Toast_Used" xml:space="preserve"><value>Surface {0} is followed by {1} ({2}).</value></data>
+  <data name="Glass_Trash_Button" xml:space="preserve"><value>Move to Recycle Bin</value></data>
+  <data name="Glass_Trash_Message" xml:space="preserve"><value>Designs that use its glasses will not find them.</value></data>
+  <data name="Glass_Trash_Title" xml:space="preserve"><value>Move “{0}” to the Recycle Bin?</value></data>
+  <data name="Glass_Undo_AddCatalog" xml:space="preserve"><value>Add Glass Catalog</value></data>
+  <data name="Glass_Undo_ChangeMaterial" xml:space="preserve"><value>Change Material</value></data>
+  <data name="Glass_Undo_RemoveCatalog" xml:space="preserve"><value>Remove Glass Catalog</value></data>
+  <data name="Glass_Use_OpenDesign" xml:space="preserve"><value>Open a design to use a glass in it.</value></data>
+  <data name="Glass_Use_SelectSurface" xml:space="preserve"><value>Select a surface in the lens data to use a glass after it.</value></data>
+  <data name="Glass_Value_None" xml:space="preserve"><value>none</value></data>
+  <data name="Glass_Window_AddButton.[using:Microsoft.UI.Xaml.Controls]ToolTipService.ToolTip" xml:space="preserve"><value>Add a glass or a catalog</value></data>
+  <data name="Glass_Window_AddLibraryFilesItem.Text" xml:space="preserve"><value>Add Catalog to Library…</value></data>
+  <data name="Glass_Window_AddLibraryFolderItem.Text" xml:space="preserve"><value>Add Folder to Library…</value></data>
+  <data name="Glass_Window_AddToDesignItem.Text" xml:space="preserve"><value>Add Glass Catalog to Design…</value></data>
+  <data name="Glass_Window_FilterButton.[using:Microsoft.UI.Xaml.Controls]ToolTipService.ToolTip" xml:space="preserve"><value>Show only some glasses</value></data>
+  <data name="Glass_Window_NewGlassItem.Text" xml:space="preserve"><value>New Glass…</value></data>
+  <data name="Glass_Window_NewUserCatalogItem.Text" xml:space="preserve"><value>New User Catalog</value></data>
+  <data name="Glass_Window_SearchBox.PlaceholderText" xml:space="preserve"><value>Search glasses</value></data>
+  <data name="Glass_Window_SubtitleDesign" xml:space="preserve"><value>Glasses of {0}</value></data>
+  <data name="Glass_Window_Title" xml:space="preserve"><value>Glass Catalogs — MKLight</value></data>
+  <data name="Glass_Window_TitleBar.Title" xml:space="preserve"><value>Glass Catalogs</value></data>
   <!-- end area: Glass -->
 </root>

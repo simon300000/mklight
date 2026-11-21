@@ -3,6 +3,7 @@ using Microsoft.UI.Xaml.Controls;
 using MKLight.App.Support;
 using MKLight.App.ViewModels;
 using MKLight.Engine;
+using MKLight.Model;
 
 namespace MKLight.App.Views.Glass;
 
@@ -24,8 +25,8 @@ public static class GlassDialogs
         p.Children.Add(new TextBlock
         {
             Text = changes.IsEmpty
-                ? $"The file has the same glasses as before ({changes.Unchanged})."
-                : $"{changes.Summary}; {changes.Unchanged} unchanged.",
+                ? Loc.F("Glass_Reload_Same", changes.Unchanged)
+                : Loc.F("Glass_Reload_Summary", GlassFormat.ChangeSummary(changes), changes.Unchanged),
             Style = S("SecondaryText"), TextWrapping = TextWrapping.Wrap,
         });
         if (!changes.IsEmpty)
@@ -38,7 +39,7 @@ public static class GlassDialogs
                 var g = new StackPanel { Spacing = 2 };
                 var head = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 6, Margin = new Thickness(0, 0, 0, 4) };
                 head.Children.Add(new FontIcon { Glyph = glyph, FontSize = 12, Foreground = ThemeLookup.Brush(owner, "TextFillColorSecondaryBrush") });
-                head.Children.Add(new TextBlock { Text = $"{title} ({entries.Count})", Style = S("ColumnHeaderText") });
+                head.Children.Add(new TextBlock { Text = Loc.F("Glass_Reload_Group", title, entries.Count), Style = S("ColumnHeaderText") });
                 g.Children.Add(head);
                 foreach (var (name, detail) in entries)
                 {
@@ -49,9 +50,9 @@ public static class GlassDialogs
                 }
                 list.Children.Add(g);
             }
-            Group("Added", "\uE710", changes.Added.Select(n => (n, (string?)null)));
-            Group("Removed", "\uE738", changes.Removed.Select(n => (n, (string?)null)));
-            Group("Changed", "\uE70F", changes.Changed.Select(c => (c.Name, (string?)GlassFormat.Describe(c))));
+            Group(Loc.S("Glass_Reload_Added"), "\uE710", changes.Added.Select(n => (n, (string?)null)));
+            Group(Loc.S("Glass_Reload_Removed"), "\uE738", changes.Removed.Select(n => (n, (string?)null)));
+            Group(Loc.S("Glass_Reload_Changed"), "\uE70F", changes.Changed.Select(c => (c.Name, (string?)GlassFormat.Describe(c))));
             p.Children.Add(new Border
             {
                 Background = ThemeLookup.Brush(owner, "CardBackgroundFillColorDefaultBrush"),
@@ -63,26 +64,35 @@ public static class GlassDialogs
         if (changes.Warnings.Count > 0)
             p.Children.Add(new TextBlock
             {
-                Text = $"{changes.Warnings.Count} note{(changes.Warnings.Count == 1 ? "" : "s")} while reading the file: " + string.Join("; ", changes.Warnings.Take(3).Select(w => w.Message)) + (changes.Warnings.Count > 3 ? "; …" : ""),
+                Text = changes.Warnings.Count == 1
+                    ? Loc.F("Glass_Reload_NotesOne", changes.Warnings.Count, FirstNotes(changes))
+                    : Loc.F("Glass_Reload_NotesMany", changes.Warnings.Count, FirstNotes(changes)),
                 Style = S("CaptionText"), TextWrapping = TextWrapping.Wrap,
             });
-        var d = Dialog(owner, $"{changes.Catalog} Reloaded", p);
-        d.CloseButtonText = "Done";
+        var d = Dialog(owner, Loc.F("Glass_Reload_Title", changes.Catalog), p);
+        d.CloseButtonText = Loc.S("Glass_Dialog_Done");
         d.DefaultButton = ContentDialogButton.Close;
         await d.ShowAsync();
     }
 
-    /// <summary>Asks for a new name; null when cancelled.</summary>
-    public static async Task<string?> AskNameAsync(FrameworkElement owner, string title, string current, string note, string action = "Rename")
+    /// <summary>The first three load notes, joined (an ellipsis when there are more).</summary>
+    static string FirstNotes(CatalogChanges changes)
     {
-        var box = new TextBox { Header = "Name", Text = current };
+        var separator = Loc.S("Glass_List_Separator");
+        return string.Join(separator, changes.Warnings.Take(3).Select(w => EngineText.T(w.Message))) + (changes.Warnings.Count > 3 ? separator + "…" : "");
+    }
+
+    /// <summary>Asks for a new name; null when cancelled.</summary>
+    public static async Task<string?> AskNameAsync(FrameworkElement owner, string title, string current, string note, string? action = null)
+    {
+        var box = new TextBox { Header = Loc.S("Glass_Label_Name"), Text = current };
         box.SelectAll();
         var p = new StackPanel { Spacing = 10, Width = 360 };
         p.Children.Add(box);
         p.Children.Add(new TextBlock { Text = note, Style = S("CaptionText"), TextWrapping = TextWrapping.Wrap });
         var d = Dialog(owner, title, p);
-        d.PrimaryButtonText = action;
-        d.CloseButtonText = "Cancel";
+        d.PrimaryButtonText = action ?? Loc.S("Glass_Rename_Button");
+        d.CloseButtonText = Loc.S("Common_Cancel");
         box.TextChanged += (_, _) => d.IsPrimaryButtonEnabled = GlassLibrary.NameProblem(box.Text) is null;
         return await d.ShowAsync() == ContentDialogResult.Primary ? box.Text.Trim() : null;
     }
@@ -92,7 +102,7 @@ public static class GlassDialogs
     {
         var d = Dialog(owner, title, new TextBlock { Text = message, Style = S("BodyText"), TextWrapping = TextWrapping.Wrap, Width = 360 });
         d.PrimaryButtonText = action;
-        d.CloseButtonText = "Cancel";
+        d.CloseButtonText = Loc.S("Common_Cancel");
         d.DefaultButton = ContentDialogButton.Close;
         return await d.ShowAsync() == ContentDialogResult.Primary;
     }
@@ -106,7 +116,7 @@ public static class GlassDialogs
         foreach (var l in lines) list.Children.Add(new TextBlock { Text = l, Style = S("BodyText"), TextWrapping = TextWrapping.Wrap });
         p.Children.Add(new ScrollViewer { Content = list, MaxHeight = 360 });
         var d = Dialog(owner, title, p);
-        d.CloseButtonText = "Done";
+        d.CloseButtonText = Loc.S("Glass_Dialog_Done");
         d.DefaultButton = ContentDialogButton.Close;
         await d.ShowAsync();
     }

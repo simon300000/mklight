@@ -1,6 +1,7 @@
 using System.Globalization;
 using System.Text.Json;
 using System.Text.Json.Nodes;
+using MKLight.App.Support;
 using MKLight.Engine;
 
 namespace MKLight.App.ViewModels;
@@ -181,11 +182,11 @@ public sealed class GlassLibrary
     public static string? NameProblem(string name, bool glass = false)
     {
         var n = name.Trim();
-        if (n.Length == 0) return "Enter a name.";
-        if (glass && n.Any(char.IsWhiteSpace)) return "Glass names cannot contain spaces (AGF names are single words).";
-        if (n.IndexOfAny(['/', ':', '\\']) >= 0) return "Names cannot contain “/”, “:” or “\\”.";
-        if (!glass && n.IndexOfAny(Path.GetInvalidFileNameChars()) >= 0) return "The name contains a character a file name cannot have.";
-        if (!glass && string.Equals(n, "BUILTIN", StringComparison.OrdinalIgnoreCase)) return "“BUILTIN” is the built-in catalog's name.";
+        if (n.Length == 0) return Loc.S("Glass_Name_Empty");
+        if (glass && n.Any(char.IsWhiteSpace)) return Loc.S("Glass_Name_Spaces");
+        if (n.IndexOfAny(['/', ':', '\\']) >= 0) return Loc.S("Glass_Name_Separators");
+        if (!glass && n.IndexOfAny(Path.GetInvalidFileNameChars()) >= 0) return Loc.S("Glass_Name_FileCharacter");
+        if (!glass && string.Equals(n, "BUILTIN", StringComparison.OrdinalIgnoreCase)) return Loc.S("Glass_Name_Builtin");
         return null;
     }
 
@@ -217,7 +218,7 @@ public sealed class GlassLibrary
     public void RenameUserCatalog(string oldName, string rawName)
     {
         var name = rawName.Trim();
-        var c = UserCatalogNamed(oldName) ?? throw new LibraryException($"There is no user catalog named “{oldName}”.");
+        var c = UserCatalogNamed(oldName) ?? throw new LibraryException(Loc.F("Glass_Library_NoUserCatalog", oldName));
         if (name == c.Name) return;
         if (NameProblem(name) is { } why) throw new LibraryException(why);
         if (UserCatalogNamed(name) is { } other && other.FilePath != c.FilePath) throw Duplicate(name);
@@ -244,13 +245,13 @@ public sealed class GlassLibrary
     void CheckFileFree(string path, UserCatalog? owner)
     {
         if (_userCatalogs.FirstOrDefault(u => u != owner && string.Equals(u.FilePath, path, StringComparison.OrdinalIgnoreCase)) is { } other)
-            throw new LibraryException($"The file “{Path.GetFileName(path)}” already holds the catalog “{other.Name}”. Choose another name.");
+            throw new LibraryException(Loc.F("Glass_Library_FileTaken", Path.GetFileName(path), other.Name));
     }
 
     /// <summary>Moves a user catalog's file to the Recycle Bin (deletes it when that is not possible).</summary>
     public void DeleteUserCatalog(string name)
     {
-        var c = UserCatalogNamed(name) ?? throw new LibraryException($"There is no user catalog named “{name}”.");
+        var c = UserCatalogNamed(name) ?? throw new LibraryException(Loc.F("Glass_Library_NoUserCatalog", name));
         try { (Trash ?? File.Delete)(c.FilePath); }
         catch (Exception) when (Trash is not null) { File.Delete(c.FilePath); }
         _userCatalogs.Remove(c);
@@ -264,9 +265,9 @@ public sealed class GlassLibrary
     /// </summary>
     public void PutGlass(JsonObject glass, string catalog, string? replacing = null)
     {
-        var name = glass["name"].StringOrNull() ?? throw new LibraryException("The glass has no name.");
+        var name = glass["name"].StringOrNull() ?? throw new LibraryException(Loc.S("Glass_Library_NoName"));
         if (NameProblem(name, glass: true) is { } why) throw new LibraryException(why);
-        var c = UserCatalogNamed(catalog) ?? throw new LibraryException($"There is no user catalog named “{catalog}”.");
+        var c = UserCatalogNamed(catalog) ?? throw new LibraryException(Loc.F("Glass_Library_NoUserCatalog", catalog));
         var glasses = (JsonObject)c.Glasses.DeepClone();
         var clash = glasses.Select(kv => kv.Key).FirstOrDefault(k => string.Equals(k, name, StringComparison.OrdinalIgnoreCase));
         if (clash is not null && !string.Equals(clash, replacing ?? "", StringComparison.OrdinalIgnoreCase)) throw Duplicate(name);
@@ -285,10 +286,10 @@ public sealed class GlassLibrary
 
     public void DeleteGlass(string name, string catalog)
     {
-        var c = UserCatalogNamed(catalog) ?? throw new LibraryException($"There is no user catalog named “{catalog}”.");
+        var c = UserCatalogNamed(catalog) ?? throw new LibraryException(Loc.F("Glass_Library_NoUserCatalog", catalog));
         var glasses = (JsonObject)c.Glasses.DeepClone();
         var key = glasses.Select(kv => kv.Key).FirstOrDefault(k => string.Equals(k, name, StringComparison.OrdinalIgnoreCase))
-            ?? throw new LibraryException($"There is no glass named “{name}”.");
+            ?? throw new LibraryException(Loc.F("Glass_Library_NoGlass", name));
         glasses.Remove(key);
         Replace(c, c with { Glasses = glasses });
         _overrides.RemoveAll(o => o.Matches(c.Name, name));
@@ -320,7 +321,7 @@ public sealed class GlassLibrary
 
     void SortUserCatalogs() => _userCatalogs.Sort((a, b) => NameOrder.Compare(a.Name, b.Name));
 
-    static LibraryException Duplicate(string name) => new($"There is already a catalog or glass named “{name}”.");
+    static LibraryException Duplicate(string name) => new(Loc.F("Glass_Library_Duplicate", name));
 
     // ---- Persistence ----
 
@@ -348,7 +349,7 @@ public sealed class GlassLibrary
         }
         catch (Exception e) when (e is IOException or UnauthorizedAccessException)
         {
-            _problems.Add($"The glass library could not be saved ({e.Message}).");
+            _problems.Add(Loc.F("Glass_Library_SaveFailed", e.Message));
         }
     }
 
@@ -378,7 +379,7 @@ public sealed class GlassLibrary
             }
             catch (Exception e) when (e is JsonException or IOException or UnauthorizedAccessException)
             {
-                _problems.Add($"{Path.GetFileName(SettingsPath)} could not be read.");
+                _problems.Add(Loc.F("Glass_Library_ReadFailed", Path.GetFileName(SettingsPath)));
             }
         }
         if (System.IO.Directory.Exists(UserGlassesDirectory))
@@ -393,7 +394,7 @@ public sealed class GlassLibrary
                 }
                 catch (Exception e) when (e is JsonException or IOException or UnauthorizedAccessException)
                 {
-                    _problems.Add($"{Path.GetFileName(file)} is not a glass catalog.");
+                    _problems.Add(Loc.F("Glass_Library_NotCatalog", Path.GetFileName(file)));
                 }
             }
             SortUserCatalogs();

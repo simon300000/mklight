@@ -28,5 +28,228 @@
   <!-- area: Results -->
   <!-- end area: Results -->
   <!-- area: Glass -->
+  <data name="Glass_CatalogBar_BuiltinPath" xml:space="preserve"><value>几种常用玻璃已发布的 Sellmeier 数据</value></data>
+  <data name="Glass_CatalogBar_NewGlassTip" xml:space="preserve"><value>向此玻璃库添加玻璃</value></data>
+  <data name="Glass_CatalogBar_NotesMany" xml:space="preserve"><value>{0} 条提示</value></data>
+  <data name="Glass_CatalogBar_NotesOne" xml:space="preserve"><value>{0} 条提示</value></data>
+  <data name="Glass_CatalogBar_NotesTip" xml:space="preserve"><value>引擎读取文件时发现的问题</value></data>
+  <data name="Glass_CatalogBar_Reload" xml:space="preserve"><value>重新加载</value></data>
+  <data name="Glass_CatalogBar_ReloadTip" xml:space="preserve"><value>重新读取玻璃库文件并列出变更</value></data>
+  <data name="Glass_CatalogBar_RemoveFromDesignTip" xml:space="preserve"><value>从此设计中移除玻璃库（可用 Ctrl+Z 撤销）</value></data>
+  <data name="Glass_CatalogBar_RemoveFromLibraryTip" xml:space="preserve"><value>不再将此玻璃库加载到每个设计中（文件保留）</value></data>
+  <data name="Glass_Changes_Added" xml:space="preserve"><value>新增 {0} 种</value></data>
+  <data name="Glass_Changes_Changed" xml:space="preserve"><value>变更 {0} 种</value></data>
+  <data name="Glass_Changes_None" xml:space="preserve"><value>无变更</value></data>
+  <data name="Glass_Changes_Removed" xml:space="preserve"><value>移除 {0} 种</value></data>
+  <data name="Glass_Command_AddCatalogToDesign" xml:space="preserve"><value>添加玻璃库到设计…</value></data>
+  <data name="Glass_Command_GlassCatalogs" xml:space="preserve"><value>玻璃库…</value></data>
+  <data name="Glass_Delete_Button" xml:space="preserve"><value>删除</value></data>
+  <data name="Glass_Delete_Message" xml:space="preserve"><value>该玻璃将从 {0} 中删除。使用它的设计将找不到它。</value></data>
+  <data name="Glass_Delete_Title" xml:space="preserve"><value>删除 {0}？</value></data>
+  <data name="Glass_Detail_Acid" xml:space="preserve"><value>耐酸性（SR）</value></data>
+  <data name="Glass_Detail_Alkali" xml:space="preserve"><value>耐碱性（AR）</value></data>
+  <data name="Glass_Detail_Availability" xml:space="preserve"><value>供货状态</value></data>
+  <data name="Glass_Detail_CatalogLists" xml:space="preserve"><value>玻璃库所列值</value></data>
+  <data name="Glass_Detail_CatalogNotes" xml:space="preserve"><value>玻璃库提示</value></data>
+  <data name="Glass_Detail_CatalogStatus" xml:space="preserve"><value>玻璃库（{0}）</value></data>
+  <data name="Glass_Detail_Climate" xml:space="preserve"><value>耐气候性（CR）</value></data>
+  <data name="Glass_Detail_Density" xml:space="preserve"><value>密度</value></data>
+  <data name="Glass_Detail_Dispersion" xml:space="preserve"><value>色散</value></data>
+  <data name="Glass_Detail_DpgfCatalog" xml:space="preserve"><value>ΔPg,F（玻璃库）</value></data>
+  <data name="Glass_Detail_DuplicateTip" xml:space="preserve"><value>将此玻璃复制到用户玻璃库以便编辑</value></data>
+  <data name="Glass_Detail_Edit" xml:space="preserve"><value>编辑…</value></data>
+  <data name="Glass_Detail_Formula" xml:space="preserve"><value>公式 {0}：{1}</value></data>
+  <data name="Glass_Detail_GlassCode" xml:space="preserve"><value>玻璃代码</value></data>
+  <data name="Glass_Detail_Index" xml:space="preserve"><value>折射率</value></data>
+  <data name="Glass_Detail_Lambda80" xml:space="preserve"><value>80 % 透过率的 λ（10 mm）</value></data>
+  <data name="Glass_Detail_MeltFrequency" xml:space="preserve"><value>熔炼频率</value></data>
+  <data name="Glass_Detail_ModelGlass" xml:space="preserve"><value>模型玻璃：nd {0}，Vd {1}，ΔPg,F {2}</value></data>
+  <data name="Glass_Detail_NoGlass" xml:space="preserve"><value>未选择玻璃</value></data>
+  <data name="Glass_Detail_NoGlassText" xml:space="preserve"><value>选择一种玻璃以查看其数据并使用它。</value></data>
+  <data name="Glass_Detail_NoNdVd" xml:space="preserve"><value>无 nd 或 Vd：d 线（587.6 nm）超出此玻璃的波长范围。</value></data>
+  <data name="Glass_Detail_NoVd" xml:space="preserve"><value>无 Vd：F 线或 C 线超出此玻璃的波长范围。</value></data>
+  <data name="Glass_Detail_OpticalData" xml:space="preserve"><value>光学数据</value></data>
+  <data name="Glass_Detail_OverriddenTip" xml:space="preserve"><value>您的设置（与玻璃库不同）</value></data>
+  <data name="Glass_Detail_Phosphate" xml:space="preserve"><value>耐磷酸盐性（PR）</value></data>
+  <data name="Glass_Detail_PhysicalData" xml:space="preserve"><value>物理与玻璃库数据</value></data>
+  <data name="Glass_Detail_Range" xml:space="preserve"><value>范围</value></data>
+  <data name="Glass_Detail_RelativeCost" xml:space="preserve"><value>相对价格</value></data>
+  <data name="Glass_Detail_SettingsNote" xml:space="preserve"><value>您的设置适用于所有设计，不保存在项目中。玻璃替换默认跳过停产、特殊和已排除的玻璃。</value></data>
+  <data name="Glass_Detail_Stain" xml:space="preserve"><value>耐污染性（FR）</value></data>
+  <data name="Glass_Detail_Thermal" xml:space="preserve"><value>热 dn/dT 数据</value></data>
+  <data name="Glass_Detail_Transmission" xml:space="preserve"><value>透过率数据</value></data>
+  <data name="Glass_Detail_Unrestricted" xml:space="preserve"><value>不限</value></data>
+  <data name="Glass_Detail_UseForSurface" xml:space="preserve"><value>用于面</value></data>
+  <data name="Glass_Detail_UseInSubstitution" xml:space="preserve"><value>用于玻璃替换</value></data>
+  <data name="Glass_Detail_UseTip" xml:space="preserve"><value>将所选面之后的介质设为此玻璃</value></data>
+  <data name="Glass_Detail_Yes" xml:space="preserve"><value>有</value></data>
+  <data name="Glass_Dialog_Done" xml:space="preserve"><value>完成</value></data>
+  <data name="Glass_Editor_Catalog" xml:space="preserve"><value>玻璃库</value></data>
+  <data name="Glass_Editor_Comment" xml:space="preserve"><value>备注</value></data>
+  <data name="Glass_Editor_Density" xml:space="preserve"><value>密度（g/cm³）</value></data>
+  <data name="Glass_Editor_DispersionFormula" xml:space="preserve"><value>色散公式</value></data>
+  <data name="Glass_Editor_EditTitle" xml:space="preserve"><value>编辑 {0}</value></data>
+  <data name="Glass_Editor_EnterNumbers" xml:space="preserve"><value>请在每个字段中输入数字。</value></data>
+  <data name="Glass_Editor_Exclude" xml:space="preserve"><value>不参与玻璃替换</value></data>
+  <data name="Glass_Editor_Formula" xml:space="preserve"><value>公式</value></data>
+  <data name="Glass_Editor_FormulaHint" xml:space="preserve"><value>AGF 公式系数，λ 以 µm 为单位。</value></data>
+  <data name="Glass_Editor_LongestLambda" xml:space="preserve"><value>最长 λ（µm）</value></data>
+  <data name="Glass_Editor_ModelGlass" xml:space="preserve"><value>模型玻璃</value></data>
+  <data name="Glass_Editor_ModelHint" xml:space="preserve"><value>经过 nd、F–C 色散及相对正常线的 ΔPg,F 的 Cauchy 拟合（除非在下方设置，适用于 0.35–1.1 µm）。</value></data>
+  <data name="Glass_Editor_NewTitle" xml:space="preserve"><value>新建玻璃</value></data>
+  <data name="Glass_Editor_NoGlassMade" xml:space="preserve"><value>引擎未生成玻璃。</value></data>
+  <data name="Glass_Editor_PreviewNoVd" xml:space="preserve"><value>nd {0}    无 Vd（F 线或 C 线超出范围）</value></data>
+  <data name="Glass_Editor_PreviewNone" xml:space="preserve"><value>无 nd、Vd（d 线超出范围）</value></data>
+  <data name="Glass_Editor_RangeAndData" xml:space="preserve"><value>范围与数据</value></data>
+  <data name="Glass_Editor_Save" xml:space="preserve"><value>保存</value></data>
+  <data name="Glass_Editor_ShortestLambda" xml:space="preserve"><value>最短 λ（µm）</value></data>
+  <data name="Glass_Export_FileType" xml:space="preserve"><value>AGF 玻璃库</value></data>
+  <data name="Glass_Export_NotExactIntro" xml:space="preserve"><value>AGF 无法表达此玻璃库中的全部内容：</value></data>
+  <data name="Glass_Export_NotExactTitle" xml:space="preserve"><value>未能完全导出</value></data>
+  <data name="Glass_Filter_HideObsolete" xml:space="preserve"><value>隐藏停产玻璃</value></data>
+  <data name="Glass_Filter_PreferredOnly" xml:space="preserve"><value>仅首选玻璃</value></data>
+  <data name="Glass_Filter_Substitution" xml:space="preserve"><value>可用于玻璃替换</value></data>
+  <data name="Glass_Format_Any" xml:space="preserve"><value>任意</value></data>
+  <data name="Glass_Ir_CatalogLists" xml:space="preserve"><value>玻璃库所列值：{0}。</value></data>
+  <data name="Glass_Ir_NoD" xml:space="preserve"><value>d 线（587.6 nm）超出此玻璃的波长范围。</value></data>
+  <data name="Glass_Ir_NoFC" xml:space="preserve"><value>F 线（486.1 nm）或 C 线（656.3 nm）超出此玻璃的波长范围。</value></data>
+  <data name="Glass_Label_Name" xml:space="preserve"><value>名称</value></data>
+  <data name="Glass_Label_Status" xml:space="preserve"><value>状态</value></data>
+  <data name="Glass_Library_Duplicate" xml:space="preserve"><value>已存在名为“{0}”的玻璃库或玻璃。</value></data>
+  <data name="Glass_Library_FileTaken" xml:space="preserve"><value>文件“{0}”已存放玻璃库“{1}”。请选择其他名称。</value></data>
+  <data name="Glass_Library_NoGlass" xml:space="preserve"><value>没有名为“{0}”的玻璃。</value></data>
+  <data name="Glass_Library_NoName" xml:space="preserve"><value>该玻璃没有名称。</value></data>
+  <data name="Glass_Library_NoUserCatalog" xml:space="preserve"><value>没有名为“{0}”的用户玻璃库。</value></data>
+  <data name="Glass_Library_NotCatalog" xml:space="preserve"><value>{0} 不是玻璃库。</value></data>
+  <data name="Glass_Library_ReadFailed" xml:space="preserve"><value>无法读取 {0}。</value></data>
+  <data name="Glass_Library_SaveFailed" xml:space="preserve"><value>无法保存玻璃资料库（{0}）。</value></data>
+  <data name="Glass_List_Comma" xml:space="preserve"><value>、</value></data>
+  <data name="Glass_List_Separator" xml:space="preserve"><value>；</value></data>
+  <data name="Glass_Menu_AllowSubstitution" xml:space="preserve"><value>允许用于玻璃替换</value></data>
+  <data name="Glass_Menu_CatalogStatus" xml:space="preserve"><value>玻璃库的状态</value></data>
+  <data name="Glass_Menu_CopyName" xml:space="preserve"><value>复制名称</value></data>
+  <data name="Glass_Menu_Duplicate" xml:space="preserve"><value>创建副本…</value></data>
+  <data name="Glass_Menu_DuplicateToUser" xml:space="preserve"><value>复制到用户玻璃…</value></data>
+  <data name="Glass_Menu_ExcludeSubstitution" xml:space="preserve"><value>不参与玻璃替换</value></data>
+  <data name="Glass_Menu_ExportAgf" xml:space="preserve"><value>导出为 AGF…</value></data>
+  <data name="Glass_Menu_MoveToRecycleBin" xml:space="preserve"><value>移到回收站…</value></data>
+  <data name="Glass_Menu_NewGlass" xml:space="preserve"><value>新建玻璃…</value></data>
+  <data name="Glass_Menu_ReloadFromDisk" xml:space="preserve"><value>从磁盘重新加载</value></data>
+  <data name="Glass_Menu_RemoveFromDesign" xml:space="preserve"><value>从设计中移除</value></data>
+  <data name="Glass_Menu_RemoveFromLibrary" xml:space="preserve"><value>从资料库中移除</value></data>
+  <data name="Glass_Menu_Rename" xml:space="preserve"><value>重命名…</value></data>
+  <data name="Glass_Menu_ResetToCatalog" xml:space="preserve"><value>恢复为玻璃库设置</value></data>
+  <data name="Glass_Menu_ShowInExplorer" xml:space="preserve"><value>在文件资源管理器中显示</value></data>
+  <data name="Glass_Menu_UseForSelectedSurface" xml:space="preserve"><value>用于所选面</value></data>
+  <data name="Glass_Menu_UseForSurface" xml:space="preserve"><value>用于面 {0}</value></data>
+  <data name="Glass_Name_Builtin" xml:space="preserve"><value>“BUILTIN”是内置玻璃库的名称。</value></data>
+  <data name="Glass_Name_Empty" xml:space="preserve"><value>请输入名称。</value></data>
+  <data name="Glass_Name_FileCharacter" xml:space="preserve"><value>名称包含文件名中不允许的字符。</value></data>
+  <data name="Glass_Name_Separators" xml:space="preserve"><value>名称不能包含“/”、“:”或“\”。</value></data>
+  <data name="Glass_Name_Spaces" xml:space="preserve"><value>玻璃名称不能包含空格（AGF 名称为单个词）。</value></data>
+  <data name="Glass_Notes_Intro" xml:space="preserve"><value>读取自 {0}：</value></data>
+  <data name="Glass_Notes_Line" xml:space="preserve"><value>第 {0} 行：{1}</value></data>
+  <data name="Glass_Notes_ReadingMany" xml:space="preserve"><value>读取文件时有 {0} 条提示</value></data>
+  <data name="Glass_Notes_ReadingOne" xml:space="preserve"><value>读取文件时有 {0} 条提示</value></data>
+  <data name="Glass_Notes_Title" xml:space="preserve"><value>{0}：提示</value></data>
+  <data name="Glass_Origin_Builtin" xml:space="preserve"><value>MKLight 内置</value></data>
+  <data name="Glass_Origin_DesignOnly" xml:space="preserve"><value>仅此设计</value></data>
+  <data name="Glass_Origin_LibraryEveryDesign" xml:space="preserve"><value>资料库 · 加载到每个设计中</value></data>
+  <data name="Glass_Origin_LibraryInDesign" xml:space="preserve"><value>资料库 · 已记录在此设计中</value></data>
+  <data name="Glass_Origin_User" xml:space="preserve"><value>您的玻璃 · 保存在应用的资料库中</value></data>
+  <data name="Glass_Reload_Added" xml:space="preserve"><value>新增</value></data>
+  <data name="Glass_Reload_Changed" xml:space="preserve"><value>变更</value></data>
+  <data name="Glass_Reload_Group" xml:space="preserve"><value>{0}（{1}）</value></data>
+  <data name="Glass_Reload_NotesMany" xml:space="preserve"><value>读取文件时有 {0} 条提示：{1}</value></data>
+  <data name="Glass_Reload_NotesOne" xml:space="preserve"><value>读取文件时有 {0} 条提示：{1}</value></data>
+  <data name="Glass_Reload_Removed" xml:space="preserve"><value>移除</value></data>
+  <data name="Glass_Reload_Same" xml:space="preserve"><value>文件中的玻璃与之前相同（{0} 种）。</value></data>
+  <data name="Glass_Reload_Summary" xml:space="preserve"><value>{0}；{1} 种未变。</value></data>
+  <data name="Glass_Reload_Title" xml:space="preserve"><value>已重新加载 {0}</value></data>
+  <data name="Glass_Rename_Button" xml:space="preserve"><value>重命名</value></data>
+  <data name="Glass_Rename_Note" xml:space="preserve"><value>在玻璃引用中使用此玻璃库名称的设计会保留旧名称。</value></data>
+  <data name="Glass_Rename_Title" xml:space="preserve"><value>重命名玻璃库</value></data>
+  <data name="Glass_Scope_AllGlasses" xml:space="preserve"><value>全部玻璃</value></data>
+  <data name="Glass_Scope_BuiltinGlasses" xml:space="preserve"><value>内置玻璃</value></data>
+  <data name="Glass_Sidebar_AddCatalog" xml:space="preserve"><value>添加玻璃库…</value></data>
+  <data name="Glass_Sidebar_AddCatalogTip" xml:space="preserve"><value>资料库中的玻璃库和文件夹会加载到每个设计中</value></data>
+  <data name="Glass_Sidebar_AddToDesign" xml:space="preserve"><value>添加玻璃库到设计…</value></data>
+  <data name="Glass_Sidebar_AddToDesignTip" xml:space="preserve"><value>在此设计中记录一个玻璃库文件</value></data>
+  <data name="Glass_Sidebar_AllGlassesTip" xml:space="preserve"><value>设计可以使用的所有玻璃</value></data>
+  <data name="Glass_Sidebar_BuiltinTip" xml:space="preserve"><value>MKLight 内置的玻璃</value></data>
+  <data name="Glass_Sidebar_Library" xml:space="preserve"><value>资料库</value></data>
+  <data name="Glass_Sidebar_NewUserCatalog" xml:space="preserve"><value>新建用户玻璃库</value></data>
+  <data name="Glass_Sidebar_NewUserCatalogTip" xml:space="preserve"><value>存放您自己的玻璃的玻璃库，随资料库保存</value></data>
+  <data name="Glass_Sidebar_UserGlasses" xml:space="preserve"><value>用户玻璃</value></data>
+  <data name="Glass_Status_Melt" xml:space="preserve"><value>按需熔炼</value></data>
+  <data name="Glass_Status_Obsolete" xml:space="preserve"><value>停产</value></data>
+  <data name="Glass_Status_Other" xml:space="preserve"><value>状态 {0}</value></data>
+  <data name="Glass_Status_Preferred" xml:space="preserve"><value>首选</value></data>
+  <data name="Glass_Status_Special" xml:space="preserve"><value>特殊</value></data>
+  <data name="Glass_Status_Standard" xml:space="preserve"><value>标准</value></data>
+  <data name="Glass_Sync_Error" xml:space="preserve"><value>{0}：{1}</value></data>
+  <data name="Glass_Sync_Library" xml:space="preserve"><value>玻璃资料库</value></data>
+  <data name="Glass_Sync_StatusSettings" xml:space="preserve"><value>玻璃状态设置：{0}</value></data>
+  <data name="Glass_Table_AddHint" xml:space="preserve"><value>使用“新建玻璃”添加玻璃。</value></data>
+  <data name="Glass_Table_CatalogTip" xml:space="preserve"><value>玻璃所属的玻璃库</value></data>
+  <data name="Glass_Table_Cost" xml:space="preserve"><value>价格</value></data>
+  <data name="Glass_Table_Count" xml:space="preserve"><value>{0} / {1} 种玻璃</value></data>
+  <data name="Glass_Table_DpgfTip" xml:space="preserve"><value>反常部分色散</value></data>
+  <data name="Glass_Table_EmptyCatalog" xml:space="preserve"><value>此玻璃库中没有玻璃。</value></data>
+  <data name="Glass_Table_EmptyFiltered" xml:space="preserve"><value>{0}（{1}）。</value></data>
+  <data name="Glass_Table_EmptySentence" xml:space="preserve"><value>{0}。</value></data>
+  <data name="Glass_Table_ExcludedMark.[using:Microsoft.UI.Xaml.Controls]ToolTipService.ToolTip" xml:space="preserve"><value>不参与玻璃替换</value></data>
+  <data name="Glass_Table_Footer.Text" xml:space="preserve"><value>双击玻璃即可将其用于所选面</value></data>
+  <data name="Glass_Table_Glass" xml:space="preserve"><value>玻璃</value></data>
+  <data name="Glass_Table_GlassTip" xml:space="preserve"><value>玻璃名称</value></data>
+  <data name="Glass_Table_Lambda80Tip" xml:space="preserve"><value>10 mm 厚度内透过率为 80 % 时的波长</value></data>
+  <data name="Glass_Table_NdTip" xml:space="preserve"><value>d 线（587.6 nm）处的折射率</value></data>
+  <data name="Glass_Table_NoGlasses" xml:space="preserve"><value>没有玻璃</value></data>
+  <data name="Glass_Table_NoMatch" xml:space="preserve"><value>没有与“{0}”匹配的玻璃</value></data>
+  <data name="Glass_Table_NoPass" xml:space="preserve"><value>没有符合筛选条件的玻璃</value></data>
+  <data name="Glass_Table_NoResults" xml:space="preserve"><value>无结果</value></data>
+  <data name="Glass_Table_OverriddenMark.[using:Microsoft.UI.Xaml.Controls]ToolTipService.ToolTip" xml:space="preserve"><value>您的设置（与玻璃库不同）</value></data>
+  <data name="Glass_Table_Range" xml:space="preserve"><value>范围 µm</value></data>
+  <data name="Glass_Table_RangeTip" xml:space="preserve"><value>色散公式适用的波长范围</value></data>
+  <data name="Glass_Table_StatusTip" xml:space="preserve"><value>供货状态（您的设置或玻璃库的设置）</value></data>
+  <data name="Glass_Table_TceTip" xml:space="preserve"><value>热膨胀系数，10⁻⁶/K（−30…+70 °C）</value></data>
+  <data name="Glass_Table_VdTip" xml:space="preserve"><value>阿贝数</value></data>
+  <data name="Glass_Toast_AddedToDesign" xml:space="preserve"><value>已将 {0}（{1} 种玻璃）添加到设计。</value></data>
+  <data name="Glass_Toast_AddedToLibrary" xml:space="preserve"><value>已将 {0} 添加到资料库。</value></data>
+  <data name="Glass_Toast_AddedToTarget" xml:space="preserve"><value>已将 {0}（{1} 种玻璃）添加到 {2}。</value></data>
+  <data name="Glass_Toast_AlreadyInLibrary" xml:space="preserve"><value>已在资料库中。</value></data>
+  <data name="Glass_Toast_Deleted" xml:space="preserve"><value>已删除 {0}。</value></data>
+  <data name="Glass_Toast_ExportFailed" xml:space="preserve"><value>无法导出：{0}</value></data>
+  <data name="Glass_Toast_Exported" xml:space="preserve"><value>已将 {0} 导出到 {1}。</value></data>
+  <data name="Glass_Toast_LoadFailed" xml:space="preserve"><value>无法加载 {0}：{1}</value></data>
+  <data name="Glass_Toast_MovedToRecycleBin" xml:space="preserve"><value>已将 {0} 移到回收站。</value></data>
+  <data name="Glass_Toast_NotRegistered" xml:space="preserve"><value>{0} 不是已登记的资料库文件。</value></data>
+  <data name="Glass_Toast_ReloadFailed" xml:space="preserve"><value>无法重新加载 {0}：{1}</value></data>
+  <data name="Glass_Toast_Reloaded" xml:space="preserve"><value>已重新加载 {0}：{1}。</value></data>
+  <data name="Glass_Toast_RemovedFolder" xml:space="preserve"><value>已从资料库中移除文件夹 {0}。</value></data>
+  <data name="Glass_Toast_RemovedFromDesign" xml:space="preserve"><value>已从 {1} 中移除 {0}。在设计窗口中撤销即可恢复。</value></data>
+  <data name="Glass_Toast_RemovedFromLibrary" xml:space="preserve"><value>已从资料库中移除 {0}。</value></data>
+  <data name="Glass_Toast_Saved" xml:space="preserve"><value>已将 {0} 保存到 {1}。</value></data>
+  <data name="Glass_Toast_Used" xml:space="preserve"><value>面 {0} 之后的介质为 {1}（{2}）。</value></data>
+  <data name="Glass_Trash_Button" xml:space="preserve"><value>移到回收站</value></data>
+  <data name="Glass_Trash_Message" xml:space="preserve"><value>使用其中玻璃的设计将找不到它们。</value></data>
+  <data name="Glass_Trash_Title" xml:space="preserve"><value>将“{0}”移到回收站？</value></data>
+  <data name="Glass_Undo_AddCatalog" xml:space="preserve"><value>添加玻璃库</value></data>
+  <data name="Glass_Undo_ChangeMaterial" xml:space="preserve"><value>更改材料</value></data>
+  <data name="Glass_Undo_RemoveCatalog" xml:space="preserve"><value>移除玻璃库</value></data>
+  <data name="Glass_Use_OpenDesign" xml:space="preserve"><value>打开一个设计以在其中使用玻璃。</value></data>
+  <data name="Glass_Use_SelectSurface" xml:space="preserve"><value>在镜头数据中选择一个面，以在其后使用玻璃。</value></data>
+  <data name="Glass_Value_None" xml:space="preserve"><value>无</value></data>
+  <data name="Glass_Window_AddButton.[using:Microsoft.UI.Xaml.Controls]ToolTipService.ToolTip" xml:space="preserve"><value>添加玻璃或玻璃库</value></data>
+  <data name="Glass_Window_AddLibraryFilesItem.Text" xml:space="preserve"><value>添加玻璃库到资料库…</value></data>
+  <data name="Glass_Window_AddLibraryFolderItem.Text" xml:space="preserve"><value>添加文件夹到资料库…</value></data>
+  <data name="Glass_Window_AddToDesignItem.Text" xml:space="preserve"><value>添加玻璃库到设计…</value></data>
+  <data name="Glass_Window_FilterButton.[using:Microsoft.UI.Xaml.Controls]ToolTipService.ToolTip" xml:space="preserve"><value>只显示部分玻璃</value></data>
+  <data name="Glass_Window_NewGlassItem.Text" xml:space="preserve"><value>新建玻璃…</value></data>
+  <data name="Glass_Window_NewUserCatalogItem.Text" xml:space="preserve"><value>新建用户玻璃库</value></data>
+  <data name="Glass_Window_SearchBox.PlaceholderText" xml:space="preserve"><value>搜索玻璃</value></data>
+  <data name="Glass_Window_SubtitleDesign" xml:space="preserve"><value>{0} 的玻璃</value></data>
+  <data name="Glass_Window_Title" xml:space="preserve"><value>玻璃库 — MKLight</value></data>
+  <data name="Glass_Window_TitleBar.Title" xml:space="preserve"><value>玻璃库</value></data>
   <!-- end area: Glass -->
 </root>

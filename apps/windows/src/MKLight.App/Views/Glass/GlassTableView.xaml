@@ -86,7 +86,7 @@
                                 </Grid.ColumnDefinitions>
                                 <StackPanel Orientation="Horizontal" Spacing="5" Margin="0,0,8,0">
                                     <TextBlock Text="{x:Bind Name}" FontWeight="{x:Bind NameWeight}" Style="{StaticResource GlassCell}" />
-                                    <FontIcon Glyph="&#xE733;" FontSize="11" Visibility="{x:Bind ExcludedMark}" VerticalAlignment="Center"
+                                    <FontIcon x:Uid="Glass_Table_ExcludedMark" Glyph="&#xE733;" FontSize="11" Visibility="{x:Bind ExcludedMark}" VerticalAlignment="Center"
                                               Foreground="{ThemeResource TextFillColorSecondaryBrush}"
                                               ToolTipService.ToolTip="Excluded from glass substitution" />
                                 </StackPanel>
@@ -97,7 +97,7 @@
                                 <StackPanel Grid.Column="5" Orientation="Horizontal" Spacing="6" Margin="2,0,0,0">
                                     <Ellipse Width="7" Height="7" Fill="{x:Bind StatusFill}" Stroke="{x:Bind StatusStroke}" StrokeThickness="1.2" VerticalAlignment="Center" />
                                     <TextBlock Text="{x:Bind StatusTitle}" Style="{StaticResource GlassCell}" />
-                                    <FontIcon Glyph="&#xE77B;" FontSize="11" Visibility="{x:Bind OverriddenMark}" VerticalAlignment="Center"
+                                    <FontIcon x:Uid="Glass_Table_OverriddenMark" Glyph="&#xE77B;" FontSize="11" Visibility="{x:Bind OverriddenMark}" VerticalAlignment="Center"
                                               Foreground="{ThemeResource TextFillColorSecondaryBrush}"
                                               ToolTipService.ToolTip="Your setting (the catalog says otherwise)" />
                                 </StackPanel>
@@ -126,7 +126,7 @@
                 <ColumnDefinition Width="*" />
             </Grid.ColumnDefinitions>
             <TextBlock x:Name="CountText" Style="{StaticResource CaptionText}" />
-            <TextBlock Grid.Column="1" Text="Double-click a glass to use it for the selected surface" Style="{StaticResource CaptionText}"
+            <TextBlock Grid.Column="1" x:Uid="Glass_Table_Footer" Text="Double-click a glass to use it for the selected surface" Style="{StaticResource CaptionText}"
                        HorizontalAlignment="Right" TextTrimming="CharacterEllipsis" />
         </Grid>
     </Grid>
