@@ -319,7 +319,7 @@ public sealed partial class DesignWindow
         _menus[m].Items.Add(appearance);
         // The UI language: saved, shown from the next launch (the app is unpackaged; docs/WINDOWS.md "Languages").
         var language = Sub("Shell_Language_Title", "Language", "");
-        var system = Languages.Resolve(null, UiLanguageSystem());
+        var system = Languages.Resolve(null, UiLanguage.SystemLanguages());
         Radios(language.Items, "language",
             [(Loc.F("Shell_Language_System", system == Languages.SimplifiedChinese ? Loc.S("Shell_Language_Chinese") : Loc.S("Shell_Language_English")), Languages.System),
              (Loc.S("Shell_Language_English"), Languages.English), (Loc.S("Shell_Language_Chinese"), Languages.SimplifiedChinese)],
@@ -330,12 +330,6 @@ public sealed partial class DesignWindow
                 _session.ShowToast(Loc.S("Shell_Language_Note"));
             });
         _menus[m].Items.Add(language);
-    }
-
-    static IEnumerable<string> UiLanguageSystem()
-    {
-        try { return global::Windows.System.UserProfile.GlobalizationPreferences.Languages; }
-        catch (Exception) { return []; }
     }
 
     /// <summary>The theme items follow the app's theme (every window's menu).</summary>
